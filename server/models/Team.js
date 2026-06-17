@@ -23,12 +23,34 @@ const TeamMemberSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// Snapshot of the original AI/starter backlog so "Restore AI Backlog" can
+// rebuild it after manual edits. Stores plain task seed objects (not refs).
+const AiTaskSeedSchema = new mongoose.Schema(
+  {
+    title:          { type: String, required: true },
+    description:    { type: String, default: "" },
+    category:       { type: String, default: "General" },
+    urgency:        { type: Number, default: 2 },
+    impact:         { type: Number, default: 2 },
+    estimatedHours: { type: Number, default: null },
+    businessValue:  { type: Number, default: null },
+    priorityLabel:  { type: String, default: null },
+    phaseIndex:     { type: Number, default: 0 }, // for inter-phase dependency wiring
+  },
+  { _id: false }
+);
+
 const TeamSchema = new mongoose.Schema(
   {
     name:      { type: String, required: true },
+    projectTitle:       { type: String, default: "" },
+    projectDescription: { type: String, default: "" },
     members:   { type: [TeamMemberSchema], default: [] },
     taskCount: { type: Number, default: 0 },
     doneCount: { type: Number, default: 0 },
+
+    // Original AI-generated backlog snapshot (for Restore AI Backlog).
+    aiGeneratedTasks: { type: [AiTaskSeedSchema], default: [] },
   },
   { timestamps: true }
 );

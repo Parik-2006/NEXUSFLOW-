@@ -20,7 +20,19 @@
       "Bash(ls app/chat)",
       "Bash(grep -rln '\"#[0-9a-fA-F]\\\\{3,6\\\\}\"' components/ app/)",
       "Bash(grep -no '\"#[0-9a-fA-F]\\\\{3,6\\\\}\"' components/workspace/ChatPanel.tsx)",
-      "Bash(echo \"--- non-test error count: $\\(npx tsc --noEmit -p tsconfig.json 2>&1)"
+      "Bash(echo \"--- non-test error count: $\\(npx tsc --noEmit -p tsconfig.json 2>&1)",
+      "Bash(node --check models/Task.js)",
+      "Bash(node --check models/Team.js)",
+      "Bash(node --check routes/teams.js)",
+      "Bash(node --check socket/taskHandlers.js)",
+      "Bash(grep -n 'Task.create\\({ teamId, title, urgency, impact, dependencyCount: 0, createdBy: \"ai\" }\\)' socket/aiOrchestrator.js)",
+      "Bash(sed -i 's/Task.create\\({ teamId, title, urgency, impact, dependencyCount: 0, createdBy: \"ai\" }\\)/Task.create\\({ teamId, title, urgency, impact, dependencyCount: 0, createdBy: \"ai\", source: \"ai\" }\\)/g' socket/aiOrchestrator.js)",
+      "Bash(node --check socket/aiOrchestrator.js)",
+      "Bash(node -e \"Promise.all\\([import\\('./routes/teams.js'\\),import\\('./socket/taskHandlers.js'\\),import\\('./socket/aiOrchestrator.js'\\),import\\('./models/Task.js'\\),import\\('./models/Team.js'\\)]\\).then\\(\\(\\)=>console.log\\('IMPORTS OK'\\)\\).catch\\(e=>{console.error\\(e.message\\);process.exit\\(1\\)}\\)\")",
+      "Bash(node --input-type=module -e ' *)",
+      "Bash(git rev-list *)",
+      "Bash(git checkout *)",
+      "Bash(git add *)"
     ]
   }
 }

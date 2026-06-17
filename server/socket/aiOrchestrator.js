@@ -2,6 +2,8 @@ import Task from "../models/Task.js";
 import Team from "../models/Team.js";
 import { assignTasksToMembers } from "../algorithms/branchAndBound.js";
 import { computeRecommendation, boyerMooreSearch } from "../algorithms/taskOptimiser.js";
+import { decomposeProject } from "../algorithms/projectDecomposer.js";
+import { recomputeAndBroadcast } from "./taskHandlers.js";
 
 // Map existing schema fields → the {value, effort, priority} shape the
 // recommendation engine expects.
@@ -62,6 +64,77 @@ function estimatePriority(title) {
   if (isUrgent)   return { urgency: 4, impact: 2 };
   if (isImpactful) return { urgency: 2, impact: 4 };
   return { urgency: 2, impact: 2 };
+}
+
+// ── Feature 1: Actionable task-title normaliser ──────────────────────────────
+// Converts requirement-style sentences ("The system continuously monitors soil
+// moisture…") into short, Jira/Trello-style engineering tasks ("Implement Soil
+// Moisture Monitoring Module"). Deterministic + dependency-free so it cleans
+// BOTH the mock backlog and any sloppy lines that slip past the OpenAI prompt.
+// Pure string work — does NOT touch the Greedy urgency/impact estimation.
+const titleCase = (str) =>
+  str.split(/\s+/).filter(Boolean)
+    .map((w) => (/^[A-Z0-9]{2,}$/.test(w) ? w : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()))
+    .join(" ");
+
+const VERB_TO_NOUN = {
+  monitor: "Monitoring", monitors: "Monitoring", monitoring: "Monitoring",
+  track: "Tracking", tracks: "Tracking", tracking: "Tracking",
+  manage: "Management", manages: "Management", managing: "Management",
+  store: "Storage", stores: "Storage", storing: "Storage",
+  analyze: "Analytics", analyse: "Analytics", analyzing: "Analytics",
+  report: "Reporting", reports: "Reporting", reporting: "Reporting",
+  notify: "Notifications", notifies: "Notifications",
+  schedule: "Scheduling", schedules: "Scheduling",
+  search: "Search", searches: "Search",
+  recommend: "Recommendations", recommends: "Recommendations",
+  assign: "Assignment", assigns: "Assignment",
+  visualize: "Visualization", visualise: "Visualization",
+  authenticate: "Authentication", display: "Display", displays: "Display",
+};
+
+export function toActionableTitle(raw) {
+  let s = String(raw || "").trim()
+    .replace(/^[-*\d.)\s]+/, "")
+    .replace(/["'`]/g, "")
+    .replace(/[.!?]+$/, "")
+    .trim();
+  if (!s) return "";
+
+  // Strip requirement-style subjects / modal prefixes.
+  s = s
+    .replace(/^the\s+system\s+(should|must|will|can|shall)?\s*(continuously|automatically|securely)?\s*/i, "")
+    .replace(/^(users?|farmers?|admins?|members?|customers?|operators?|the user|the app|the platform)\s+(can|should|must|will|are able to|need to|shall)\s+/i, "")
+    .replace(/^it\s+(should|must|will|can)\s+/i, "")
+    .replace(/^(ability to|able to|support for|provides?|allows?|enables?)\s+/i, "")
+    .replace(/^(continuously|automatically|securely|easily)\s+/i, "")
+    .trim();
+
+  // Keep only the first clause so titles stay short.
+  s = s.split(/[,;:]| so that | which | in order to /i)[0].trim();
+  s = s.split(/\s+/).filter(Boolean).slice(0, 8).join(" ");
+  if (!s) return "";
+
+  // Already action-oriented → just normalise casing.
+  const ACTION = /^(implement|build|develop|create|design|add|integrate|set ?up|configure|write|test|deploy|refactor|fix|optimi[sz]e|enable|support|migrate|automate|define|plan|document|review|research|prepare|scope|setup)\b/i;
+  if (ACTION.test(s)) return titleCase(s);
+
+  // Leading verb → gerund noun phrase: "monitor soil moisture" →
+  // "Implement Soil Moisture Monitoring Module".
+  const parts = s.split(/\s+/);
+  const noun  = VERB_TO_NOUN[parts[0].toLowerCase()];
+  if (noun && parts.length > 1) {
+    return `Implement ${titleCase(parts.slice(1).join(" "))} ${noun} Module`.replace(/\s+/g, " ").trim();
+  }
+
+  // Fallback: prepend a verb + domain suffix.
+  let suffix = "Module", verb = "Implement";
+  if (/dashboard|view|screen|interface/i.test(raw)) { suffix = "Dashboard"; verb = "Develop"; }
+  else if (/report|analytic|chart/i.test(raw)) suffix = "Reporting";
+  else if (/login|auth|sign|password|account/i.test(raw)) suffix = "Authentication";
+  else if (/notif|alert|remind|email/i.test(raw)) suffix = "Notifications";
+  const hasNoun = /module|feature|system|service|api|engine|pipeline/i.test(s);
+  return `${verb} ${titleCase(s)}${hasNoun ? "" : " " + suffix}`.replace(/\s+/g, " ").trim();
 }
 
 export function registerAiOrchestrator(io, socket) {
@@ -305,26 +378,70 @@ async function runAutoAssignment(io, teamId, taskIds) {
 
 // ── Mock streamer ──────────────────────────────────────────────────────────────
 async function streamMock(io, socket, teamId, prompt) {
-  const blocks = [
-    `Planning: "${prompt}"`,
-    "1. Define scope and acceptance criteria",
-    "2. Implement core slice",
-    "3. Add tests and wire CI",
-  ];
-  for (let i = 0; i < blocks.length; i++) {
-    await delay(250);
-    io.to(`team:${teamId}`).emit("chat:stream", { id: `ai_${Date.now()}_${i}`, text: blocks[i] });
-  }
+  // A reasonably detailed prompt is treated as a PROJECT DESCRIPTION and run
+  // through the shared decomposer to produce a grouped, professional backlog
+  // (Planning / Backend / Frontend / Testing / …). Short prompts fall back to a
+  // generic feature breakdown. The description is never copied verbatim.
+  const isDescription = prompt.trim().length >= 60;
+  const seeds = isDescription
+    ? decomposeProject("", prompt)
+    : [
+        { title: "Define project scope and acceptance criteria", category: "Planning", urgency: 4, impact: 3, estimatedHours: 4, businessValue: 6 },
+        { title: "Implement core data service and API layer", category: "Backend", urgency: 4, impact: 5, estimatedHours: 6, businessValue: 10 },
+        { title: "Develop primary user dashboard", category: "Frontend", urgency: 3, impact: 4, estimatedHours: 5, businessValue: 8 },
+        { title: "Build automated test suite and CI pipeline", category: "Testing", urgency: 3, impact: 3, estimatedHours: 4, businessValue: 6 },
+      ];
+
+  io.to(`team:${teamId}`).emit("chat:stream", { id: `ai_${Date.now()}_0`, text: `Decomposing project into ${seeds.length} tasks across ${new Set(seeds.map((s) => s.category)).size} phases…` });
 
   const newTaskIds = [];
-  for (const title of blocks.slice(1)) {
-    const { urgency, impact } = estimatePriority(title);
-    const task = await Task.create({ teamId, title, urgency, impact, dependencyCount: 0, createdBy: "ai" });
+  let lastCategory = "";
+  for (let i = 0; i < seeds.length; i++) {
+    const s = seeds[i];
+    if (s.category !== lastCategory) {
+      lastCategory = s.category;
+      await delay(180);
+      io.to(`team:${teamId}`).emit("chat:stream", { id: `ai_${Date.now()}_c${i}`, text: `\n${s.category}` });
+    }
+    await delay(120);
+    io.to(`team:${teamId}`).emit("chat:stream", { id: `ai_${Date.now()}_t${i}`, text: `• ${s.title}` });
+    const task = await Task.create({
+      teamId, title: s.title, category: s.category,
+      urgency: s.urgency, impact: s.impact,
+      estimatedHours: s.estimatedHours, businessValue: s.businessValue,
+      description: s.description ?? "", dependencyCount: 0, createdBy: "ai", source: "ai",
+    });
     await Team.updateOne({ _id: teamId }, { $inc: { taskCount: 1 } });
     io.to(`team:${teamId}`).emit("task:created", task.toObject());
     newTaskIds.push(task._id);
   }
+
+  // Wire inter-phase dependencies (phase N depends on the first task of phase
+  // N-1) so the dependency graph is connected and the topological roadmap is
+  // meaningful. Reuses the canonical recompute (Kahn's) + broadcast.
+  await wirePhaseDependencies(teamId, seeds, newTaskIds);
+  if (seeds.some((s) => (s.phaseIndex ?? 0) > 0)) await recomputeAndBroadcast(io, teamId);
+
   return newTaskIds;
+}
+
+// Set each task's dependency to the first task of the previous phase.
+async function wirePhaseDependencies(teamId, seeds, taskIds) {
+  const byPhase = new Map();
+  seeds.forEach((s, i) => {
+    const p = s.phaseIndex ?? 0;
+    if (!byPhase.has(p)) byPhase.set(p, []);
+    byPhase.get(p).push(taskIds[i]);
+  });
+  const bulk = [];
+  seeds.forEach((s, i) => {
+    const p = s.phaseIndex ?? 0;
+    if (p > 0 && byPhase.has(p - 1)) {
+      const prev = byPhase.get(p - 1)[0];
+      bulk.push({ updateOne: { filter: { _id: taskIds[i] }, update: { $set: { dependencies: [prev], dependencyCount: 1 } } } });
+    }
+  });
+  if (bulk.length) await Task.bulkWrite(bulk, { ordered: false });
 }
 
 // ── Real OpenAI streaming ──────────────────────────────────────────────────────
@@ -335,7 +452,17 @@ async function streamFromOpenAI(io, socket, teamId, prompt) {
     body   : JSON.stringify({
       model: "gpt-4o-mini", stream: true,
       messages: [
-        { role: "system", content: "Break the user's request into short, actionable task titles, one per line." },
+        {
+          role: "system",
+          content:
+            "You are a senior engineering lead breaking a project description into a backlog. " +
+            "Output ONLY a plain list of short, action-oriented engineering task titles, one per line, no numbering or prose. " +
+            "Each title MUST start with an imperative verb (Implement, Build, Develop, Design, Integrate, Configure, Set up, Test, Deploy) " +
+            "and read like a Jira/Trello card (3–7 words). " +
+            "Convert requirements into tasks: 'The system monitors soil moisture' -> 'Implement Soil Moisture Monitoring Module'; " +
+            "'Farmers can view field conditions' -> 'Develop Field Conditions Dashboard'. " +
+            "Never output a requirement sentence, user story, or acceptance criteria — only buildable engineering tasks.",
+        },
         { role: "user",   content: prompt },
       ],
     }),
@@ -363,9 +490,10 @@ async function streamFromOpenAI(io, socket, teamId, prompt) {
   }
 
   const newTaskIds = [];
-  for (const title of acc.split("\n").map((s) => s.replace(/^[-*\d.\s]+/, "").trim()).filter(Boolean)) {
+  const rawTitles = acc.split("\n").map((s) => toActionableTitle(s)).filter(Boolean);
+  for (const title of rawTitles) {
     const { urgency, impact } = estimatePriority(title);
-    const task = await Task.create({ teamId, title, urgency, impact, dependencyCount: 0, createdBy: "ai" });
+    const task = await Task.create({ teamId, title, urgency, impact, dependencyCount: 0, createdBy: "ai", source: "ai" });
     await Team.updateOne({ _id: teamId }, { $inc: { taskCount: 1 } });
     io.to(`team:${teamId}`).emit("task:created", task.toObject());
     newTaskIds.push(task._id);

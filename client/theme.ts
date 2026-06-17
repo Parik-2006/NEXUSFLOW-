@@ -59,13 +59,93 @@ export const colors = {
   boyer:       "#5F9090", // teal
 };
 
-// Priority tiers (Greedy Scheduler 0–100 score)
-export const priorityTier = (score: number) => {
-  if (score >= 80) return { label: "CRITICAL", color: "#B4564B", bg: "#F8ECEA" };
-  if (score >= 55) return { label: "HIGH",     color: "#C18A3E", bg: "#FAF2E6" };
-  if (score >= 30) return { label: "MEDIUM",   color: "#A98C4A", bg: "#F7F2E6" };
-  return              { label: "LOW",      color: "#6B7280", bg: "#F1EFEA" };
+// Priority tiers — consistent Critical=Red / High=Orange / Medium=Yellow /
+// Low=Green semantics across task cards, the graph, sprint, recommendations and
+// analytics. Muted/desaturated so they stay within the warm editorial system.
+export const PRIORITY_META = {
+  critical: { label: "CRITICAL", color: "#DC2626", bg: "#FCEBEA" },
+  high:     { label: "HIGH",     color: "#EA580C", bg: "#FBEFE4" },
+  medium:   { label: "MEDIUM",   color: "#CA8A04", bg: "#FAF4DF" },
+  low:      { label: "LOW",      color: "#16A34A", bg: "#E9F5EC" },
+} as const;
+
+export type PriorityKey = keyof typeof PRIORITY_META;
+
+// Map a Greedy score (0–100) to a tier key.
+export const priorityKeyFromScore = (score: number): PriorityKey =>
+  score >= 80 ? "critical" : score >= 55 ? "high" : score >= 30 ? "medium" : "low";
+
+// Resolve a task's tier: explicit priorityLabel wins, else derive from score.
+export const taskPriorityKey = (t: { priorityScore?: number; priorityLabel?: string | null }): PriorityKey =>
+  (t.priorityLabel as PriorityKey) && PRIORITY_META[t.priorityLabel as PriorityKey]
+    ? (t.priorityLabel as PriorityKey)
+    : priorityKeyFromScore(t.priorityScore ?? 0);
+
+// Back-compat: priorityTier(score) → { label, color, bg }
+export const priorityTier = (score: number) => PRIORITY_META[priorityKeyFromScore(score)];
+
+// ── Feature 3: Deadline Intelligence ─────────────────────────────────────────
+// Colour bands by days-remaining: Green >7 · Orange 3–7 · Red 0–2 · DarkRed overdue.
+export const deadlineColors = {
+  safe:    "#16A34A", // green
+  soon:    "#EA580C", // orange
+  urgent:  "#DC2626", // red
+  overdue: "#7F1D1D", // dark red
+} as const;
+
+const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+
+export type DeadlineMeta = {
+  hasDate: boolean;
+  daysRemaining: number | null;
+  overdue: boolean;
+  band: keyof typeof deadlineColors | "none";
+  color: string;
+  text: string;          // human countdown ("12 days left", "Overdue by 3 days")
 };
+
+export function deadlineMeta(iso?: string | null): DeadlineMeta {
+  if (!iso) return { hasDate: false, daysRemaining: null, overdue: false, band: "none", color: colors.textFaint, text: "No due date" };
+  const due = new Date(iso);
+  if (Number.isNaN(due.getTime())) return { hasDate: false, daysRemaining: null, overdue: false, band: "none", color: colors.textFaint, text: "No due date" };
+  const days = Math.round((startOfDay(due) - startOfDay(new Date())) / 86_400_000);
+  if (days < 0)  return { hasDate: true, daysRemaining: days, overdue: true,  band: "overdue", color: deadlineColors.overdue, text: `Overdue by ${Math.abs(days)} day${Math.abs(days) !== 1 ? "s" : ""}` };
+  if (days <= 2) return { hasDate: true, daysRemaining: days, overdue: false, band: "urgent",  color: deadlineColors.urgent,  text: days === 0 ? "Due today" : `${days} day${days !== 1 ? "s" : ""} left` };
+  if (days <= 7) return { hasDate: true, daysRemaining: days, overdue: false, band: "soon",    color: deadlineColors.soon,    text: `${days} days left` };
+  return            { hasDate: true, daysRemaining: days, overdue: false, band: "safe",    color: deadlineColors.safe,    text: `${days} days left` };
+}
+
+// Deadline Score = BusinessValue / DaysRemaining (urgency-weighted ROI).
+// Overdue tasks return a capped-high score; no due date → 0 (cannot rank).
+export function deadlineScore(businessValue?: number | null, daysRemaining?: number | null): number {
+  const v = Number.isFinite(businessValue as number) && (businessValue as number) > 0 ? (businessValue as number) : 1;
+  if (daysRemaining == null) return 0;
+  if (daysRemaining <= 0) return Math.round(v * 10) / 10 + 100; // overdue → most urgent
+  return Math.round((v / daysRemaining) * 100) / 100;
+}
+
+// ── Feature 7: Greedy Scheduler score breakdown (mirrors server formula) ──────
+// priorityScore = round((0.5·u + 0.35·i + 0.15·d) · 100), normalised inputs.
+export function greedyBreakdown(t: { urgency?: number; impact?: number; dependencyCount?: number; priorityScore?: number }) {
+  const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
+  const urgency = clamp(t.urgency ?? 1, 1, 5);
+  const impact  = clamp(t.impact ?? 1, 1, 5);
+  const deps    = clamp(t.dependencyCount ?? 0, 0, 20);
+  const u = (urgency - 1) / 4, i = (impact - 1) / 4, d = deps / 20;
+  const uPts = Math.round(0.5 * u * 100);
+  const iPts = Math.round(0.35 * i * 100);
+  const dPts = Math.round(0.15 * d * 100);
+  const score = t.priorityScore ?? Math.round((0.5 * u + 0.35 * i + 0.15 * d) * 100);
+  return { urgency, impact, deps, uPts, iPts, dPts, score };
+}
+
+// ── Feature 10: Workspace Health grade labels ─────────────────────────────────
+export function healthLabel(score: number): { label: string; color: string } {
+  if (score >= 95) return { label: "Excellent", color: colors.success };
+  if (score >= 80) return { label: "Healthy", color: colors.accent };
+  if (score >= 60) return { label: "Needs Attention", color: colors.warning };
+  return { label: "At Risk", color: colors.danger };
+}
 
 export const statusMeta = {
   todo:        { label: "To do",       color: "#6B7280", bg: "#F1EFEA" },

@@ -5,6 +5,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTeam } from "@/hooks/useTeam";
 import { Avatar, AvatarStack } from "@/components/ui";
+import NotificationCenter from "@/components/NotificationCenter";
 import OverviewPanel from "@/components/workspace/OverviewPanel";
 import TasksPanel from "@/components/workspace/TasksPanel";
 import SprintPanel from "@/components/workspace/SprintPanel";
@@ -50,6 +51,7 @@ export default function Workspace() {
           <Text style={s.headerSub}>{team?.members?.length ?? 0} members · {team?.taskCount ?? 0} tasks</Text>
         </View>
         {names.length > 0 && <AvatarStack names={names} max={3} />}
+        {teamId && <NotificationCenter teamId={teamId} />}
       </View>
 
       {/* Tab bar */}

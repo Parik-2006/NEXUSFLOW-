@@ -13,15 +13,20 @@ export type TeamMember = {
 export type Team = {
   _id: string;
   name: string;
+  projectTitle?: string;
+  projectDescription?: string;
   taskCount: number;
   doneCount: number;
   members?: TeamMember[];
+  aiGeneratedTasks?: { title: string }[];
 };
 
 export type NewTeamInput = {
   name: string;
+  projectTitle?: string;
+  projectDescription?: string;
   members?: { name: string; skills?: Record<string, number> }[];
-  tasks?: { title: string; urgency?: number; impact?: number; businessValue?: number; estimatedHours?: number }[];
+  tasks?: { title: string; description?: string; urgency?: number; impact?: number; businessValue?: number; estimatedHours?: number; priorityLabel?: string }[];
 };
 
 export function useTeams() {

@@ -10,6 +10,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTeam, type AssignResult } from "@/hooks/useTeam";
 import { Card, Button, Badge, Avatar, EmptyState, Field, Stepper } from "@/components/ui";
 import { ModalSheet, useToast } from "@/components/feedback";
+import SkillMatrix from "@/components/workspace/SkillMatrix";
+import { WhyButton, AlgoExplainSheet, type AlgoEntry } from "@/components/AlgoExplain";
 import { colors, spacing, radius, font, avatarColor } from "@/theme";
 
 const SKILLS = ["frontend", "backend", "devops", "design", "ml", "testing"];
@@ -23,6 +25,15 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
   const [showAdd, setShowAdd] = useState(false);
   const [name, setName] = useState("");
   const [primary, setPrimary] = useState("frontend");
+  const [explain, setExplain] = useState<AlgoEntry[] | null>(null);
+
+  // Member lookup for assignment explanations (top skill / fit reasoning).
+  const memberById = (id: string) => members.find((m) => m.userId === id);
+  const topSkillOf = (id: string) => {
+    const m = memberById(id);
+    if (!m) return null;
+    return SKILLS.map((k) => ({ k, v: m.skills?.[k] ?? 5 })).sort((a, b) => b.v - a.v)[0];
+  };
 
   const run = async () => {
     setRunning(true);
@@ -107,10 +118,27 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
         );
       })}
 
+      {/* Skill Matrix (Feature 5) — evidence for Branch & Bound */}
+      {members.length > 0 && (
+        <Card style={{ gap: spacing.sm }}>
+          <Text style={s.sectionLabel}>SKILL MATRIX</Text>
+          <Text style={s.hint}>Taller bars = stronger skill → lower skill-gap cost for tasks demanding that skill.</Text>
+          <SkillMatrix members={members} />
+        </Card>
+      )}
+
       {/* Assignment result */}
       {result && (
         <>
-          <Text style={s.sectionLabel}>ASSIGNMENT RESULT</Text>
+          <View style={s.resultHead}>
+            <Text style={s.sectionLabel}>ASSIGNMENT RESULT</Text>
+            <WhyButton color={colors.branch} onPress={() => setExplain([{
+              algo: "branch",
+              input: `${members.length} members × ${result.assignments.length} tasks · skill-gap cost matrix`,
+              output: `Min-cost assignment · total skill gap ${result.totalCost}`,
+              reason: `Branch & Bound explored ${result.meta?.nodesExplored ?? "?"} states and pruned ${result.meta?.nodesPruned ?? "?"} (${result.meta?.pruningRatio ?? "?"}) using an admissible lower bound. Each task goes to the member with the lowest skill gap.`,
+            }])} />
+          </View>
           <Card style={s.statRow}>
             <Metric label="Total cost" value={result.totalCost} color={colors.branch} />
             <Metric label="Explored" value={result.meta?.nodesExplored ?? "—"} color={colors.info} />
@@ -118,22 +146,35 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
             <Metric label="Prune %" value={result.meta?.pruningRatio ?? "—"} color={colors.greedy} />
           </Card>
 
-          {[...byMember.entries()].map(([id, m]) => (
-            <Card key={id} style={{ gap: spacing.sm }}>
-              <View style={s.memberHead}>
-                <Avatar name={m.name} size={32} />
-                <Text style={[s.memberName, { flex: 1 }]}>{m.name}</Text>
-                <Badge label={`${m.tasks.length} task${m.tasks.length !== 1 ? "s" : ""}`} color={colors.primary} />
-              </View>
-              {m.tasks.map((t, i) => (
-                <View key={i} style={s.assignRow}>
-                  <Ionicons name="arrow-forward" size={14} color={colors.textFaint} />
-                  <Text style={s.assignTitle}>{t.title}</Text>
-                  <Badge label={`gap ${t.cost}`} color={t.cost === 0 ? colors.success : colors.warning} />
+          {[...byMember.entries()].map(([id, m]) => {
+            const top = topSkillOf(id);
+            return (
+              <Card key={id} style={{ gap: spacing.sm }}>
+                <View style={s.memberHead}>
+                  <Avatar name={m.name} size={32} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.memberName}>{m.name}</Text>
+                    {top ? <Text style={s.memberSub}>Top skill: {top.k} ({top.v}/10)</Text> : null}
+                  </View>
+                  <Badge label={`${m.tasks.length} task${m.tasks.length !== 1 ? "s" : ""}`} color={colors.primary} />
                 </View>
-              ))}
-            </Card>
-          ))}
+                {m.tasks.map((t, i) => (
+                  <View key={i} style={s.assignBlock}>
+                    <View style={s.assignRow}>
+                      <Ionicons name="arrow-forward" size={14} color={colors.textFaint} />
+                      <Text style={s.assignTitle}>{t.title}</Text>
+                      <Badge label={`gap ${t.cost}`} color={t.cost === 0 ? colors.success : colors.warning} />
+                    </View>
+                    <Text style={s.assignReason}>
+                      {t.cost === 0
+                        ? `Perfect fit — ${m.name}'s skills meet every demand (assignment cost 0).`
+                        : `Lowest skill gap available (cost ${t.cost})${top ? ` · strongest in ${top.k} (${top.v}/10)` : ""}.`}
+                    </Text>
+                  </View>
+                ))}
+              </Card>
+            );
+          })}
 
           {/* Cost matrix */}
           {result.costMatrix?.length > 0 && (
@@ -176,6 +217,8 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
         </View>
         <Button title="Add member" icon="person-add" onPress={onAddMember} style={{ marginTop: spacing.sm }} />
       </ModalSheet>
+
+      <AlgoExplainSheet visible={!!explain} onClose={() => setExplain(null)} title="Why this assignment?" entries={explain ?? []} />
     </ScrollView>
   );
 }
@@ -205,8 +248,11 @@ const s = StyleSheet.create({
   statRow: { flexDirection: "row" },
   metricVal: { fontSize: 18, fontWeight: "800" },
   metricLabel: { fontSize: 10, color: colors.textMuted, marginTop: 2 },
-  assignRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 6, borderTopWidth: 1, borderTopColor: colors.border },
+  resultHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 4 },
+  assignBlock: { borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 6, gap: 2 },
+  assignRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   assignTitle: { flex: 1, fontSize: 13, fontWeight: "600", color: colors.text },
+  assignReason: { fontSize: 11, color: colors.textMuted, lineHeight: 15, paddingLeft: 22 },
   matrixRow: { flexDirection: "row" },
   matrixCell: { width: 56, height: 36, alignItems: "center", justifyContent: "center", borderWidth: 0.5, borderColor: colors.border },
   matrixHeadCell: { backgroundColor: colors.surfaceAlt },

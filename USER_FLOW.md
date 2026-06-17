@@ -206,3 +206,15 @@ Login → Profile setup → Create team → Add members & skills
    → Recommendations (BFS→Greedy→Knapsack→MergeSort→Topo + Boyer-Moore)
    → Analytics (Merge vs Bubble)
 ```
+
+---
+
+## Task management (productized)
+
+The **Tasks** tab is a full task-management surface with four views —
+**All Tasks / Priority / Deadline / Progress (Kanban)** — plus
+Create / Edit / Delete / Duplicate, AI-vs-Manual badges, due-date countdowns,
+and a deterministic **Workspace Health Score** on the Overview tab.
+Original AI backlogs can be restored from **Overview → Restore AI Backlog**.
+See **[TASK_MANAGEMENT_UPGRADE.md](TASK_MANAGEMENT_UPGRADE.md)** for the full
+breakdown, DAA mapping, demo flow and viva questions.

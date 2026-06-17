@@ -23,8 +23,17 @@ const TaskSchema = new mongoose.Schema(
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
 
     // ── Merge Sort secondary ordering keys ────────────────────────────────────
-    deadline:  { type: Date, default: null },     // EDF comparator
+    deadline:  { type: Date, default: null },     // EDF comparator (legacy / due date)
+    startDate: { type: Date, default: null },     // user-set start date (Deadline view)
+    dueDate:   { type: Date, default: null },     // user-set due date (Deadline view)
+    completedAt: { type: Date, default: null },   // set when status → done (deadline-success accuracy)
     progress:  { type: Number, default: 0, min: 0, max: 100 }, // progress comparator
+
+    // ── Provenance / display metadata ────────────────────────────────────────
+    source:        { type: String, enum: ["ai", "manual"], default: "manual" }, // AI vs Manual badge
+    priorityLabel: { type: String, enum: ["critical", "high", "medium", "low", null], default: null }, // explicit tier (overrides derived)
+    category:      { type: String, default: "General" }, // AI project-decomposition group (Planning / Backend / …)
+    reminderAt:    { type: Date, default: null },         // user-set reminder timestamp
 
     // ── Greedy Scheduler inputs ───────────────────────────────────────────────
     urgency:         { type: Number, min: 1, max: 5, default: 1 },

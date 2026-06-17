@@ -48,10 +48,13 @@ export default function GraphPanel({ teamId }: { teamId: string }) {
 
       {tasks.length === 0 ? (
         <EmptyState icon="git-network-outline" title="No tasks to link" message="Create tasks first, then connect them with dependencies." />
-      ) : depCount === 0 ? (
-        <EmptyState icon="git-merge-outline" title="No Dependencies Yet" message="Add a dependency to unlock DFS cycle detection, BFS levels, and topological execution order." actionLabel="Create Dependency" actionIcon="git-merge" onAction={() => setShowAdd(true)} />
       ) : (
         <View key={reloadKey} style={s.graphWrap}>
+          {depCount === 0 && (
+            <View style={s.depHintBar}>
+              <Text style={s.depHintTxt}>Add dependencies to unlock the dependency graph. The execution roadmap below works without them.</Text>
+            </View>
+          )}
           <DependencyGraphPanel teamId={teamId} />
         </View>
       )}
@@ -87,6 +90,8 @@ const s = StyleSheet.create({
   toolbar: { flexDirection: "row", alignItems: "center", gap: spacing.sm, padding: spacing.lg, paddingBottom: spacing.sm },
   sub: { fontSize: 12, color: colors.textMuted, marginTop: 1 },
   graphWrap: { flex: 1, margin: spacing.lg, marginTop: 0, borderRadius: radius.lg, overflow: "hidden", borderWidth: 1, borderColor: colors.border },
+  depHintBar: { backgroundColor: colors.accentSoft, padding: 10, borderBottomWidth: 1, borderBottomColor: colors.border },
+  depHintTxt: { fontSize: 11, color: colors.accentDark, fontWeight: "600", lineHeight: 16 },
   pickLabel: { fontSize: 13, fontWeight: "700", color: colors.text },
   picker: { maxHeight: 150, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, backgroundColor: colors.surface },
   pickRow: { flexDirection: "row", alignItems: "center", gap: 8, padding: 10, borderBottomWidth: 1, borderBottomColor: colors.border, borderLeftWidth: 3, borderLeftColor: "transparent" },

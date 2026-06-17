@@ -1,401 +1,292 @@
 /**
- * DependencyGraphPanel
+ * DependencyGraphPanel — redesigned dependency visualization.
+ * ---------------------------------------------------------------------------------
+ * Two surfaces, both generated dynamically from the live task DAG:
+ *   1. Execution Roadmap — the Topological Sort (Kahn's) order rendered as a
+ *      vertical Task ↓ Task ↓ Task plan, coloured by priority + status.
+ *   2. Dependency Graph — an actual node-link diagram laid out by BFS levels,
+ *      with zoom, pan, node-click and dependency highlighting.
  *
- * Renders a mobile-friendly dependency visualization panel for a given team.
- * Shows three DAA algorithm outputs:
- *   1. DFS traversal order with discovery/finish timestamps
- *   2. BFS level-annotated traversal (parallelisation tiers)
- *   3. Topological Sort (Kahn's algorithm) – linear execution order
- *
- * Design: dark-card layout consistent with NexusFlow's existing palette.
- * The graph is represented as an interactive node list (SVG-free) because
- * React Native's layout engine does not natively support canvas drawing,
- * and a pure RN approach is most portable across iOS/Android/web.
+ * DFS and BFS still run on the server (powering the layout + cycle detection) but
+ * are no longer surfaced as separate tabs — the canonical algorithms are reused,
+ * not duplicated.
  */
-
-import React, { useState } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  ActivityIndicator,
-  StyleSheet,
-} from "react-native";
+import React, { useMemo, useRef, useState } from "react";
+import { View, Text, ScrollView, Pressable, ActivityIndicator, StyleSheet, PanResponder, Animated } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { useDependencyGraph, GraphNode } from "@/hooks/useDependencyGraph";
-import { colors } from "@/theme";
+import { colors, radius, PRIORITY_META, priorityKeyFromScore, statusMeta, deadlineMeta } from "@/theme";
 
-// ── Palette (mapped onto the NexusFlow light/cream design system) ──────────────
-const C = {
-  bg:         colors.bg,
-  surface:    colors.surface,
-  surfaceAlt: colors.surfaceAlt,
-  border:     colors.border,
-  accent:     colors.primary,   // algorithm highlight
-  dfsColor:   colors.dfs,       // terracotta
-  bfsColor:   colors.bfs,       // green
-  topoColor:  colors.topo,      // plum
-  danger:     colors.danger,
-  textPrimary:colors.text,
-  textMuted:  colors.textMuted,
-  todo:       colors.surfaceAlt,
-  inProgress: colors.infoSoft,
-  done:       colors.successSoft,
-  todoText:   colors.textMuted,
-  inProgressText: colors.info,
-  doneText:   colors.success,
-};
+const NODE_W = 140, NODE_H = 58, COL_GAP = 64, ROW_GAP = 20;
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
-const statusStyle = (s: string) => ({
-  backgroundColor: s === "done" ? C.done : s === "in_progress" ? C.inProgress : C.todo,
-});
-const statusLabel = (s: string) =>
-  s === "done" ? "Done" : s === "in_progress" ? "In Progress" : "To Do";
-const statusTextColor = (s: string) =>
-  s === "done" ? C.doneText : s === "in_progress" ? C.inProgressText : C.todoText;
+const statusColor = (s: string) => statusMeta[s as keyof typeof statusMeta]?.color ?? colors.textMuted;
+const tierOf = (score: number) => PRIORITY_META[priorityKeyFromScore(score ?? 0)];
 
-type Tab = "dfs" | "bfs" | "topo";
+export default function DependencyGraphPanel({ teamId }: { teamId: string }) {
+  const { graph, loading, error, refetch } = useDependencyGraph(teamId);
+  const nodeMap = useMemo(() => new Map(graph.nodes.map((n) => [n.id, n])), [graph.nodes]);
 
-// ── Sub-components ─────────────────────────────────────────────────────────────
-function TabBar({ active, onSelect }: { active: Tab; onSelect: (t: Tab) => void }) {
-  const tabs: { id: Tab; label: string; color: string }[] = [
-    { id: "dfs",  label: "DFS",  color: C.dfsColor },
-    { id: "bfs",  label: "BFS",  color: C.bfsColor },
-    { id: "topo", label: "Topo Sort", color: C.topoColor },
-  ];
+  if (loading) {
+    return <View style={s.center}><ActivityIndicator color={colors.primary} /><Text style={s.muted}>Computing roadmap…</Text></View>;
+  }
+  if (error) {
+    return <View style={s.center}><Text style={{ color: colors.danger }}>Failed to load graph: {error}</Text><Pressable onPress={refetch} style={s.retry}><Text style={s.retryTxt}>Retry</Text></Pressable></View>;
+  }
+  if (!graph.nodes.length) {
+    return <View style={s.center}><Text style={s.emptyTitle}>No tasks yet</Text><Text style={s.muted}>Create tasks to visualise the dependency roadmap.</Text></View>;
+  }
+
+  const topoOrder = graph.topoResult.order;
+
   return (
-    <View style={s.tabRow}>
-      {tabs.map((t) => (
-        <TouchableOpacity
-          key={t.id}
-          onPress={() => onSelect(t.id)}
-          style={[s.tab, active === t.id && { borderBottomColor: t.color, borderBottomWidth: 2 }]}
-        >
-          <Text style={[s.tabText, active === t.id && { color: t.color }]}>{t.label}</Text>
-        </TouchableOpacity>
-      ))}
-    </View>
-  );
-}
+    <ScrollView contentContainerStyle={s.scroll}>
+      {graph.topoResult.hasCycle && (
+        <View style={s.cycle}><Ionicons name="warning" size={16} color={colors.danger} /><Text style={s.cycleTxt}>Circular dependency detected — execution order is partial until the cycle is resolved.</Text></View>
+      )}
 
-function NodeBadge({ node, rank, rankLabel, accentColor, extra, nodeMap }: {
-  node: GraphNode;
-  rank: number;
-  rankLabel: string;
-  accentColor: string;
-  extra?: string;
-  nodeMap?: Map<string, GraphNode>;
-}) {
-  return (
-    <View style={s.nodeBadge}>
-      <View style={[s.rankBubble, { backgroundColor: accentColor }]}>
-        <Text style={s.rankText}>{rank}</Text>
-      </View>
-      <View style={s.nodeInfo}>
-        <Text style={s.nodeTitle} numberOfLines={1}>{node.title}</Text>
-        <View style={s.nodeMetaRow}>
-          <View style={[s.statusChip, statusStyle(node.status)]}>
-            <Text style={[s.statusChipText, { color: statusTextColor(node.status) }]}>
-              {statusLabel(node.status)}
-            </Text>
-          </View>
-          <Text style={s.nodeMeta}>P{node.priority}</Text>
-          <Text style={s.nodeMeta}>{node.estimatedHours}h</Text>
-          {extra ? <Text style={[s.nodeMeta, { color: accentColor }]}>{extra}</Text> : null}
+      {/* ── Execution Roadmap (Topological Sort) ── */}
+      <View style={s.sectionHead}>
+        <View style={[s.sectionIcon, { backgroundColor: colors.topo + "1a" }]}><Ionicons name="map" size={16} color={colors.topo} /></View>
+        <View style={{ flex: 1 }}>
+          <Text style={s.sectionTitle}>Execution Roadmap</Text>
+          <Text style={s.sectionSub}>Topological Sort (Kahn's) · O(V+E) · {topoOrder.length} steps</Text>
         </View>
-        {node.dependencies.length > 0 && (
-          <View style={s.depChips}>
-            <Text style={s.depHint}>↳ depends on</Text>
-            {node.dependencies.map((depId) => {
-              const dep = nodeMap?.get(depId);
-              return (
-                <View key={depId} style={[s.depChip, { borderColor: accentColor }]}>
-                  <Text style={[s.depChipText, { color: accentColor }]} numberOfLines={1}>
-                    {dep?.title ?? depId}
-                  </Text>
+      </View>
+
+      <View style={s.roadmap}>
+        {topoOrder.map((id, i) => {
+          const node = nodeMap.get(id);
+          if (!node) return null;
+          const tier = tierOf(node.priority);
+          return (
+            <View key={id}>
+              <View style={[s.roadCard, { borderLeftColor: tier.color }]}>
+                <View style={[s.roadStep, { backgroundColor: colors.topo }]}><Text style={s.roadStepTxt}>{i + 1}</Text></View>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.roadTitle} numberOfLines={1}>{node.title}</Text>
+                  <View style={s.roadMeta}>
+                    <View style={[s.statusDot, { backgroundColor: statusColor(node.status) }]} />
+                    <Text style={s.roadMetaTxt}>{statusMeta[node.status as keyof typeof statusMeta]?.label ?? node.status}</Text>
+                    <View style={[s.tierChip, { backgroundColor: tier.bg }]}><Text style={[s.tierChipTxt, { color: tier.color }]}>{tier.label}</Text></View>
+                    {node.dependencies.length > 0 && <Text style={s.roadDeps}>↳ {node.dependencies.length} dep{node.dependencies.length !== 1 ? "s" : ""}</Text>}
+                  </View>
                 </View>
-              );
-            })}
-          </View>
-        )}
+              </View>
+              {i < topoOrder.length - 1 && <View style={s.roadConnector} />}
+            </View>
+          );
+        })}
       </View>
-    </View>
-  );
-}
 
-function DfsPanel({ order, timestamps, nodeMap }: {
-  order: string[];
-  timestamps: Record<string, { disc: number; fin: number }>;
-  nodeMap: Map<string, GraphNode>;
-}) {
-  return (
-    <View>
-      <View style={s.algorithmCard}>
-        <Text style={[s.algoTitle, { color: C.dfsColor }]}>Depth-First Search</Text>
-        <Text style={s.algoDesc}>
-          Recursively explores each task branch to its deepest dependency before backtracking.
-          Discovery (d) and finish (f) timestamps reveal call-stack depth and back-edge cycles.
-        </Text>
-        <View style={s.complexityRow}>
-          <View style={s.complexityChip}><Text style={s.complexityText}>Time O(V+E)</Text></View>
-          <View style={s.complexityChip}><Text style={s.complexityText}>Space O(V)</Text></View>
+      {/* ── Node-link Dependency Graph ── */}
+      <View style={s.sectionHead}>
+        <View style={[s.sectionIcon, { backgroundColor: colors.primary + "1a" }]}><Ionicons name="git-network" size={16} color={colors.primary} /></View>
+        <View style={{ flex: 1 }}>
+          <Text style={s.sectionTitle}>Dependency Graph</Text>
+          <Text style={s.sectionSub}>{graph.nodes.length} nodes · {graph.edges.length} edges · pinch-free zoom & pan</Text>
         </View>
       </View>
-      <Text style={s.sectionLabel}>TRAVERSAL ORDER</Text>
-      {order.map((id, i) => {
-        const node = nodeMap.get(id);
-        if (!node) return null;
-        const ts = timestamps[id];
-        const extra = ts ? `d:${ts.disc} f:${ts.fin}` : "";
-        return (
-          <NodeBadge key={id} node={node} rank={i + 1} rankLabel="DFS" accentColor={C.dfsColor} extra={extra} nodeMap={nodeMap} />
-        );
-      })}
-    </View>
+      <GraphCanvas nodes={graph.nodes} edges={graph.edges} levels={graph.bfsResult.levels} nodeMap={nodeMap} />
+
+      {/* Legend */}
+      <View style={s.legend}>
+        <Text style={s.legendLabel}>Priority:</Text>
+        {(["critical", "high", "medium", "low"] as const).map((k) => (
+          <View key={k} style={s.legendItem}><View style={[s.legendDot, { backgroundColor: PRIORITY_META[k].color }]} /><Text style={s.legendTxt}>{PRIORITY_META[k].label}</Text></View>
+        ))}
+      </View>
+      <View style={{ height: 24 }} />
+    </ScrollView>
   );
 }
 
-function BfsPanel({ order, levels, nodeMap }: {
-  order: string[];
+// ── Pannable / zoomable node-link canvas ──────────────────────────────────────
+function GraphCanvas({ nodes, edges, levels, nodeMap }: {
+  nodes: GraphNode[];
+  edges: { from: string; to: string }[];
   levels: Record<string, number>;
   nodeMap: Map<string, GraphNode>;
 }) {
-  const maxLevel = Math.max(0, ...Object.values(levels).filter(l => l >= 0));
+  const [scale, setScale] = useState(1);
+  const [selected, setSelected] = useState<string | null>(null);
+  const pan = useRef(new Animated.ValueXY()).current;
+
+  // Layout: column = BFS level, row = index within level.
+  const { pos, width, height } = useMemo(() => {
+    const maxLevel = Math.max(0, ...Object.values(levels).filter((l) => l >= 0));
+    const colOf = (id: string) => { const l = levels[id]; return l < 0 || l === undefined ? maxLevel + 1 : l; };
+    const rowCounter: Record<number, number> = {};
+    const pos: Record<string, { x: number; y: number }> = {};
+    for (const n of nodes) {
+      const col = colOf(n.id);
+      const row = rowCounter[col] ?? 0;
+      rowCounter[col] = row + 1;
+      pos[n.id] = { x: col * (NODE_W + COL_GAP), y: row * (NODE_H + ROW_GAP) };
+    }
+    const cols = (maxLevel + 2);
+    const maxRows = Math.max(1, ...Object.values(rowCounter));
+    return { pos, width: cols * (NODE_W + COL_GAP), height: maxRows * (NODE_H + ROW_GAP) + 8 };
+  }, [nodes, levels]);
+
+  // Highlight set when a node is selected (itself + direct deps + dependents).
+  const connected = useMemo(() => {
+    if (!selected) return null;
+    const set = new Set<string>([selected]);
+    for (const e of edges) {
+      if (e.to === selected) set.add(e.from);
+      if (e.from === selected) set.add(e.to);
+    }
+    return set;
+  }, [selected, edges]);
+
+  const responder = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > 6 || Math.abs(g.dy) > 6,
+      onPanResponderGrant: () => { pan.setOffset({ x: (pan.x as any)._value, y: (pan.y as any)._value }); pan.setValue({ x: 0, y: 0 }); },
+      onPanResponderMove: Animated.event([null, { dx: pan.x, dy: pan.y }], { useNativeDriver: false }),
+      onPanResponderRelease: () => pan.flattenOffset(),
+      onPanResponderTerminate: () => pan.flattenOffset(),
+    })
+  ).current;
+
+  const center = (id: string) => ({ x: pos[id].x + NODE_W / 2, y: pos[id].y + NODE_H / 2 });
+
   return (
-    <View>
-      <View style={s.algorithmCard}>
-        <Text style={[s.algoTitle, { color: C.bfsColor }]}>Breadth-First Search</Text>
-        <Text style={s.algoDesc}>
-          Explores tasks level by level from independent source tasks. Each level represents a
-          sprint tier: tasks at the same level can be parallelised safely.
-        </Text>
-        <View style={s.complexityRow}>
-          <View style={s.complexityChip}><Text style={s.complexityText}>Time O(V+E)</Text></View>
-          <View style={s.complexityChip}><Text style={s.complexityText}>Space O(V)</Text></View>
-        </View>
+    <View style={s.canvasWrap}>
+      {/* Zoom controls */}
+      <View style={s.zoomBar}>
+        <Pressable style={s.zoomBtn} onPress={() => setScale((z) => Math.max(0.5, +(z - 0.1).toFixed(2)))}><Ionicons name="remove" size={18} color={colors.text} /></Pressable>
+        <Text style={s.zoomTxt}>{Math.round(scale * 100)}%</Text>
+        <Pressable style={s.zoomBtn} onPress={() => setScale((z) => Math.min(1.8, +(z + 0.1).toFixed(2)))}><Ionicons name="add" size={18} color={colors.text} /></Pressable>
+        <Pressable style={s.zoomBtn} onPress={() => { setScale(1); pan.setValue({ x: 0, y: 0 }); setSelected(null); }}><Ionicons name="refresh" size={16} color={colors.text} /></Pressable>
       </View>
-      {Array.from({ length: maxLevel + 1 }, (_, lvl) => {
-        const tier = order.filter(id => levels[id] === lvl);
-        if (!tier.length) return null;
+
+      <View style={s.viewport} {...responder.panHandlers}>
+        <Animated.View style={[{ width, height }, { transform: [{ translateX: pan.x }, { translateY: pan.y }, { scale }] }]}>
+          {/* Edges */}
+          {edges.map((e, i) => {
+            if (!pos[e.from] || !pos[e.to]) return null;
+            const a = center(e.from), b = center(e.to);
+            const dx = b.x - a.x, dy = b.y - a.y;
+            const len = Math.hypot(dx, dy);
+            const angle = Math.atan2(dy, dx) * (180 / Math.PI);
+            const active = selected && (e.from === selected || e.to === selected);
+            const midX = (a.x + b.x) / 2, midY = (a.y + b.y) / 2;
+            // Center the line at the edge midpoint and rotate around its own
+            // centre — no transformOrigin needed (works on native + web).
+            return (
+              <View key={i} style={{
+                position: "absolute", left: midX - len / 2, top: midY - 1, width: len, height: 2,
+                backgroundColor: active ? colors.primary : colors.borderStrong,
+                opacity: selected && !active ? 0.25 : 1,
+                transform: [{ rotateZ: `${angle}deg` }],
+              }} />
+            );
+          })}
+
+          {/* Nodes */}
+          {nodes.map((n) => {
+            const p = pos[n.id];
+            const tier = tierOf(n.priority);
+            const dim = connected ? !connected.has(n.id) : false;
+            const isSel = selected === n.id;
+            return (
+              <Pressable
+                key={n.id}
+                onPress={() => setSelected(isSel ? null : n.id)}
+                style={[
+                  s.node,
+                  { left: p.x, top: p.y, width: NODE_W, height: NODE_H, borderLeftColor: tier.color },
+                  isSel && s.nodeSelected,
+                  dim && { opacity: 0.3 },
+                ]}
+              >
+                <View style={s.nodeTop}>
+                  <View style={[s.statusDot, { backgroundColor: statusColor(n.status) }]} />
+                  <Text style={s.nodeTitle} numberOfLines={2}>{n.title}</Text>
+                </View>
+                <View style={[s.nodeTier, { backgroundColor: tier.bg }]}><Text style={[s.nodeTierTxt, { color: tier.color }]}>{tier.label} · P{n.priority}</Text></View>
+              </Pressable>
+            );
+          })}
+        </Animated.View>
+      </View>
+
+      {selected && nodeMap.get(selected) && (() => {
+        const n = nodeMap.get(selected)!;
+        const tier = tierOf(n.priority);
+        const due = n.dueDate ? deadlineMeta(n.dueDate) : null;
+        const prereqs = n.dependencies.map((d) => nodeMap.get(d)?.title).filter(Boolean);
+        const dependents = edges.filter((e) => e.from === selected).map((e) => nodeMap.get(e.to)?.title).filter(Boolean);
         return (
-          <View key={lvl}>
-            <View style={s.levelHeader}>
-              <View style={[s.levelLine, { backgroundColor: C.bfsColor }]} />
-              <Text style={[s.levelLabel, { color: C.bfsColor }]}>Level {lvl} — {tier.length} task{tier.length > 1 ? "s" : ""} can run in parallel</Text>
-            </View>
-            {tier.map((id, i) => {
-              const node = nodeMap.get(id);
-              if (!node) return null;
-              return <NodeBadge key={id} node={node} rank={i + 1} rankLabel="BFS" accentColor={C.bfsColor} extra={`L${lvl}`} nodeMap={nodeMap} />;
-            })}
+          <View style={s.detail}>
+            <Text style={s.detailTitle}>{n.title}</Text>
+            <View style={s.detailRow}><Text style={s.detailKey}>Priority</Text><View style={[s.tierChip, { backgroundColor: tier.bg }]}><Text style={[s.tierChipTxt, { color: tier.color }]}>{tier.label} · {n.priority}</Text></View></View>
+            <View style={s.detailRow}><Text style={s.detailKey}>Status</Text><Text style={s.detailVal}>{statusMeta[n.status as keyof typeof statusMeta]?.label ?? n.status}</Text></View>
+            <View style={s.detailRow}><Text style={s.detailKey}>Assignee</Text><Text style={s.detailVal}>{n.assignee ?? "Unassigned"}</Text></View>
+            <View style={s.detailRow}><Text style={s.detailKey}>Deadline</Text><Text style={[s.detailVal, due && { color: due.color, fontWeight: "700" }]}>{due ? due.text : "—"}</Text></View>
+            <View style={s.detailRow}><Text style={s.detailKey}>Depends on</Text><Text style={s.detailVal}>{prereqs.length ? prereqs.join(", ") : "none"}</Text></View>
+            <View style={s.detailRow}><Text style={s.detailKey}>Required by</Text><Text style={s.detailVal}>{dependents.length ? dependents.join(", ") : "none"}</Text></View>
+            <Text style={s.detailHint}>Tap the node again to clear selection</Text>
           </View>
         );
-      })}
-      {order.filter(id => levels[id] === -1).map((id) => {
-        const node = nodeMap.get(id);
-        if (!node) return null;
-        return <NodeBadge key={id} node={node} rank={0} rankLabel="" accentColor={C.textMuted} extra="isolated" nodeMap={nodeMap} />;
-      })}
+      })()}
     </View>
   );
 }
 
-function TopoPanel({ order, hasCycle, nodeMap }: {
-  order: string[];
-  hasCycle: boolean;
-  nodeMap: Map<string, GraphNode>;
-}) {
-  return (
-    <View>
-      <View style={s.algorithmCard}>
-        <Text style={[s.algoTitle, { color: C.topoColor }]}>Topological Sort (Kahn's)</Text>
-        <Text style={s.algoDesc}>
-          Produces a valid linear execution schedule respecting all task dependencies.
-          Uses in-degree tracking: tasks with no remaining prerequisites are queued first.
-        </Text>
-        <View style={s.complexityRow}>
-          <View style={s.complexityChip}><Text style={s.complexityText}>Time O(V+E)</Text></View>
-          <View style={s.complexityChip}><Text style={s.complexityText}>Space O(V)</Text></View>
-        </View>
-      </View>
-      {hasCycle && (
-        <View style={s.cycleWarning}>
-          <Text style={s.cycleText}>⚠ Circular dependency detected — full ordering not possible</Text>
-        </View>
-      )}
-      <Text style={s.sectionLabel}>EXECUTION ORDER</Text>
-      {order.map((id, i) => {
-        const node = nodeMap.get(id);
-        if (!node) return null;
-        return (
-          <NodeBadge key={id} node={node} rank={i + 1} rankLabel="Step" accentColor={C.topoColor} nodeMap={nodeMap} />
-        );
-      })}
-    </View>
-  );
-}
-
-// ── Main Component ─────────────────────────────────────────────────────────────
-export default function DependencyGraphPanel({ teamId }: { teamId: string }) {
-  const { graph, loading, error, refetch } = useDependencyGraph(teamId);
-  const [activeTab, setActiveTab] = useState<Tab>("topo");
-
-  const nodeMap = new Map(graph.nodes.map((n) => [n.id, n]));
-
-  if (loading) {
-    return (
-      <View style={s.loadingBox}>
-        <ActivityIndicator color={C.accent} />
-        <Text style={s.loadingText}>Computing dependency graph…</Text>
-      </View>
-    );
-  }
-
-  if (error) {
-    return (
-      <View style={s.errorBox}>
-        <Text style={s.errorText}>Failed to load graph: {error}</Text>
-        <TouchableOpacity onPress={refetch} style={s.retryBtn}>
-          <Text style={s.retryText}>Retry</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
-  if (!graph.nodes.length) {
-    return (
-      <View style={s.emptyBox}>
-        <Text style={s.emptyTitle}>No tasks yet</Text>
-        <Text style={s.emptyDesc}>Create tasks in this team to visualise the dependency graph.</Text>
-      </View>
-    );
-  }
-
-  return (
-    <View style={s.panel}>
-      {/* Header */}
-      <View style={s.header}>
-        <View>
-          <Text style={s.panelTitle}>Dependency Graph</Text>
-          <Text style={s.panelSub}>{graph.nodes.length} tasks · {graph.edges.length} dependencies</Text>
-        </View>
-        <TouchableOpacity onPress={refetch} style={s.refreshBtn}>
-          <Text style={s.refreshText}>↻</Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Stats row */}
-      <View style={s.statsRow}>
-        <View style={s.statChip}>
-          <Text style={[s.statVal, { color: C.dfsColor }]}>{graph.dfsResult.order.length}</Text>
-          <Text style={s.statLbl}>DFS nodes</Text>
-        </View>
-        <View style={s.statChip}>
-          <Text style={[s.statVal, { color: C.bfsColor }]}>
-            {Math.max(0, ...Object.values(graph.bfsResult.levels).filter(l => l >= 0)) + 1}
-          </Text>
-          <Text style={s.statLbl}>BFS levels</Text>
-        </View>
-        <View style={s.statChip}>
-          <Text style={[s.statVal, { color: C.topoColor }]}>{graph.topoResult.order.length}</Text>
-          <Text style={s.statLbl}>Topo steps</Text>
-        </View>
-        {graph.topoResult.hasCycle && (
-          <View style={[s.statChip, { backgroundColor: "#450A0A" }]}>
-            <Text style={[s.statVal, { color: C.danger }]}>!</Text>
-            <Text style={[s.statLbl, { color: C.danger }]}>Cycle</Text>
-          </View>
-        )}
-      </View>
-
-      <TabBar active={activeTab} onSelect={setActiveTab} />
-
-      <ScrollView style={s.scroll} showsVerticalScrollIndicator={false}>
-        {activeTab === "dfs" && (
-          <DfsPanel
-            order={graph.dfsResult.order}
-            timestamps={graph.dfsResult.timestamps}
-            nodeMap={nodeMap}
-          />
-        )}
-        {activeTab === "bfs" && (
-          <BfsPanel
-            order={graph.bfsResult.order}
-            levels={graph.bfsResult.levels}
-            nodeMap={nodeMap}
-          />
-        )}
-        {activeTab === "topo" && (
-          <TopoPanel
-            order={graph.topoResult.order}
-            hasCycle={graph.topoResult.hasCycle}
-            nodeMap={nodeMap}
-          />
-        )}
-        <View style={{ height: 32 }} />
-      </ScrollView>
-    </View>
-  );
-}
-
-// ── Styles ─────────────────────────────────────────────────────────────────────
 const s = StyleSheet.create({
-  panel:        { flex: 1, backgroundColor: C.bg },
-  loadingBox:   { flex: 1, alignItems: "center", justifyContent: "center", gap: 12, padding: 32 },
-  loadingText:  { color: C.textMuted, fontSize: 14 },
-  errorBox:     { padding: 24, alignItems: "center", gap: 12 },
-  errorText:    { color: C.danger, textAlign: "center" },
-  retryBtn:     { backgroundColor: C.surfaceAlt, paddingHorizontal: 20, paddingVertical: 8, borderRadius: 8 },
-  retryText:    { color: C.textPrimary, fontWeight: "600" },
-  emptyBox:     { padding: 40, alignItems: "center", gap: 8 },
-  emptyTitle:   { color: C.textPrimary, fontSize: 18, fontWeight: "700" },
-  emptyDesc:    { color: C.textMuted, textAlign: "center", lineHeight: 20 },
+  scroll: { padding: 16, gap: 12 },
+  center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 10, padding: 32 },
+  muted: { color: colors.textMuted, fontSize: 13, textAlign: "center" },
+  emptyTitle: { color: colors.text, fontSize: 17, fontWeight: "800" },
+  retry: { backgroundColor: colors.surfaceAlt, paddingHorizontal: 18, paddingVertical: 8, borderRadius: 8 },
+  retryTxt: { color: colors.text, fontWeight: "700" },
 
-  header:       { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", padding: 16, paddingBottom: 8 },
-  panelTitle:   { color: C.textPrimary, fontSize: 18, fontWeight: "800", letterSpacing: -0.3 },
-  panelSub:     { color: C.textMuted, fontSize: 12, marginTop: 2 },
-  refreshBtn:   { backgroundColor: C.surfaceAlt, width: 36, height: 36, borderRadius: 10, alignItems: "center", justifyContent: "center" },
-  refreshText:  { color: C.textPrimary, fontSize: 18 },
+  cycle: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.dangerSoft, borderRadius: radius.md, padding: 12, borderWidth: 1, borderColor: colors.danger + "55" },
+  cycleTxt: { flex: 1, fontSize: 12, color: colors.danger, fontWeight: "600", lineHeight: 17 },
 
-  statsRow:     { flexDirection: "row", gap: 8, paddingHorizontal: 16, marginBottom: 4 },
-  statChip:     { flex: 1, backgroundColor: C.surface, borderRadius: 10, paddingVertical: 8, alignItems: "center", borderWidth: 1, borderColor: C.border },
-  statVal:      { fontSize: 18, fontWeight: "800" },
-  statLbl:      { color: C.textMuted, fontSize: 10, marginTop: 1 },
+  sectionHead: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 4 },
+  sectionIcon: { width: 30, height: 30, borderRadius: 9, alignItems: "center", justifyContent: "center" },
+  sectionTitle: { fontSize: 15, fontWeight: "800", color: colors.text },
+  sectionSub: { fontSize: 11, color: colors.textMuted, marginTop: 1 },
 
-  tabRow:       { flexDirection: "row", borderBottomWidth: 1, borderBottomColor: C.border, marginHorizontal: 16, marginBottom: 12 },
-  tab:          { flex: 1, alignItems: "center", paddingVertical: 10 },
-  tabText:      { color: C.textMuted, fontSize: 13, fontWeight: "600" },
+  roadmap: { gap: 0 },
+  roadCard: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, borderLeftWidth: 4, padding: 10 },
+  roadStep: { width: 26, height: 26, borderRadius: 8, alignItems: "center", justifyContent: "center" },
+  roadStepTxt: { color: "#fff", fontSize: 12, fontWeight: "800" },
+  roadTitle: { fontSize: 13.5, fontWeight: "700", color: colors.text },
+  roadMeta: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 3, flexWrap: "wrap" },
+  roadMetaTxt: { fontSize: 11, color: colors.textMuted, fontWeight: "600" },
+  roadDeps: { fontSize: 11, color: colors.topo, fontWeight: "700" },
+  roadConnector: { width: 2, height: 12, backgroundColor: colors.borderStrong, marginLeft: 22, marginVertical: 2 },
+  statusDot: { width: 8, height: 8, borderRadius: 4 },
+  tierChip: { paddingHorizontal: 6, paddingVertical: 1, borderRadius: 4 },
+  tierChipTxt: { fontSize: 9, fontWeight: "800", letterSpacing: 0.2 },
 
-  scroll:       { flex: 1, paddingHorizontal: 16 },
+  canvasWrap: { backgroundColor: colors.surfaceAlt, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, overflow: "hidden" },
+  zoomBar: { flexDirection: "row", alignItems: "center", gap: 8, padding: 8, borderBottomWidth: 1, borderBottomColor: colors.border },
+  zoomBtn: { width: 32, height: 32, borderRadius: 8, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" },
+  zoomTxt: { fontSize: 12, fontWeight: "800", color: colors.text, minWidth: 44, textAlign: "center" },
+  viewport: { height: 320, overflow: "hidden" },
 
-  algorithmCard:{ backgroundColor: C.surface, borderRadius: 12, padding: 14, marginBottom: 14, borderWidth: 1, borderColor: C.border },
-  algoTitle:    { fontSize: 14, fontWeight: "800", marginBottom: 4, letterSpacing: 0.2 },
-  algoDesc:     { color: C.textMuted, fontSize: 12, lineHeight: 17 },
-  complexityRow:{ flexDirection: "row", gap: 8, marginTop: 10 },
-  complexityChip:{ backgroundColor: C.surfaceAlt, borderRadius: 6, paddingHorizontal: 10, paddingVertical: 4 },
-  complexityText:{ color: C.textPrimary, fontSize: 11, fontWeight: "700", fontVariant: ["tabular-nums"] },
+  node: { position: "absolute", backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.border, borderLeftWidth: 4, padding: 8, gap: 4, justifyContent: "space-between" },
+  nodeSelected: { borderColor: colors.primary, borderWidth: 1.5, borderLeftWidth: 4 },
+  nodeTop: { flexDirection: "row", gap: 6, alignItems: "flex-start" },
+  nodeTitle: { flex: 1, fontSize: 11, fontWeight: "700", color: colors.text },
+  nodeTier: { alignSelf: "flex-start", paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4 },
+  nodeTierTxt: { fontSize: 8.5, fontWeight: "800" },
 
-  sectionLabel: { color: C.textMuted, fontSize: 10, fontWeight: "700", letterSpacing: 1.2, marginBottom: 8, marginTop: 2 },
+  detail: { padding: 12, borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: colors.surface, gap: 4 },
+  detailTitle: { fontSize: 13, fontWeight: "800", color: colors.text, marginBottom: 2 },
+  detailRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  detailKey: { width: 84, fontSize: 11, fontWeight: "700", color: colors.textFaint },
+  detailVal: { flex: 1, fontSize: 11, color: colors.text, fontWeight: "600" },
+  detailHint: { fontSize: 10, color: colors.textFaint, marginTop: 2, fontStyle: "italic" },
 
-  nodeBadge:    { flexDirection: "row", alignItems: "flex-start", backgroundColor: C.surface, borderRadius: 10, padding: 12, marginBottom: 8, gap: 10, borderWidth: 1, borderColor: C.border },
-  rankBubble:   { width: 28, height: 28, borderRadius: 8, alignItems: "center", justifyContent: "center", marginTop: 1, flexShrink: 0 },
-  rankText:     { color: "#fff", fontSize: 12, fontWeight: "800" },
-  nodeInfo:     { flex: 1 },
-  nodeTitle:    { color: C.textPrimary, fontSize: 14, fontWeight: "600", marginBottom: 4 },
-  nodeMetaRow:  { flexDirection: "row", flexWrap: "wrap", gap: 6, alignItems: "center" },
-  nodeMeta:     { color: C.textMuted, fontSize: 11 },
-  statusChip:   { borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2 },
-  statusChipText:{ fontSize: 10, fontWeight: "700" },
-  depHint:      { color: C.textMuted, fontSize: 11, marginTop: 4 },
-  depChips:     { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 4, marginTop: 4 },
-  depChip:      { borderWidth: 1, borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2, maxWidth: 140 },
-  depChipText:  { fontSize: 10, fontWeight: "600" },
-
-  levelHeader:  { flexDirection: "row", alignItems: "center", gap: 8, marginVertical: 8 },
-  levelLine:    { width: 3, height: 14, borderRadius: 2 },
-  levelLabel:   { fontSize: 12, fontWeight: "700" },
-
-  cycleWarning: { backgroundColor: "#450A0A", borderRadius: 10, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: "#7F1D1D" },
-  cycleText:    { color: C.danger, fontSize: 13, fontWeight: "600" },
+  legend: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 10 },
+  legendLabel: { fontSize: 11, fontWeight: "700", color: colors.textMuted },
+  legendItem: { flexDirection: "row", alignItems: "center", gap: 4 },
+  legendDot: { width: 9, height: 9, borderRadius: 5 },
+  legendTxt: { fontSize: 10, fontWeight: "700", color: colors.textMuted },
 });

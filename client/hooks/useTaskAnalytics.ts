@@ -10,8 +10,18 @@ export type SortMetrics = {
   complexity: string;
 };
 
+export type SortAlgoMetric = {
+  key: string;
+  name: string;
+  complexity: string;
+  timeMs: number;
+  comparisons: number;
+  swaps: number;
+};
+
 export type TaskAnalytics = {
   n: number;
+  algorithms?: SortAlgoMetric[];
   bubbleSort?: SortMetrics;
   mergeSort?: SortMetrics;
   skippedBubbleSort?: boolean;

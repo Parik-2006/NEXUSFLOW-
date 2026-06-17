@@ -6,7 +6,8 @@ import { requireAuth } from "../auth.js";
 import { greedySortTasks } from "../algorithms/greedyScheduler.js";
 import { assignTasksToMembers } from "../algorithms/branchAndBound.js";
 import { buildGraph, dfs, bfs, topologicalSort as topoSortGraph } from "../algorithms/graphTraversal.js";
-import { compareSortAlgorithms, mergeSortTasks } from "../utils/sortAlgorithms.js";
+import { compareSortAlgorithms, mergeSortTasks, quickSortTasks } from "../utils/sortAlgorithms.js";
+import { decomposeProject } from "../algorithms/projectDecomposer.js";
 
 const router = Router();
 
@@ -44,7 +45,7 @@ router.get("/teams/:teamId", requireAuth, async (req, res) => {
 // The creator is always added as the first member so they appear in the roster.
 router.post("/teams", requireAuth, async (req, res) => {
   try {
-    const { name, members = [], tasks = [] } = req.body ?? {};
+    const { name, members = [], tasks = [], projectTitle = "", projectDescription = "" } = req.body ?? {};
     if (!name || !name.trim()) return res.status(400).json({ error: "Team name is required." });
 
     const oid = () => new mongoose.Types.ObjectId();
@@ -57,23 +58,39 @@ router.post("/teams", requireAuth, async (req, res) => {
       .filter((m) => m && (m.name?.trim()))
       .map((m) => ({ userId: oid(), name: m.name.trim(), skills: normalizeSkills(m.skills) }));
 
-    const team = await Team.create({ name: name.trim(), members: [creator, ...extraMembers] });
+    // Build the starter backlog. When a project description exists we DECOMPOSE
+    // it into a grouped, professional backlog (Planning / Backend / Frontend / …)
+    // — the description is never copied verbatim. Explicit client `tasks` are
+    // only used as a fallback when no description is provided.
+    const desc = String(projectDescription).trim();
+    const generated = desc ? decomposeProject(String(projectTitle).trim(), desc) : [];
+    const sourceTasks = generated.length ? generated : (Array.isArray(tasks) ? tasks : []);
 
-    // Optional: create initial tasks supplied with the team.
-    if (Array.isArray(tasks) && tasks.length) {
-      const docs = tasks
-        .filter((t) => t && t.title?.trim())
-        .map((t) => ({
-          teamId: team._id,
-          title: t.title.trim(),
-          urgency: clampInt(t.urgency, 1, 5, 1),
-          impact: clampInt(t.impact, 1, 5, 1),
-          businessValue: numOrNull(t.businessValue),
-          estimatedHours: numOrNull(t.estimatedHours),
-        }));
-      // Use create (one-by-one) so the pre-save hook computes priorityScore.
-      for (const d of docs) await Task.create(d);
-      await Team.updateOne({ _id: team._id }, { $set: { taskCount: docs.length } });
+    const seeds = sourceTasks
+      .filter((t) => t && t.title?.trim())
+      .map((t) => ({
+        title: t.title.trim(),
+        description: (t.description ?? "").trim(),
+        category: t.category ?? "General",
+        urgency: clampInt(t.urgency, 1, 5, 2),
+        impact: clampInt(t.impact, 1, 5, 2),
+        businessValue: numOrNull(t.businessValue),
+        estimatedHours: numOrNull(t.estimatedHours),
+        priorityLabel: t.priorityLabel ?? null,
+      }));
+
+    const team = await Team.create({
+      name: name.trim(),
+      projectTitle: String(projectTitle).trim(),
+      projectDescription: String(projectDescription).trim(),
+      members: [creator, ...extraMembers],
+      aiGeneratedTasks: seeds,
+    });
+
+    // Create the initial AI/starter tasks (source = "ai") + wire phase deps.
+    if (seeds.length) {
+      const count = await createSeededTasks(team._id, seeds);
+      await Team.updateOne({ _id: team._id }, { $set: { taskCount: count } });
     }
 
     const fresh = await Team.findById(team._id).lean();
@@ -158,13 +175,18 @@ router.get("/teams/:teamId/tasks/analytics", requireAuth, async (req, res) => {
     const tasks = await Task.find({ teamId: req.params.teamId }).lean();
 
     if (tasks.length > MAX_COMPARISON_SIZE) {
-      const { sorted } = mergeSortTasks(tasks);
+      const merge = mergeSortTasks(tasks);
+      const quick = quickSortTasks(tasks);
       return res.json({
         n: tasks.length,
         skippedBubbleSort: true,
-        reason: `n exceeds ${MAX_COMPARISON_SIZE}; Bubble Sort O(n^2) skipped for performance`,
+        reason: `n exceeds ${MAX_COMPARISON_SIZE}; O(n²) sorts skipped for performance`,
+        algorithms: [
+          { key: "merge", name: "Merge Sort", complexity: "O(n log n)", comparisons: merge.comparisons, swaps: merge.swaps, timeMs: 0 },
+          { key: "quick", name: "Quick Sort", complexity: "O(n log n)", comparisons: quick.comparisons, swaps: quick.swaps, timeMs: 0 },
+        ],
         mergeSort: { complexity: "O(n log n)" },
-        sorted,
+        sorted: merge.sorted,
       });
     }
 
@@ -203,7 +225,11 @@ router.get("/teams/:teamId/tasks/execution-order", requireAuth, async (req, res)
 // Powers the DependencyGraphPanel visualization. Time: O(V + E)
 router.get("/teams/:teamId/dependency-graph", requireAuth, async (req, res) => {
   try {
-    const tasks = await Task.find({ teamId: req.params.teamId }).lean();
+    const [tasks, team] = await Promise.all([
+      Task.find({ teamId: req.params.teamId }).lean(),
+      Team.findById(req.params.teamId).lean(),
+    ]);
+    const memberName = Object.fromEntries((team?.members ?? []).map((m) => [m.userId.toString(), m.name]));
 
     const { adjList, inDegree, nodeMap } = buildGraph(tasks);
     const dfsResult  = dfs(adjList);
@@ -215,7 +241,10 @@ router.get("/teams/:teamId/dependency-graph", requireAuth, async (req, res) => {
       title         : t.title,
       status        : t.status,
       priority      : t.priorityScore ?? 0,
+      priorityLabel : t.priorityLabel ?? null,
       estimatedHours: t.estimatedHours ?? 0,
+      assignee      : t.assignedTo ? (memberName[t.assignedTo.toString()] ?? "Member") : null,
+      dueDate       : t.dueDate ?? t.deadline ?? null,
       dependencies  : (t.dependencies ?? []).map((d) => d.toString()),
     }));
     const edges = buildEdgeList(tasks);
@@ -361,14 +390,22 @@ router.post("/teams/:teamId/sprint-optimize", requireAuth, async (req, res) => {
 });
 
 // ── PATCH /api/teams/:teamId/tasks/:taskId ────────────────────────────────────
-// General DAA field updater: estimatedHours, businessValue, status, title, assignedTo.
+// General task field updater (DAA inputs + task-management fields).
 router.patch("/teams/:teamId/tasks/:taskId", requireAuth, async (req, res) => {
   try {
-    const allowed = ["estimatedHours", "businessValue", "status", "title", "assignedTo", "urgency", "impact"];
+    const allowed = [
+      "estimatedHours", "businessValue", "status", "title", "description",
+      "assignedTo", "urgency", "impact", "progress",
+      "deadline", "startDate", "dueDate", "priorityLabel", "storyPoints",
+      "category", "reminderAt",
+    ];
     const update  = {};
     for (const key of allowed) {
       if (req.body[key] !== undefined) update[key] = req.body[key];
     }
+    // Keep completedAt accurate when status changes via REST.
+    if (update.status === "done") update.completedAt = new Date();
+    else if (update.status !== undefined) update.completedAt = null;
     const task = await Task.findOneAndUpdate(
       { _id: req.params.taskId, teamId: req.params.teamId },
       { $set: update },
@@ -378,6 +415,112 @@ router.patch("/teams/:teamId/tasks/:taskId", requireAuth, async (req, res) => {
     res.json(task);
   } catch (e) {
     res.status(400).json({ error: e.message });
+  }
+});
+
+// ── DELETE /api/teams/:teamId/tasks/:taskId ───────────────────────────────────
+// Remove a task. Cleans up dangling dependency references, fixes counters, and
+// recomputes the topological execution order (broadcast over sockets by client).
+router.delete("/teams/:teamId/tasks/:taskId", requireAuth, async (req, res) => {
+  try {
+    const { teamId, taskId } = req.params;
+    const task = await Task.findOneAndDelete({ _id: taskId, teamId });
+    if (!task) return res.status(404).json({ error: "Task not found." });
+
+    // Drop this task from any other task's dependency list.
+    await Task.updateMany({ teamId, dependencies: taskId }, { $pull: { dependencies: taskId } });
+
+    // Fix team counters.
+    const dec = { taskCount: -1 };
+    if (task.status === "done") dec.doneCount = -1;
+    await Team.updateOne({ _id: teamId }, { $inc: dec });
+
+    // Recompute execution order over what remains.
+    const remaining = await Task.find({ teamId }).lean();
+    const order = topologicalSort(remaining);
+    const bulk  = order.map((id, idx) => ({
+      updateOne: { filter: { _id: id }, update: { $set: { topoOrder: idx } } },
+    }));
+    if (bulk.length) await Task.bulkWrite(bulk);
+
+    const executionOrder = await Task.find({ teamId }).sort({ topoOrder: 1 }).lean();
+    res.json({ ok: true, deletedId: taskId, executionOrder });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/teams/:teamId/tasks/:taskId/duplicate ───────────────────────────
+// Clone a task. Body: { cloneDependencies?: boolean }
+router.post("/teams/:teamId/tasks/:taskId/duplicate", requireAuth, async (req, res) => {
+  try {
+    const { teamId, taskId } = req.params;
+    const { cloneDependencies = false } = req.body ?? {};
+    const src = await Task.findOne({ _id: taskId, teamId }).lean();
+    if (!src) return res.status(404).json({ error: "Task not found." });
+
+    const copy = await Task.create({
+      teamId,
+      title: `${src.title} (copy)`,
+      description: src.description,
+      status: "todo",
+      urgency: src.urgency,
+      impact: src.impact,
+      estimatedHours: src.estimatedHours,
+      businessValue: src.businessValue,
+      storyPoints: src.storyPoints,
+      deadline: src.deadline,
+      startDate: src.startDate,
+      dueDate: src.dueDate,
+      priorityLabel: src.priorityLabel,
+      category: src.category,
+      reminderAt: src.reminderAt,
+      skillWeights: src.skillWeights,
+      source: src.source,
+      dependencies: cloneDependencies ? (src.dependencies ?? []) : [],
+      dependencyCount: cloneDependencies ? (src.dependencies?.length ?? 0) : 0,
+      createdBy: req.user?.id,
+    });
+    await Team.updateOne({ _id: teamId }, { $inc: { taskCount: 1 } });
+    res.status(201).json(copy.toObject());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/teams/:teamId/restore-backlog ───────────────────────────────────
+// Restore the original AI-generated backlog: removes all current tasks and
+// recreates them from team.aiGeneratedTasks. Keeps members, profiles, settings.
+router.post("/teams/:teamId/restore-backlog", requireAuth, async (req, res) => {
+  try {
+    const { teamId } = req.params;
+    const team = await Team.findById(teamId).lean();
+    if (!team) return res.status(404).json({ error: "team_not_found" });
+    const seeds = team.aiGeneratedTasks ?? [];
+    if (!seeds.length) return res.status(409).json({ error: "No AI backlog snapshot to restore." });
+
+    await Task.deleteMany({ teamId });
+    const restoredCount = await createSeededTasks(teamId, seeds);
+    await Team.updateOne({ _id: teamId }, { $set: { taskCount: restoredCount, doneCount: 0 } });
+
+    const tasks = await Task.find({ teamId }).sort({ priorityScore: -1 }).lean();
+    res.json({ ok: true, restored: seeds.length, tasks });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /api/teams/:teamId/health ─────────────────────────────────────────────
+// Deterministic Workspace Health Score (0–100) with an explainable breakdown.
+router.get("/teams/:teamId/health", requireAuth, async (req, res) => {
+  try {
+    const [tasks, team] = await Promise.all([
+      Task.find({ teamId: req.params.teamId }).lean(),
+      Team.findById(req.params.teamId).lean(),
+    ]);
+    res.json(computeHealthScore(tasks, team?.members ?? []));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -541,6 +684,119 @@ function hasCycle(adj, nodes) {
 function topologicalSort(tasks) {
   const { adjList, inDegree } = buildGraph(tasks);
   return topoSortGraph(adjList, inDegree).order;
+}
+
+// Create starter tasks AND wire inter-phase dependencies (phase N depends on the
+// first task of phase N-1) so the dependency graph is connected and the
+// topological roadmap is meaningful. Recomputes topoOrder afterwards.
+async function createSeededTasks(teamId, seeds) {
+  const created = [];
+  for (const d of seeds) {
+    const { phaseIndex = 0, ...fields } = d;
+    const t = await Task.create({ teamId, source: "ai", ...fields });
+    created.push({ id: t._id, phaseIndex });
+  }
+
+  const byPhase = new Map();
+  for (const c of created) {
+    if (!byPhase.has(c.phaseIndex)) byPhase.set(c.phaseIndex, []);
+    byPhase.get(c.phaseIndex).push(c.id);
+  }
+
+  const depBulk = [];
+  for (const c of created) {
+    if (c.phaseIndex > 0 && byPhase.has(c.phaseIndex - 1)) {
+      const prev = byPhase.get(c.phaseIndex - 1)[0];
+      depBulk.push({ updateOne: { filter: { _id: c.id }, update: { $set: { dependencies: [prev], dependencyCount: 1 } } } });
+    }
+  }
+  if (depBulk.length) await Task.bulkWrite(depBulk, { ordered: false });
+
+  const all = await Task.find({ teamId }).lean();
+  const order = topologicalSort(all);
+  const topoBulk = order.map((id, idx) => ({ updateOne: { filter: { _id: id }, update: { $set: { topoOrder: idx } } } }));
+  if (topoBulk.length) await Task.bulkWrite(topoBulk, { ordered: false });
+
+  return created.length;
+}
+
+// ── Workspace Health Score ────────────────────────────────────────────────────
+// Deterministic 0–100 score from five weighted factors. Pure function so the
+// same task set always yields the same score (safe for tests + UI parity).
+export function computeHealthScore(tasks, members = []) {
+  const total = tasks.length;
+  if (total === 0) {
+    return { score: 100, grade: "A+", total: 0, factors: [], counts: {}, summary: "No tasks yet — start by generating a backlog." };
+  }
+
+  const doneTasks = tasks.filter((t) => t.status === "done");
+  const doneIds   = new Set(doneTasks.map((t) => t._id.toString()));
+  const active    = tasks.filter((t) => t.status !== "done");
+  const inProg    = tasks.filter((t) => t.status === "in_progress").length;
+  const done      = doneTasks.length;
+  const now       = Date.now();
+
+  // 1. Completion Rate.
+  const completionRate = done / total;
+
+  // 2. Deadline Performance = completed-before-deadline / completed.
+  //    (updatedAt is the completion proxy; a completed task with no due date
+  //     can't be late, so it counts as on-time.)
+  let onTimeDone = 0;
+  for (const t of doneTasks) {
+    const due = t.dueDate ?? t.deadline;
+    if (!due) { onTimeDone++; continue; }
+    // Prefer the accurate completedAt timestamp; fall back to updatedAt for legacy docs.
+    const finishedAt = t.completedAt ? new Date(t.completedAt).getTime()
+      : t.updatedAt ? new Date(t.updatedAt).getTime() : now;
+    if (finishedAt <= new Date(due).getTime()) onTimeDone++;
+  }
+  const deadlinePerformance = done ? onTimeDone / done : 1;
+
+  // 3. Dependency Completion = completed dependency edges / total edges.
+  let depEdges = 0, depSatisfied = 0;
+  for (const t of tasks) {
+    for (const dep of t.dependencies ?? []) {
+      depEdges++;
+      if (doneIds.has(dep.toString())) depSatisfied++;
+    }
+  }
+  const dependencyCompletion = depEdges ? depSatisfied / depEdges : 1;
+
+  // 4. Assignment Coverage = assigned tasks / total tasks.
+  const assigned = tasks.filter((t) => t.assignedTo).length;
+  const assignmentCoverage = assigned / total;
+
+  // 5. Sprint Utilization = planned active hours / team capacity (real values).
+  const sprintCapacity = members.reduce((s, m) => s + (Number(m.capacity) || 40), 0) || 40;
+  const plannedHours   = active.reduce((s, t) => s + (Number(t.estimatedHours) || 0), 0);
+  const sprintUtilization = Math.min(1, plannedHours / sprintCapacity);
+
+  const overdue = active.filter((t) => { const d = t.dueDate ?? t.deadline; return d && new Date(d).getTime() < now; }).length;
+
+  const parts = [
+    { key: "completion",  weight: 30, value: completionRate,        label: "Completion Rate" },
+    { key: "deadline",    weight: 20, value: deadlinePerformance,   label: "Deadline Success" },
+    { key: "dependency",  weight: 20, value: dependencyCompletion,  label: "Dependencies" },
+    { key: "assignment",  weight: 15, value: assignmentCoverage,    label: "Assignments" },
+    { key: "utilization", weight: 15, value: sprintUtilization,     label: "Sprint Utilization" },
+  ];
+
+  const score = Math.round(parts.reduce((s, p) => s + p.weight * p.value, 0));
+  const grade = score >= 90 ? "A+" : score >= 80 ? "A" : score >= 70 ? "B" : score >= 60 ? "C" : "D";
+
+  return {
+    score,
+    grade,
+    total,
+    counts: {
+      done, inProgress: inProg, overdue, assigned, active: active.length,
+      depTotal: depEdges, depDone: depSatisfied,
+      plannedHours, sprintCapacity,
+    },
+    factors: parts.map((p) => ({ key: p.key, label: p.label, weight: p.weight, pct: Math.round(p.value * 100) })),
+    summary: `Health ${score}/100 (grade ${grade}). ${done}/${total} done · ${onTimeDone}/${done} on-time · ${depSatisfied}/${depEdges} deps · ${assigned}/${total} assigned · ${plannedHours}/${sprintCapacity}h.`,
+  };
 }
 
 function buildEdgeList(tasks) {

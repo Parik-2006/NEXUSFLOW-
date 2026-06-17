@@ -71,28 +71,101 @@ export function mergeSortTasks(tasks) {
   return { sorted, comparisons, swaps: 0 };
 }
 
+/** Selection Sort — O(n^2) comparisons, ≤ n−1 swaps. */
+export function selectionSortTasks(tasks) {
+  const arr = [...tasks];
+  let comparisons = 0, swaps = 0;
+  const n = arr.length;
+  for (let i = 0; i < n - 1; i++) {
+    let min = i;
+    for (let j = i + 1; j < n; j++) {
+      comparisons++;
+      if (compareTasks(arr[j], arr[min]) < 0) min = j;
+    }
+    if (min !== i) { [arr[i], arr[min]] = [arr[min], arr[i]]; swaps++; }
+  }
+  return { sorted: arr, comparisons, swaps };
+}
+
+/** Insertion Sort — O(n^2) worst, O(n) best. Shifts counted as swaps. */
+export function insertionSortTasks(tasks) {
+  const arr = [...tasks];
+  let comparisons = 0, swaps = 0;
+  for (let i = 1; i < arr.length; i++) {
+    const key = arr[i];
+    let j = i - 1;
+    while (j >= 0) {
+      comparisons++;
+      if (compareTasks(arr[j], key) > 0) { arr[j + 1] = arr[j]; swaps++; j--; }
+      else break;
+    }
+    arr[j + 1] = key;
+  }
+  return { sorted: arr, comparisons, swaps };
+}
+
+/** Quick Sort — O(n log n) avg, O(n^2) worst. Lomuto partition, last pivot. */
+export function quickSortTasks(tasks) {
+  const arr = [...tasks];
+  let comparisons = 0, swaps = 0;
+  const swap = (i, j) => { if (i !== j) { [arr[i], arr[j]] = [arr[j], arr[i]]; swaps++; } };
+
+  function partition(lo, hi) {
+    const pivot = arr[hi];
+    let i = lo;
+    for (let j = lo; j < hi; j++) {
+      comparisons++;
+      if (compareTasks(arr[j], pivot) < 0) { swap(i, j); i++; }
+    }
+    swap(i, hi);
+    return i;
+  }
+  // Iterative to avoid stack overflow on adversarial inputs.
+  const stack = [[0, arr.length - 1]];
+  while (stack.length) {
+    const [lo, hi] = stack.pop();
+    if (lo >= hi) continue;
+    const p = partition(lo, hi);
+    stack.push([lo, p - 1], [p + 1, hi]);
+  }
+  return { sorted: arr, comparisons, swaps };
+}
+
+function timed(fn, tasks) {
+  const start = process.hrtime.bigint();
+  const r = fn(tasks);
+  const end = process.hrtime.bigint();
+  return { ...r, timeMs: round(Number(end - start) / 1e6) };
+}
+
 /**
- * Run both algorithms over the same input and return timing + operation
- * metrics for the analytics dashboard.
+ * Run all five sorting algorithms over the same task set and return per-algorithm
+ * timing + operation metrics for the analytics dashboard. All values are derived
+ * live from the team's actual tasks.
  */
 export function compareSortAlgorithms(tasks) {
   const n = tasks.length;
 
-  const bubbleStart = process.hrtime.bigint();
-  const bubble = bubbleSortTasks(tasks);
-  const bubbleEnd = process.hrtime.bigint();
+  const bubble    = timed(bubbleSortTasks, tasks);
+  const selection = timed(selectionSortTasks, tasks);
+  const insertion = timed(insertionSortTasks, tasks);
+  const merge     = timed(mergeSortTasks, tasks);
+  const quick     = timed(quickSortTasks, tasks);
 
-  const mergeStart = process.hrtime.bigint();
-  const merge = mergeSortTasks(tasks);
-  const mergeEnd = process.hrtime.bigint();
-
-  const bubbleMs = Number(bubbleEnd - bubbleStart) / 1e6;
-  const mergeMs = Number(mergeEnd - mergeStart) / 1e6;
+  const algorithms = [
+    { key: "bubble",    name: "Bubble Sort",    complexity: "O(n^2)",     timeMs: bubble.timeMs,    comparisons: bubble.comparisons,    swaps: bubble.swaps },
+    { key: "selection", name: "Selection Sort", complexity: "O(n^2)",     timeMs: selection.timeMs, comparisons: selection.comparisons, swaps: selection.swaps },
+    { key: "insertion", name: "Insertion Sort", complexity: "O(n^2)",     timeMs: insertion.timeMs, comparisons: insertion.comparisons, swaps: insertion.swaps },
+    { key: "merge",     name: "Merge Sort",     complexity: "O(n log n)", timeMs: merge.timeMs,     comparisons: merge.comparisons,     swaps: merge.swaps },
+    { key: "quick",     name: "Quick Sort",     complexity: "O(n log n)", timeMs: quick.timeMs,     comparisons: quick.comparisons,     swaps: quick.swaps },
+  ];
 
   return {
     n,
-    bubbleSort: { timeMs: round(bubbleMs), comparisons: bubble.comparisons, swaps: bubble.swaps, complexity: "O(n^2)" },
-    mergeSort:  { timeMs: round(mergeMs),  comparisons: merge.comparisons,  swaps: merge.swaps,  complexity: "O(n log n)" },
+    algorithms,
+    // Back-compat fields for older clients.
+    bubbleSort: { timeMs: bubble.timeMs, comparisons: bubble.comparisons, swaps: bubble.swaps, complexity: "O(n^2)" },
+    mergeSort:  { timeMs: merge.timeMs,  comparisons: merge.comparisons,  swaps: merge.swaps,  complexity: "O(n log n)" },
     sorted: merge.sorted,
   };
 }

@@ -136,6 +136,9 @@ export default function RecommendationPanel({ teamId }: { teamId: string }) {
             </View>
           ))}
 
+          {/* ── DAA pipeline visualization (Feature 11) ──────────────── */}
+          <Pipeline summary={result.algorithmSummary} />
+
           {/* ── Sprint stats gauge ───────────────────────────────────── */}
           <View style={styles.statsCard}>
             <View style={styles.statsRow}>
@@ -267,6 +270,43 @@ function TaskRecommendationCard({ task, rank }: { task: RecommendedTask; rank: n
   );
 }
 
+// ── Feature 11: vertical DAA pipeline with intermediate outputs ───────────────
+const PIPELINE: { key: string; stage: string; algo: string; color: string }[] = [
+  { key: "bfs",         stage: "Ready Tasks",      algo: "BFS",            color: colors.bfs },
+  { key: "greedy",      stage: "Priority Ranking", algo: "Greedy",         color: colors.greedy },
+  { key: "knapsack",    stage: "Sprint Selection", algo: "0/1 Knapsack",   color: colors.knapsack },
+  { key: "mergeSort",   stage: "Sorted Results",   algo: "Merge Sort",     color: colors.merge },
+  { key: "topological", stage: "Execution Order",  algo: "Topological Sort", color: colors.topo },
+];
+
+function Pipeline({ summary }: { summary: Record<string, any> }) {
+  return (
+    <View style={styles.pipeline}>
+      <Text style={styles.pipelineHead}>Pipeline — intermediate outputs</Text>
+      {PIPELINE.map((p, i) => {
+        const meta = summary?.[p.key];
+        return (
+          <View key={p.key}>
+            <View style={styles.pipeRow}>
+              <View style={[styles.pipeDot, { backgroundColor: p.color }]} />
+              <View style={{ flex: 1 }}>
+                <View style={styles.pipeStageRow}>
+                  <Text style={styles.pipeStage}>{p.stage}</Text>
+                  <View style={[styles.pipeAlgo, { backgroundColor: p.color + "22" }]}>
+                    <Text style={[styles.pipeAlgoTxt, { color: p.color }]}>↓ {p.algo}</Text>
+                  </View>
+                </View>
+                <Text style={styles.pipeOut} numberOfLines={2}>{meta?.outputStats ?? "—"}</Text>
+              </View>
+            </View>
+            {i < PIPELINE.length - 1 && <View style={[styles.pipeConnector, { backgroundColor: p.color + "55" }]} />}
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
 function Pill({ label, color }: { label: string; color: string }) {
   return (
     <View style={[styles.pill, { backgroundColor: color + "22" }]}>
@@ -315,6 +355,17 @@ const styles = StyleSheet.create({
   algoStats     : { marginTop: 6, gap: 2 },
   algoStat      : { fontSize: 11, color: colors.textMuted },
   algoComplexity: { fontSize: 11, color: colors.primary, fontWeight: "600", marginTop: 2 },
+
+  pipeline: { backgroundColor: colors.surface, borderRadius: 12, padding: 16, marginTop: 4 },
+  pipelineHead: { fontSize: 12, fontWeight: "800", color: colors.textFaint, letterSpacing: 0.4, marginBottom: 10 },
+  pipeRow: { flexDirection: "row", gap: 10, alignItems: "flex-start" },
+  pipeDot: { width: 12, height: 12, borderRadius: 6, marginTop: 2 },
+  pipeStageRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  pipeStage: { fontSize: 13, fontWeight: "800", color: colors.text },
+  pipeAlgo: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 20 },
+  pipeAlgoTxt: { fontSize: 10, fontWeight: "800" },
+  pipeOut: { fontSize: 11, color: colors.textMuted, marginTop: 2, lineHeight: 16 },
+  pipeConnector: { width: 2, height: 14, marginLeft: 5, marginVertical: 2 },
 
   statsCard: { backgroundColor: colors.surface, borderRadius: 12, padding: 16, gap: 12 },
   statsRow : { flexDirection: "row", justifyContent: "space-between" },

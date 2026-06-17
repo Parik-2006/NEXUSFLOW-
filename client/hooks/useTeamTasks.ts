@@ -31,6 +31,8 @@ export type Task = {
   rank?: number;
   // Merge Sort secondary keys
   deadline?: string;
+  startDate?: string | null;
+  dueDate?: string | null;
   progress?: number;
   // Topological Sort / DAG
   dependencies?: string[];
@@ -41,7 +43,17 @@ export type Task = {
   // Branch & Bound
   assignedTo?: string | null;
   assignmentCost?: number | null;
+  // Provenance / display
+  source?: "ai" | "manual";
+  priorityLabel?: "critical" | "high" | "medium" | "low" | null;
+  category?: string;
+  reminderAt?: string | null;
 };
+
+export type TaskFields = Partial<
+  Pick<Task, "title" | "description" | "progress" | "deadline" | "startDate" | "dueDate"
+    | "priorityLabel" | "estimatedHours" | "businessValue" | "assignedTo" | "category" | "reminderAt" | "status">
+>;
 
 export type DependencyEdge = { from: string; to: string };
 
@@ -192,6 +204,9 @@ export function useTeamTasks(teamId: string) {
     const onUpdated = (task: Task) =>
       setRawTasks((prev) => prev.map((t) => (t._id === task._id ? { ...t, ...task } : t)));
 
+    const onDeleted = ({ taskId }: { taskId: string }) =>
+      setRawTasks((prev) => prev.filter((t) => t._id !== taskId));
+
     const onPriorityRefreshed = ({ teamId: rt }: { teamId: string; count: number }) => {
       if (rt === teamId) hydrate();
     };
@@ -211,6 +226,7 @@ export function useTeamTasks(teamId: string) {
 
     socket.on("task:created",            onCreated);
     socket.on("task:updated",            onUpdated);
+    socket.on("task:deleted",            onDeleted);
     socket.on("task:priority_refreshed", onPriorityRefreshed);
     socket.on("task:execution-order",    onExecutionOrder);
     socket.on("task:assigned",           onTaskAssigned);
@@ -221,6 +237,7 @@ export function useTeamTasks(teamId: string) {
       socket.emit("room:leave", { teamId });
       socket.off("task:created",            onCreated);
       socket.off("task:updated",            onUpdated);
+      socket.off("task:deleted",            onDeleted);
       socket.off("task:priority_refreshed", onPriorityRefreshed);
       socket.off("task:execution-order",    onExecutionOrder);
       socket.off("task:assigned",           onTaskAssigned);
@@ -286,38 +303,88 @@ export function useTeamTasks(teamId: string) {
     [teamId, token]
   );
 
-  // ── createTask (socket create + optional Knapsack fields via PATCH) ─────────
+  // ── createTask (full-field socket create) ───────────────────────────────────
+  type CreateOpts = {
+    urgency?: number; impact?: number; estimatedHours?: number; businessValue?: number;
+    description?: string; deadline?: string | null; startDate?: string | null;
+    dueDate?: string | null; priorityLabel?: Task["priorityLabel"];
+    reminderAt?: string | null; status?: Task["status"]; assignedTo?: string | null;
+  };
   const createTask = useCallback(
-    (title: string, opts?: { urgency?: number; impact?: number; estimatedHours?: number; businessValue?: number }) =>
+    (title: string, opts?: CreateOpts) =>
       new Promise<{ error?: string }>((resolve) => {
         const socket = getSocket(token);
         socket.emit(
           "task:create",
-          { teamId, title, urgency: opts?.urgency ?? 1, impact: opts?.impact ?? 1 },
-          async (ack: { ok: boolean; task?: Task; error?: string }) => {
-            if (!ack?.ok || !ack.task) return resolve({ error: ack?.error ?? "Failed to create task" });
-            const patch: Record<string, number> = {};
-            if (opts?.estimatedHours) patch.estimatedHours = opts.estimatedHours;
-            if (opts?.businessValue) patch.businessValue = opts.businessValue;
-            if (Object.keys(patch).length) {
-              try {
-                const res = await fetch(`${API}/api/teams/${teamId}/tasks/${ack.task._id}`, {
-                  method: "PATCH",
-                  headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-                  body: JSON.stringify(patch),
-                });
-                if (res.ok) {
-                  const updated = await res.json();
-                  setRawTasks((prev) => prev.map((t) => (t._id === updated._id ? { ...t, ...updated } : t)));
-                }
-              } catch { /* non-fatal */ }
-            }
-            resolve({});
-          }
+          {
+            teamId, title, source: "manual",
+            urgency: opts?.urgency ?? 1, impact: opts?.impact ?? 1,
+            estimatedHours: opts?.estimatedHours, businessValue: opts?.businessValue,
+            description: opts?.description, deadline: opts?.deadline,
+            startDate: opts?.startDate, dueDate: opts?.dueDate, priorityLabel: opts?.priorityLabel,
+            reminderAt: opts?.reminderAt, status: opts?.status, assignedTo: opts?.assignedTo,
+          },
+          (ack: { ok: boolean; task?: Task; error?: string }) =>
+            resolve(ack?.ok ? {} : { error: ack?.error ?? "Failed to create task" })
         );
       }),
     [teamId, token]
   );
+
+  // ── updateTask (general edit via socket task:update + optimistic merge) ──────
+  const updateTask = useCallback(
+    (taskId: string, fields: TaskFields) =>
+      new Promise<{ error?: string }>((resolve) => {
+        const socket = getSocket(token);
+        setRawTasks((prev) => prev.map((t) => (t._id === taskId ? { ...t, ...fields } : t)));
+        socket.emit("task:update", { teamId, taskId, fields }, (ack: { ok: boolean; task?: Task; error?: string }) => {
+          if (ack?.ok && ack.task) setRawTasks((prev) => prev.map((t) => (t._id === taskId ? { ...t, ...ack.task } : t)));
+          resolve(ack?.ok ? {} : { error: ack?.error ?? "Failed to update task" });
+        });
+      }),
+    [teamId, token]
+  );
+
+  // ── deleteTask (socket delete; server recomputes + broadcasts) ───────────────
+  const deleteTask = useCallback(
+    (taskId: string) =>
+      new Promise<{ error?: string }>((resolve) => {
+        const socket = getSocket(token);
+        socket.emit("task:delete", { teamId, taskId }, (ack: { ok: boolean; error?: string }) => {
+          if (ack?.ok) setRawTasks((prev) => prev.filter((t) => t._id !== taskId));
+          resolve(ack?.ok ? {} : { error: ack?.error ?? "Failed to delete task" });
+        });
+      }),
+    [teamId, token]
+  );
+
+  // ── duplicateTask (REST clone; socket task:created broadcasts the copy) ──────
+  const duplicateTask = useCallback(
+    async (taskId: string, cloneDependencies = false): Promise<{ error?: string }> => {
+      const res = await fetch(`${API}/api/teams/${teamId}/tasks/${taskId}/duplicate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ cloneDependencies }),
+      });
+      const data = await res.json();
+      if (!res.ok) return { error: data.error ?? "Failed to duplicate task" };
+      setRawTasks((prev) => (prev.some((t) => t._id === data._id) ? prev : [data, ...prev]));
+      return {};
+    },
+    [teamId, token]
+  );
+
+  // ── restoreBacklog (Restore AI Backlog) ─────────────────────────────────────
+  const restoreBacklog = useCallback(async (): Promise<{ error?: string; restored?: number }> => {
+    const res = await fetch(`${API}/api/teams/${teamId}/restore-backlog`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await res.json();
+    if (!res.ok) return { error: data.error ?? "Failed to restore backlog" };
+    setRawTasks(data.tasks ?? []);
+    return { restored: data.restored };
+  }, [teamId, token]);
 
   // ── addDependency / removeDependency (Topo Sort) ───────────────────────────
   const addDependency = useCallback(
@@ -361,6 +428,10 @@ export function useTeamTasks(teamId: string) {
     setStatus,
     setTaskPriority,
     createTask,
+    updateTask,
+    deleteTask,
+    duplicateTask,
+    restoreBacklog,
     addDependency,
     removeDependency,
     fetchExecutionOrder,

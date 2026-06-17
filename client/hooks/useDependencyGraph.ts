@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
+import { getSocket } from "@/services/socket";
 
 const API = process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:4000";
 
@@ -8,7 +9,10 @@ export type GraphNode = {
   title: string;
   status: "todo" | "in_progress" | "done";
   priority: number;
+  priorityLabel?: "critical" | "high" | "medium" | "low" | null;
   estimatedHours: number;
+  assignee?: string | null;
+  dueDate?: string | null;
   dependencies: string[];
 };
 
@@ -70,6 +74,26 @@ export function useDependencyGraph(teamId: string | null) {
   }, [teamId, token]);
 
   useEffect(() => { fetch_(); }, [fetch_]);
+
+  // ── Live sync: refetch on any task/dependency change (debounced) ───────────
+  const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!teamId) return;
+    const socket = getSocket(token);
+    socket.emit("room:join", { teamId });
+    const schedule = () => {
+      if (debounce.current) clearTimeout(debounce.current);
+      debounce.current = setTimeout(() => fetch_(), 300);
+    };
+    const events = ["task:created", "task:deleted", "task:updated", "task:execution-order", "task:priority_refreshed"];
+    events.forEach((e) => socket.on(e, schedule));
+    socket.on("reconnect", schedule);
+    return () => {
+      if (debounce.current) clearTimeout(debounce.current);
+      events.forEach((e) => socket.off(e, schedule));
+      socket.off("reconnect", schedule);
+    };
+  }, [teamId, token, fetch_]);
 
   return { graph, loading, error, refetch: fetch_ };
 }
