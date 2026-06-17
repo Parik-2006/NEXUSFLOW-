@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NexusFlow — DAA Architecture</title>
+<style>
+  :root {
+    --bg: #0f0f1a;
+    --surface: #1a1a2e;
+    --surface2: #16213e;
+    --border: #2a2a4a;
+    --accent: #6366f1;
+    --accent2: #8b5cf6;
+    --green: #10b981;
+    --amber: #f59e0b;
+    --red: #ef4444;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --mono: 'JetBrains Mono', 'Fira Code', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', system-ui, sans-serif;
+    padding: 24px;
+    min-height: 100vh;
+  }
+  h1 { font-size: 22px; font-weight: 800; color: #fff; }
+  h1 span { color: var(--accent); }
+  .sub { color: var(--muted); font-size: 13px; margin-top: 4px; margin-bottom: 28px; }
+
+  /* Algorithm grid */
+  .algo-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin-bottom: 28px;
+  }
+  .algo-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+    position: relative;
+    overflow: hidden;
+  }
+  .algo-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    background: var(--algo-color, var(--accent));
+  }
+  .algo-card:hover, .algo-card.active {
+    border-color: var(--algo-color, var(--accent));
+    background: var(--surface2);
+  }
+  .algo-name { font-size: 11px; font-weight: 700; letter-spacing: 0.5px; color: var(--algo-color, var(--accent)); text-transform: uppercase; }
+  .algo-title { font-size: 13px; font-weight: 600; color: #fff; margin: 4px 0 2px; }
+  .algo-tc { font-size: 11px; color: var(--muted); font-family: var(--mono); }
+
+  /* Detail panel */
+  .detail-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 28px;
+    min-height: 160px;
+    display: none;
+  }
+  .detail-panel.visible { display: block; }
+  .dp-header { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+  .dp-badge {
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .dp-title { font-size: 17px; font-weight: 700; color: #fff; }
+  .dp-body { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .dp-section h4 { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+  .dp-section p { font-size: 13px; line-height: 1.6; color: var(--text); }
+  .complexity-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .c-chip {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-family: var(--mono);
+    color: var(--accent2);
+  }
+  .endpoint {
+    background: var(--surface2);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 12px;
+    font-family: var(--mono);
+    color: var(--green);
+    margin-bottom: 4px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .method { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; }
+  .get { background: #065f46; color: #6ee7b7; }
+  .post { background: #1e40af; color: #93c5fd; }
+
+  /* Flow diagram */
+  .flow-title { font-size: 14px; font-weight: 700; color: var(--muted); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; }
+  .flow-diagram {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    margin-bottom: 28px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+  .flow-layer {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 160px;
+  }
+  .flow-layer-label {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--muted);
+    text-align: center;
+    padding: 6px;
+  }
+  .flow-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 12px;
+    color: var(--text);
+    text-align: center;
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .flow-box.algo { border-color: var(--accent); background: #1e1e40; }
+  .flow-box.model { border-color: var(--green); background: #0d2a1e; }
+  .flow-box.api { border-color: var(--amber); background: #2a1e0d; }
+  .flow-box small { font-size: 10px; color: var(--muted); font-family: var(--mono); }
+  .flow-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    min-width: 32px;
+    color: var(--muted);
+    font-size: 18px;
+    align-self: center;
+    margin-top: 24px;
+  }
+
+  /* Schema diff */
+  .schema-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 28px; }
+  .schema-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .schema-box h3 { font-size: 13px; font-weight: 700; color: #fff; margin-bottom: 10px; }
+  .field { display: flex; gap: 8px; align-items: flex-start; padding: 4px 0; border-bottom: 1px solid var(--border); }
+  .field:last-child { border-bottom: none; }
+  .field-name { font-size: 12px; font-family: var(--mono); color: var(--accent2); flex-shrink: 0; min-width: 130px; }
+  .field-type { font-size: 11px; color: var(--muted); }
+  .field.new .field-name { color: var(--green); }
+  .new-badge { font-size: 9px; background: #065f46; color: #6ee7b7; padding: 1px 5px; border-radius: 3px; font-weight: 700; flex-shrink: 0; margin-top: 2px; }
+
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
+</style>
+</head>
+<body>
+
+<h1>NexusFlow — <span>DAA Architecture</span></h1>
+<p class="sub">Intelligent Task Scheduling and Team Optimization System</p>
+
+<!-- Algorithm cards -->
+<div class="algo-grid" id="algoGrid"></div>
+
+<!-- Detail panel -->
+<div class="detail-panel" id="detailPanel">
+  <div class="dp-header">
+    <div class="dp-badge" id="dpBadge"></div>
+    <div class="dp-title" id="dpTitle"></div>
+  </div>
+  <div class="dp-body">
+    <div class="dp-section">
+      <h4>Problem Solved</h4>
+      <p id="dpProblem"></p>
+    </div>
+    <div>
+      <div class="dp-section" style="margin-bottom:12px">
+        <h4>Complexity</h4>
+        <div class="complexity-row" id="dpComplexity"></div>
+      </div>
+      <div class="dp-section">
+        <h4>API Endpoint</h4>
+        <div id="dpEndpoint"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Data flow diagram -->
+<div class="flow-title">Data Flow — Request Lifecycle</div>
+<div class="flow-diagram">
+  <div class="flow-layer">
+    <div class="flow-layer-label">Client</div>
+    <div class="flow-box">React Native<br><small>Expo Router</small></div>
+    <div class="flow-box">useTeamTasks<br><small>Hook</small></div>
+    <div class="flow-box">TaskCard<br><small>Priority + Deps</small></div>
+  </div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-layer">
+    <div class="flow-layer-label">Transport</div>
+    <div class="flow-box">REST API<br><small>Express.js</small></div>
+    <div class="flow-box">Socket.io<br><small>Live deltas</small></div>
+    <div class="flow-box">JWT Auth<br><small>Middleware</small></div>
+  </div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-layer">
+    <div class="flow-layer-label">DAA Layer</div>
+    <div class="flow-box algo">Merge Sort<br><small>O(n log n)</small></div>
+    <div class="flow-box algo">Topo/DFS/BFS<br><small>O(V+E)</small></div>
+    <div class="flow-box algo">Knapsack/B&B<br><small>O(n×W) / O(M^N)</small></div>
+  </div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-layer">
+    <div class="flow-layer-label">Database</div>
+    <div class="flow-box model">Task Model<br><small>+priority +deps</small></div>
+    <div class="flow-box model">Team Model<br><small>+memberProfiles</small></div>
+    <div class="flow-box model">MongoDB<br><small>Mongoose ODM</small></div>
+  </div>
+</div>
+
+<!-- Schema changes -->
+<div class="flow-title">Schema Changes</div>
+<div class="schema-grid">
+  <div class="schema-box">
+    <h3>Task Model</h3>
+    <div class="field"><span class="field-name">teamId</span><span class="field-type">ObjectId (existing)</span></div>
+    <div class="field"><span class="field-name">title</span><span class="field-type">String (existing)</span></div>
+    <div class="field"><span class="field-name">status</span><span class="field-type">Enum (existing)</span></div>
+    <div class="field new"><span class="field-name">priority</span><span class="field-type">low|medium|high</span><span class="new-badge">NEW</span></div>
+    <div class="field new"><span class="field-name">estimatedHours</span><span class="field-type">Number (Knapsack weight)</span><span class="new-badge">NEW</span></div>
+    <div class="field new"><span class="field-name">storyPoints</span><span class="field-type">Number (Knapsack value)</span><span class="new-badge">NEW</span></div>
+    <div class="field new"><span class="field-name">dueDate</span><span class="field-type">Date (Merge Sort key)</span><span class="new-badge">NEW</span></div>
+    <div class="field new"><span class="field-name">dependencies</span><span class="field-type">[ObjectId] → DAG edges</span><span class="new-badge">NEW</span></div>
+    <div class="field new"><span class="field-name">tags</span><span class="field-type">[String] (B&B skill match)</span><span class="new-badge">NEW</span></div>
+    <div class="field new"><span class="field-name">assignedTo</span><span class="field-type">String (B&B output)</span><span class="new-badge">NEW</span></div>
+    <div class="field new"><span class="field-name">description</span><span class="field-type">String (Boyer-Moore)</span><span class="new-badge">NEW</span></div>
+  </div>
+  <div class="schema-box">
+    <h3>Team Model</h3>
+    <div class="field"><span class="field-name">name</span><span class="field-type">String (existing)</span></div>
+    <div class="field"><span class="field-name">members</span><span class="field-type">[ObjectId] (existing)</span></div>
+    <div class="field"><span class="field-name">taskCount</span><span class="field-type">Number (existing)</span></div>
+    <div class="field"><span class="field-name">doneCount</span><span class="field-type">Number (existing)</span></div>
+    <div class="field new"><span class="field-name">sprintCapacityHours</span><span class="field-type">Number (Knapsack W)</span><span class="new-badge">NEW</span></div>
+    <div class="field new"><span class="field-name">memberProfiles[]</span><span class="field-type">Object[] (B&B matrix)</span><span class="new-badge">NEW</span></div>
+    <div class="field new"><span class="field-name">  └ userId</span><span class="field-type">String</span><span class="new-badge">NEW</span></div>
+    <div class="field new"><span class="field-name">  └ skills</span><span class="field-type">[String]</span><span class="new-badge">NEW</span></div>
+    <div class="field new"><span class="field-name">  └ seniority</span><span class="field-type">junior|mid|senior</span><span class="new-badge">NEW</span></div>
+    <div class="field new"><span class="field-name">  └ weeklyCapacity</span><span class="field-type">Number (B&B constraint)</span><span class="new-badge">NEW</span></div>
+    <div class="field new"><span class="field-name">  └ completionRate</span><span class="field-type">Number 0–1</span><span class="new-badge">NEW</span></div>
+  </div>
+</div>
+
+<script>
+const ALGOS = [
+  {
+    id: 'merge',
+    name: 'Merge Sort',
+    color: '#6366f1',
+    title: 'Task Ranking',
+    tc: 'O(n log n)',
+    sc: 'O(n)',
+    problem: 'MongoDB returns tasks in insertion order. Teams need tasks sorted by (priority DESC → dueDate ASC → createdAt ASC) so the highest-urgency work surfaces first on every board.',
+    complexity: ['Time: O(n log n)', 'Space: O(n)', 'Stable: ✓'],
+    endpoint: [{ method: 'GET', path: '/api/teams/:id/tasks' }, { method: 'EVENT', path: 'task:reranked (socket)' }]
+  },
+  {
+    id: 'topo',
+    name: 'Topological Sort',
+    color: '#8b5cf6',
+    title: 'Execution Order',
+    tc: 'O(V+E)',
+    sc: 'O(V+E)',
+    problem: 'Tasks have prerequisites (e.g., "Deploy" requires "Write Code"). Kahn\'s algorithm produces a valid sequential execution plan and detects circular dependencies before they corrupt the DAG.',
+    complexity: ['Time: O(V+E)', 'Space: O(V+E)', 'Cycle detect: ✓'],
+    endpoint: [{ method: 'GET', path: '/api/teams/:id/tasks/execution-order' }, { method: 'EVENT', path: 'task:dep:add (cycle guard)' }]
+  },
+  {
+    id: 'dfs',
+    name: 'DFS',
+    color: '#ec4899',
+    title: 'Impact Analysis',
+    tc: 'O(V+E)',
+    sc: 'O(V)',
+    problem: 'When a task is blocked or removed, DFS traverses the full downstream dependency tree to surface every task that will be impacted — critical for risk assessment.',
+    complexity: ['Time: O(V+E)', 'Space: O(V)', 'Iterative: ✓'],
+    endpoint: [{ method: 'GET', path: '/api/teams/:id/tasks/:taskId/blocked' }]
+  },
+  {
+    id: 'bfs',
+    name: 'BFS',
+    color: '#06b6d4',
+    title: 'Sprint Waves',
+    tc: 'O(V+E)',
+    sc: 'O(V)',
+    problem: 'BFS on the dependency DAG groups tasks into parallel execution waves: Wave 0 tasks have no prerequisites, Wave 1 depends on Wave 0, etc. Each wave = one achievable sprint.',
+    complexity: ['Time: O(V+E)', 'Space: O(V)', 'Layers: ✓'],
+    endpoint: [{ method: 'GET', path: '/api/teams/:id/tasks/wave-plan' }]
+  },
+  {
+    id: 'greedy',
+    name: 'Greedy',
+    color: '#f59e0b',
+    title: 'Sprint Prioritization',
+    tc: 'O(n log n)',
+    sc: 'O(n)',
+    problem: 'Activity Selection greedy: sort tasks by (priority DESC, hours ASC) and greedily fill sprint capacity. Near-optimal in O(n log n) — used for real-time AI planning suggestions.',
+    complexity: ['Time: O(n log n)', 'Space: O(n)', 'Near-optimal'],
+    endpoint: [{ method: 'POST', path: '/api/teams/:id/sprint/greedy' }, { method: 'AUTO', path: 'aiOrchestrator post-create' }]
+  },
+  {
+    id: 'knapsack',
+    name: '0/1 Knapsack',
+    color: '#10b981',
+    title: 'Optimal Sprint Plan',
+    tc: 'O(n×W)',
+    sc: 'O(n×W)',
+    problem: 'DP formulation: tasks = items (weight=hours, value=priority×10+SP), sprint=knapsack capacity W. Guarantees globally optimal task selection — used for final sprint commitment.',
+    complexity: ['Time: O(n×W)', 'Space: O(n×W)', 'Globally optimal'],
+    endpoint: [{ method: 'POST', path: '/api/teams/:id/sprint/knapsack' }]
+  },
+  {
+    id: 'bb',
+    name: 'Branch & Bound',
+    color: '#ef4444',
+    title: 'Optimal Assignment',
+    tc: 'O(M^N)',
+    sc: 'O(N)',
+    problem: 'Assign N tasks to M members maximising total skill-score while respecting hour capacities. Upper-bound pruning eliminates suboptimal branches, reducing search from O(M^N) to O(M×N) typically.',
+    complexity: ['Worst: O(M^N)', 'Typical: O(M×N)', 'Space: O(N)'],
+    endpoint: [{ method: 'POST', path: '/api/teams/:id/assign' }]
+  },
+  {
+    id: 'bm',
+    name: 'Boyer-Moore',
+    color: '#f97316',
+    title: 'Task Search',
+    tc: 'O(n/m) avg',
+    sc: 'O(σ)',
+    problem: 'Bad-character heuristic enables sub-linear search across task titles, descriptions and tags. Searches O(n/m) average vs O(nm) naive scan — critical when task boards scale to thousands of entries.',
+    complexity: ['Avg: O(n/m)', 'Space: O(σ=256)', 'Multi-field: ✓'],
+    endpoint: [{ method: 'GET', path: '/api/teams/:id/tasks/search?q=' }]
+  }
+];
+
+const grid = document.getElementById('algoGrid');
+const panel = document.getElementById('detailPanel');
+let activeId = null;
+
+ALGOS.forEach(a => {
+  const card = document.createElement('div');
+  card.className = 'algo-card';
+  card.style.setProperty('--algo-color', a.color);
+  card.innerHTML = `
+    <div class="algo-name">${a.name}</div>
+    <div class="algo-title">${a.title}</div>
+    <div class="algo-tc">${a.tc}</div>
+  `;
+  card.onclick = () => {
+    if (activeId === a.id) {
+      activeId = null;
+      card.classList.remove('active');
+      panel.classList.remove('visible');
+      return;
+    }
+    document.querySelectorAll('.algo-card').forEach(c => c.classList.remove('active'));
+    card.classList.add('active');
+    activeId = a.id;
+    showDetail(a);
+  };
+  grid.appendChild(card);
+});
+
+function showDetail(a) {
+  document.getElementById('dpBadge').textContent = a.name;
+  document.getElementById('dpBadge').style.background = a.color + '22';
+  document.getElementById('dpBadge').style.color = a.color;
+  document.getElementById('dpBadge').style.border = `1px solid ${a.color}`;
+  document.getElementById('dpTitle').textContent = a.title;
+  document.getElementById('dpProblem').textContent = a.problem;
+
+  const cx = document.getElementById('dpComplexity');
+  cx.innerHTML = a.complexity.map(c => `<span class="c-chip">${c}</span>`).join('');
+
+  const ep = document.getElementById('dpEndpoint');
+  ep.innerHTML = a.endpoint.map(e => {
+    const cls = e.method === 'GET' ? 'get' : 'post';
+    return `<div class="endpoint"><span class="method ${cls}">${e.method}</span>${e.path}</div>`;
+  }).join('');
+
+  panel.classList.add('visible');
+}
+
+// Auto-show first card
+ALGOS[0] && (() => {
+  document.querySelector('.algo-card').classList.add('active');
+  activeId = ALGOS[0].id;
+  showDetail(ALGOS[0]);
+})();
+</script>
+</body>
+</html>

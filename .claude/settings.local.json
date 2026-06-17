@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(\"Process: [$env:PORT]\"; \"User: [$\\([Environment]::GetEnvironmentVariable\\('PORT','User'\\)\\)]\"; \"Machine: [$\\([Environment]::GetEnvironmentVariable\\('PORT','Machine'\\)\\)]\"; \"PID 7820:\"; \\(Get-Process -Id 7820 -ErrorAction SilentlyContinue | Select-Object ProcessName,Id | Format-Table | Out-String\\))",
+      "Bash(cmd //c 'for /f \"tokens=5\" %P in \\(^'netstat -ano ^^^)",
+      "Bash(findstr /r /c:\":4000 .*LISTENING\"^'\\) do @echo found PID %P')",
+      "Bash(echo \"exit=$?\")",
+      "Bash(npx expo *)",
+      "Bash(node -p \"require\\('./node_modules/expo-secure-store/package.json'\\).version\")",
+      "Bash(echo \"secure-store=$\\(node -p \"require\\('./node_modules/expo-secure-store/package.json'\\).version\"\\)\")",
+      "Bash(npx tsc *)",
+      "Bash(rm -rf dist)",
+      "Read(//tmp/**)",
+      "Bash(node -e \"try{require.resolve\\('puppeteer'\\);console.log\\('puppeteer yes'\\)}catch{try{require.resolve\\('playwright'\\);console.log\\('playwright yes'\\)}catch{console.log\\('no headless browser'\\)}}\")",
+      "Bash(node -e \"const m=require\\('./dist/metadata.json'\\);console.log\\('exported ok'\\)\")",
+      "Bash(echo \"tsc real-errors: $\\(npx tsc --noEmit 2>&1)",
+      "Bash(rm -f \"app/chat/[teamId].tsx\")",
+      "Bash(rmdir app/chat)",
+      "Bash(rm -f \"components/DAAOverviewPanel.tsx\")",
+      "Bash(ls app/chat)",
+      "Bash(grep -rln '\"#[0-9a-fA-F]\\\\{3,6\\\\}\"' components/ app/)",
+      "Bash(grep -no '\"#[0-9a-fA-F]\\\\{3,6\\\\}\"' components/workspace/ChatPanel.tsx)",
+      "Bash(echo \"--- non-test error count: $\\(npx tsc --noEmit -p tsconfig.json 2>&1)"
+    ]
+  }
+}
