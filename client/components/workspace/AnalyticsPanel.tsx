@@ -17,7 +17,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTaskAnalytics } from "@/hooks/useTaskAnalytics";
 import { useTeamTasks } from "@/hooks/useTeamTasks";
 import { useTeam } from "@/hooks/useTeam";
-import { BarChart, PieChart, RadarChart, LineChart, type Datum } from "@/components/charts";
+import { BarChart, PieChart, type Datum } from "@/components/charts";
 import { Card, EmptyState, SkeletonCard, Badge } from "@/components/ui";
 import { colors, spacing, radius, font, PRIORITY_META, taskPriorityKey, type PriorityKey } from "@/theme";
 
@@ -48,35 +48,28 @@ export default function AnalyticsPanel({ teamId }: { teamId: string }) {
     }).filter((d) => d.label);
   }, [members, rawTasks]);
 
-  // ── Sorting growth comparison (theoretical curves, sized from real n) ──────
-  const growth = useMemo(() => {
-    const n = Math.max(4, analytics?.n ?? rawTasks.length);
-    const sizes = [...new Set([Math.max(2, Math.round(n / 4)), Math.max(3, Math.round(n / 2)), n, n * 2])].sort((a, b) => a - b);
-    return {
-      xLabels: sizes.map((sz) => `n=${sz}`),
-      series: [
-        { label: "O(n²)", color: colors.danger, points: sizes.map((sz) => Math.round((sz * sz) / 2)) },
-        { label: "O(n log n)", color: colors.success, points: sizes.map((sz) => Math.max(1, Math.round(sz * Math.log2(Math.max(2, sz))))) },
-      ],
-    };
-  }, [analytics?.n, rawTasks.length]);
-
   const algos = analytics?.algorithms ?? [];
 
-  // ── Radar profile (normalised 0..1; higher = better on every axis) ─────────
-  const radar = useMemo(() => {
+  // ── Algorithm performance summary (winners, derived from live metrics) ─────
+  const winner = useMemo(() => {
     if (!algos.length) return null;
+    const minBy = (sel: (a: typeof algos[number]) => number) => [...algos].sort((a, b) => sel(a) - sel(b))[0];
     const maxT = Math.max(0.001, ...algos.map((a) => a.timeMs));
     const maxC = Math.max(1, ...algos.map((a) => a.comparisons));
     const maxS = Math.max(1, ...algos.map((a) => a.swaps));
-    const series = algos.map((a) => {
-      const speed = 1 - a.timeMs / maxT;
-      const comp = 1 - a.comparisons / maxC;
-      const swap = 1 - a.swaps / maxS;
-      const eff = (speed + comp + swap) / 3;
-      return { label: a.name.split(" ")[0], color: SORT_COLORS[a.key] ?? colors.primary, values: [speed, comp, swap, eff] };
-    });
-    return { axes: ["Speed", "Comparisons", "Swaps", "Efficiency"], series };
+    const eff = (a: typeof algos[number]) => a.timeMs / maxT + a.comparisons / maxC + a.swaps / maxS;
+    const byEff = [...algos].sort((a, b) => eff(a) - eff(b));
+    const leastComp = minBy((a) => a.comparisons);
+    const bubble = algos.find((a) => a.key === "bubble");
+    const reduction = bubble && bubble.comparisons > 0 ? Math.round((1 - leastComp.comparisons / bubble.comparisons) * 100) : 0;
+    return {
+      fastest: minBy((a) => a.timeMs).name,
+      leastComparisons: leastComp.name,
+      leastSwaps: minBy((a) => a.swaps).name,
+      mostEfficient: byEff[0].name,
+      worst: byEff[byEff.length - 1].name,
+      reduction,
+    };
   }, [algos]);
 
   const sample = useMemo(() => rawTasks.map((t) => t.priorityScore ?? 0).slice(0, 6), [rawTasks]);
@@ -127,19 +120,23 @@ export default function AnalyticsPanel({ teamId }: { teamId: string }) {
             </Card>
           )}
 
-          {/* Radar profile */}
-          {radar && (
-            <Card style={{ gap: spacing.md }}>
-              <SectionTitle icon="speedometer" color={colors.knapsack} title="Algorithm Radar" sub="Speed · Comparisons · Swaps · Efficiency (outer = better)" />
-              <RadarChart axes={radar.axes} series={radar.series} />
+          {/* Algorithm performance summary (winners) */}
+          {winner && (
+            <Card style={{ gap: spacing.sm }}>
+              <Text style={s.winnerHead}>🏆 Algorithm Performance Summary</Text>
+              <View style={s.winnerGrid}>
+                <WinnerRow label="Fastest" value={winner.fastest} color={colors.success} />
+                <WinnerRow label="Least Comparisons" value={winner.leastComparisons} color={colors.merge} />
+                <WinnerRow label="Least Swaps" value={winner.leastSwaps} color={colors.knapsack} />
+                <WinnerRow label="Most Efficient" value={winner.mostEfficient} color={colors.primary} />
+                <WinnerRow label="Worst Performer" value={winner.worst} color={colors.danger} />
+              </View>
+              <View style={s.winnerBanner}>
+                <Ionicons name="trending-down" size={15} color={colors.success} />
+                <Text style={s.winnerBannerTxt}>{winner.reduction}% fewer comparisons than Bubble Sort</Text>
+              </View>
             </Card>
           )}
-
-          {/* Sorting growth comparison (curves) */}
-          <Card style={{ gap: spacing.md }}>
-            <SectionTitle icon="trending-up" color={colors.danger} title="Complexity Growth Graph" sub="Why O(n log n) scales — sizes derived from your backlog" />
-            <LineChart xLabels={growth.xLabels} series={growth.series} />
-          </Card>
 
           {/* Priority distribution */}
           {priorityData.length > 0 && (
@@ -283,6 +280,17 @@ function SectionTitle({ icon, color, title, sub }: { icon: any; color: string; t
   );
 }
 
+function WinnerRow({ label, value, color }: { label: string; value: string; color: string }) {
+  return (
+    <View style={s.winnerRow}>
+      <Text style={s.winnerLabel}>{label}</Text>
+      <View style={[s.winnerPill, { backgroundColor: color + "1a" }]}>
+        <Text style={[s.winnerValue, { color }]}>{value}</Text>
+      </View>
+    </View>
+  );
+}
+
 // ── Ranking leaderboard + comparison table ────────────────────────────────────
 const MEDAL = ["🥇", "🥈", "🥉"];
 function SortTable({ rows }: { rows: { key: string; name: string; complexity: string; timeMs: number; comparisons: number; swaps: number }[] }) {
@@ -418,6 +426,15 @@ const s = StyleSheet.create({
   mergeGroup: { flexDirection: "row", gap: 2, backgroundColor: colors.surfaceAlt, borderRadius: 6, padding: 3 },
   mergeCell: { minWidth: 22, height: 22, borderRadius: 4, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center", paddingHorizontal: 3 },
   mergeCellTxt: { fontSize: 10, fontWeight: "800", color: colors.text },
+
+  winnerHead: { fontSize: 15, fontWeight: "800", color: colors.text },
+  winnerGrid: { gap: 6 },
+  winnerRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  winnerLabel: { fontSize: 12.5, fontWeight: "600", color: colors.textMuted },
+  winnerPill: { paddingHorizontal: 10, paddingVertical: 3, borderRadius: radius.pill },
+  winnerValue: { fontSize: 12.5, fontWeight: "800" },
+  winnerBanner: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.successSoft, borderRadius: radius.sm, padding: 8, marginTop: 2 },
+  winnerBannerTxt: { fontSize: 12, fontWeight: "800", color: colors.success },
 
   vizTitle: { fontSize: 12, fontWeight: "800", color: colors.text, marginTop: 4 },
   vizRow: { flexDirection: "row", alignItems: "center", gap: 8 },

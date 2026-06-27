@@ -8,11 +8,14 @@
  * Skill data feeds the Branch & Bound assignment engine; the description is
  * turned into a starter task plan (refinable later via the AI chat).
  */
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { View, Text, Pressable, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { ModalSheet, useToast } from "@/components/feedback";
 import { Field, Button, Avatar, Chip, Badge } from "@/components/ui";
+import ImageUploader from "@/components/ImageUploader";
+import { useAuth } from "@/context/AuthContext";
+import { getItem } from "@/utils/storage";
 import { colors, radius, spacing, font } from "@/theme";
 import type { NewTeamInput } from "@/hooks/useTeams";
 
@@ -53,10 +56,20 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
   onCreate: (input: NewTeamInput) => Promise<{ error?: string }>;
 }) {
   const toast = useToast();
+  const { user } = useAuth();
   const [step, setStep] = useState(0);
   const [name, setName] = useState("");
+  const [logo, setLogo] = useState<string | null>(null);
   const [projectTitle, setProjectTitle] = useState("");
   const [description, setDescription] = useState("");
+
+  // The creator's profile photo (local storage) seeds their member avatar.
+  const [creatorImage, setCreatorImage] = useState<string | null>(null);
+  useEffect(() => {
+    getItem(`nf_profile_${user?.email ?? "anon"}`).then((raw) => {
+      if (raw) try { setCreatorImage(JSON.parse(raw).image ?? null); } catch {}
+    });
+  }, [user?.email]);
   const [role, setRole] = useState<string>("leader");
   const [members, setMembers] = useState<DraftMember[]>([]);
   const [mName, setMName] = useState("");
@@ -71,7 +84,7 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
     : descLen > DESC_MAX ? colors.warning : colors.success;
 
   const reset = () => {
-    setStep(0); setName(""); setProjectTitle(""); setDescription("");
+    setStep(0); setName(""); setLogo(null); setProjectTitle(""); setDescription("");
     setRole("leader"); setMembers([]); setMName(""); setMSkill(SKILLS[0]);
     setShowExamples(false);
   };
@@ -125,6 +138,8 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
     setBusy(true);
     const input: NewTeamInput = {
       name: name.trim(),
+      logo: logo ?? "",
+      creatorImage: creatorImage ?? "",
       projectTitle: projectTitle.trim(),
       projectDescription: description.trim(),
       members: members.map((m) => ({ name: m.name, skills: skillObject(m.skillKey) })),
@@ -158,6 +173,7 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
         <View style={{ gap: spacing.md }}>
           <Text style={s.stepHint}>Tell us what you're building. You can change any of this later.</Text>
           <Field label="Team name" placeholder="e.g. Web Platform Squad" value={name} onChangeText={setName} icon="people-outline" />
+          <ImageUploader label="Team logo (optional)" value={logo} onChange={setLogo} shape="square" size={72} />
           <Field label="Project title" placeholder="e.g. Authentication revamp" value={projectTitle} onChangeText={setProjectTitle} icon="rocket-outline" />
 
           {/* Guidelines card */}

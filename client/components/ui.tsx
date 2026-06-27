@@ -6,16 +6,24 @@
 import React from "react";
 import {
   View, Text, Pressable, TextInput, StyleSheet, ActivityIndicator,
-  ViewStyle, TextStyle, Animated, Easing, Platform,
+  ViewStyle, TextStyle, Animated, Easing, Platform, Image,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { colors, radius, spacing, shadow, font, avatarColor, initials } from "@/theme";
 
 // ── Card ────────────────────────────────────────────────────────────────────
 export function Card({ children, style, onPress }: { children: React.ReactNode; style?: ViewStyle; onPress?: () => void }) {
-  const inner = <View style={[s.card, style]}>{children}</View>;
-  if (onPress) return <Pressable onPress={onPress} style={({ pressed }) => pressed && { opacity: 0.85, transform: [{ scale: 0.995 }] }}>{inner}</Pressable>;
-  return inner;
+  if (onPress) {
+    return (
+      <Pressable
+        onPress={onPress}
+        style={({ pressed, hovered }: any) => [s.card, style, hovered && s.cardHover, pressed && s.cardPressed]}
+      >
+        {children}
+      </Pressable>
+    );
+  }
+  return <View style={[s.card, style]}>{children}</View>;
 }
 
 // ── Button ──────────────────────────────────────────────────────────────────
@@ -84,17 +92,20 @@ export function StatCard({ icon, label, value, color, sub }: {
 }
 
 // ── Avatar + MemberChip ───────────────────────────────────────────────────────
-export function Avatar({ name, size = 32 }: { name: string; size?: number }) {
+export function Avatar({ name, size = 32, image }: { name: string; size?: number; image?: string | null }) {
+  if (image) {
+    return <Image source={{ uri: image }} style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: colors.surfaceAlt }} resizeMode="cover" />;
+  }
   return (
     <View style={[s.avatar, { width: size, height: size, borderRadius: size / 2, backgroundColor: avatarColor(name) }]}>
       <Text style={{ color: "#fff", fontWeight: "800", fontSize: size * 0.4 }}>{initials(name)}</Text>
     </View>
   );
 }
-export function MemberChip({ name, sub }: { name: string; sub?: string }) {
+export function MemberChip({ name, sub, image }: { name: string; sub?: string; image?: string | null }) {
   return (
     <View style={s.memberChip}>
-      <Avatar name={name} size={24} />
+      <Avatar name={name} size={24} image={image} />
       <View>
         <Text style={s.memberChipName}>{name}</Text>
         {sub ? <Text style={s.memberChipSub}>{sub}</Text> : null}
@@ -102,14 +113,14 @@ export function MemberChip({ name, sub }: { name: string; sub?: string }) {
     </View>
   );
 }
-export function AvatarStack({ names, max = 4 }: { names: string[]; max?: number }) {
+export function AvatarStack({ names, images, max = 4 }: { names: string[]; images?: (string | null | undefined)[]; max?: number }) {
   const shown = names.slice(0, max);
   const extra = names.length - shown.length;
   return (
     <View style={s.stack}>
       {shown.map((n, i) => (
         <View key={n + i} style={{ marginLeft: i === 0 ? 0 : -8 }}>
-          <View style={s.stackRing}><Avatar name={n} size={26} /></View>
+          <View style={s.stackRing}><Avatar name={n} size={26} image={images?.[i]} /></View>
         </View>
       ))}
       {extra > 0 && (
@@ -291,6 +302,8 @@ export function Chip({ label, active, onPress, color = colors.primary }: { label
 // ── Styles ──────────────────────────────────────────────────────────────────
 const s = StyleSheet.create({
   card: { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.lg, borderWidth: 1, borderColor: colors.border, ...(shadow.sm as object) },
+  cardHover: Platform.select({ web: { transform: [{ translateY: -2 }], boxShadow: "0 12px 32px rgba(47,79,79,0.13)", borderColor: colors.primaryBorder } as any, default: {} }),
+  cardPressed: { opacity: 0.92, transform: [{ scale: 0.997 }] },
 
   btn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 12, paddingHorizontal: 16, borderRadius: radius.md, borderWidth: 1 },
   btnSmall: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: radius.sm },

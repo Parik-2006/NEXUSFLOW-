@@ -185,6 +185,19 @@ export const shadow = {
   }),
 };
 
+// Glassmorphism surface — translucent with a web backdrop blur. Use on cards
+// layered over a cover banner / colored backdrop for the premium profile look.
+export const glass = Platform.select({
+  web: {
+    backgroundColor: "rgba(255,255,255,0.62)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.55)",
+    backdropFilter: "blur(14px)",
+    WebkitBackdropFilter: "blur(14px)",
+  } as any,
+  default: { backgroundColor: "rgba(255,255,255,0.9)", borderWidth: 1, borderColor: colors.border },
+});
+
 // Deterministic avatar color from a name/id — warm, muted set (no neon).
 const AVATAR_COLORS = ["#2F4F4F", "#7D8F69", "#C18A3E", "#5C8A5A", "#5B7C8C", "#8A7BA8", "#5F9090", "#B07A8C"];
 export const avatarColor = (seed: string) => {

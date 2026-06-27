@@ -409,7 +409,7 @@ async function streamMock(io, socket, teamId, prompt) {
       teamId, title: s.title, category: s.category,
       urgency: s.urgency, impact: s.impact,
       estimatedHours: s.estimatedHours, businessValue: s.businessValue,
-      description: s.description ?? "", dependencyCount: 0, createdBy: "ai", source: "ai",
+      description: s.description ?? "", dependencyCount: 0, source: "ai",
     });
     await Team.updateOne({ _id: teamId }, { $inc: { taskCount: 1 } });
     io.to(`team:${teamId}`).emit("task:created", task.toObject());
@@ -493,7 +493,7 @@ async function streamFromOpenAI(io, socket, teamId, prompt) {
   const rawTitles = acc.split("\n").map((s) => toActionableTitle(s)).filter(Boolean);
   for (const title of rawTitles) {
     const { urgency, impact } = estimatePriority(title);
-    const task = await Task.create({ teamId, title, urgency, impact, dependencyCount: 0, createdBy: "ai", source: "ai" });
+    const task = await Task.create({ teamId, title, urgency, impact, dependencyCount: 0, source: "ai" });
     await Team.updateOne({ _id: teamId }, { $inc: { taskCount: 1 } });
     io.to(`team:${teamId}`).emit("task:created", task.toObject());
     newTaskIds.push(task._id);

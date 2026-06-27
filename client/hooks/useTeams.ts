@@ -7,12 +7,24 @@ const API = process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:4000";
 export type TeamMember = {
   userId: string;
   name?: string;
+  avatar?: string;
+  role?: string;
   skills?: Record<string, number>;
+};
+
+export type TeamSettings = {
+  sprintCapacity?: number;
+  defaultReminder?: string;
+  aiPreferences?: string;
+  defaultPriority?: string;
+  themeColor?: string;
 };
 
 export type Team = {
   _id: string;
   name: string;
+  logo?: string;
+  settings?: TeamSettings;
   projectTitle?: string;
   projectDescription?: string;
   taskCount: number;
@@ -23,6 +35,8 @@ export type Team = {
 
 export type NewTeamInput = {
   name: string;
+  logo?: string;
+  creatorImage?: string;
   projectTitle?: string;
   projectDescription?: string;
   members?: { name: string; skills?: Record<string, number> }[];
@@ -102,6 +116,68 @@ export function useTeams() {
     }
   }, [token]);
 
+  // ── Update team (name / logo / description / settings) ─────────────────────
+  const updateTeam = useCallback(async (teamId: string, patch: Partial<Team> & { settings?: TeamSettings }): Promise<{ error?: string; team?: Team }> => {
+    const res = await fetch(`${API}/api/teams/${teamId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(patch),
+    });
+    const data = await res.json();
+    if (!res.ok) return { error: data.error ?? "Failed to update team" };
+    setTeams((prev) => prev.map((t) => (t._id === teamId ? data : t)));
+    return { team: data };
+  }, [token]);
+
+  // ── Append more AI tasks (reuses server projectDecomposer) ─────────────────
+  const generateTasks = useCallback(async (teamId: string, prompt: string): Promise<{ error?: string; added?: number }> => {
+    const res = await fetch(`${API}/api/teams/${teamId}/generate-tasks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ prompt }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { error: data.error ?? "Failed to generate tasks" };
+    setTeams((prev) => prev.map((t) => (t._id === teamId ? { ...t, taskCount: data.tasks?.length ?? t.taskCount } : t)));
+    return { added: data.added };
+  }, [token]);
+
+  // ── Member management ──────────────────────────────────────────────────────
+  const addMember = useCallback(async (teamId: string, name: string, skills?: Record<string, number>): Promise<{ error?: string }> => {
+    const res = await fetch(`${API}/api/teams/${teamId}/members`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ name, skills }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { error: data.error ?? "Failed to add member" };
+    setTeams((prev) => prev.map((t) => (t._id === teamId ? data : t)));
+    return {};
+  }, [token]);
+
+  const removeMember = useCallback(async (teamId: string, userId: string): Promise<{ error?: string }> => {
+    const res = await fetch(`${API}/api/teams/${teamId}/members/${userId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await res.json();
+    if (!res.ok) return { error: data.error ?? "Failed to remove member" };
+    setTeams((prev) => prev.map((t) => (t._id === teamId ? data : t)));
+    return {};
+  }, [token]);
+
+  const updateMember = useCallback(async (teamId: string, userId: string, fields: { name?: string; role?: string }): Promise<{ error?: string }> => {
+    const res = await fetch(`${API}/api/teams/${teamId}/members/${userId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(fields),
+    });
+    const data = await res.json();
+    if (!res.ok) return { error: data.error ?? "Failed to update member" };
+    setTeams((prev) => prev.map((t) => (t._id === teamId ? data : t)));
+    return {};
+  }, [token]);
+
   /**
    * recomputeProgress — adjust a team's doneCount when a task transitions
    * between statuses, using the task's previous status to avoid double counting.
@@ -139,5 +215,5 @@ export function useTeams() {
     };
   }, [token, recomputeProgress, hydrate]);
 
-  return { teams, loading, error, refetch: hydrate, recomputeProgress, createTeam, deleteTeam, joinTeam };
+  return { teams, loading, error, refetch: hydrate, recomputeProgress, createTeam, deleteTeam, joinTeam, updateTeam, generateTasks, addMember, removeMember, updateMember };
 }

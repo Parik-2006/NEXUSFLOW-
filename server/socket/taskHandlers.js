@@ -1,7 +1,12 @@
+import mongoose from "mongoose";
 import Team from "../models/Team.js";
 import Task from "../models/Task.js";
 import { computePriorityScore } from "../algorithms/greedyScheduler.js";
 import { buildGraph, topologicalSort as topoSortGraph } from "../algorithms/graphTraversal.js";
+
+// createdBy is an ObjectId ref. Dev auth uses email as the user id, so only set
+// createdBy when it's actually a valid ObjectId — never crash Mongo validation.
+const validCreator = (v) => (mongoose.isValidObjectId(v) ? v : undefined);
 
 // Topological order of task ids — delegates to the CANONICAL Kahn's sort in
 // graphTraversal.js so socket recompute matches the REST execution-order and
@@ -45,8 +50,8 @@ export function registerTaskHandlers(io, socket) {
         impact,
         dependencyCount: dependencies.length,
         dependencies,
-        createdBy: socket.data.user?.id,
         source,
+        ...(validCreator(socket.data.user?.id) ? { createdBy: validCreator(socket.data.user?.id) } : {}),
         ...(status          !== undefined ? { status } : {}),
         ...(description     !== undefined ? { description } : {}),
         ...(estimatedHours  !== undefined ? { estimatedHours } : {}),

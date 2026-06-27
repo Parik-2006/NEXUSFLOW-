@@ -32,7 +32,11 @@
       "Bash(node --input-type=module -e ' *)",
       "Bash(git rev-list *)",
       "Bash(git checkout *)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(grep -E \"\\\\.env$\")",
+      "Bash(echo \"exit: $?\")"
     ]
   }
 }

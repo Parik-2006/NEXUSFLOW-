@@ -52,7 +52,7 @@ export default function GraphPanel({ teamId }: { teamId: string }) {
         <View key={reloadKey} style={s.graphWrap}>
           {depCount === 0 && (
             <View style={s.depHintBar}>
-              <Text style={s.depHintTxt}>Add dependencies to unlock the dependency graph. The execution roadmap below works without them.</Text>
+              <Text style={s.depHintTxt}>Add dependencies to sequence the execution roadmap with Topological Sort. Tasks with no dependencies are ordered by priority.</Text>
             </View>
           )}
           <DependencyGraphPanel teamId={teamId} />

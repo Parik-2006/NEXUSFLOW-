@@ -3,11 +3,12 @@ import mongoose from "mongoose";
 import Team from "../models/Team.js";
 import Task from "../models/Task.js";
 import { requireAuth } from "../auth.js";
-import { greedySortTasks } from "../algorithms/greedyScheduler.js";
+import { greedySortTasks, computePriorityScore } from "../algorithms/greedyScheduler.js";
 import { assignTasksToMembers } from "../algorithms/branchAndBound.js";
 import { buildGraph, dfs, bfs, topologicalSort as topoSortGraph } from "../algorithms/graphTraversal.js";
 import { compareSortAlgorithms, mergeSortTasks, quickSortTasks } from "../utils/sortAlgorithms.js";
-import { decomposeProject } from "../algorithms/projectDecomposer.js";
+import { decomposeProject, extractFeatures } from "../algorithms/projectDecomposer.js";
+import { boyerMooreSearch, mergeSort } from "../algorithms/taskOptimiser.js";
 
 const router = Router();
 
@@ -45,18 +46,19 @@ router.get("/teams/:teamId", requireAuth, async (req, res) => {
 // The creator is always added as the first member so they appear in the roster.
 router.post("/teams", requireAuth, async (req, res) => {
   try {
-    const { name, members = [], tasks = [], projectTitle = "", projectDescription = "" } = req.body ?? {};
+    const { name, members = [], tasks = [], projectTitle = "", projectDescription = "", logo = "", creatorImage = "" } = req.body ?? {};
     if (!name || !name.trim()) return res.status(400).json({ error: "Team name is required." });
 
     const oid = () => new mongoose.Types.ObjectId();
     const creator = {
       userId: oid(),
       name: req.user?.name || req.user?.email || "You",
+      avatar: typeof creatorImage === "string" ? creatorImage : "",
       skills: normalizeSkills(req.body.creatorSkills),
     };
     const extraMembers = (Array.isArray(members) ? members : [])
       .filter((m) => m && (m.name?.trim()))
-      .map((m) => ({ userId: oid(), name: m.name.trim(), skills: normalizeSkills(m.skills) }));
+      .map((m) => ({ userId: oid(), name: m.name.trim(), avatar: typeof m.avatar === "string" ? m.avatar : "", skills: normalizeSkills(m.skills) }));
 
     // Build the starter backlog. When a project description exists we DECOMPOSE
     // it into a grouped, professional backlog (Planning / Backend / Frontend / …)
@@ -81,6 +83,7 @@ router.post("/teams", requireAuth, async (req, res) => {
 
     const team = await Team.create({
       name: name.trim(),
+      logo: typeof logo === "string" ? logo : "",
       projectTitle: String(projectTitle).trim(),
       projectDescription: String(projectDescription).trim(),
       members: [creator, ...extraMembers],
@@ -104,11 +107,12 @@ router.post("/teams", requireAuth, async (req, res) => {
 // Add a member. Body: { name, skills? }
 router.post("/teams/:teamId/members", requireAuth, async (req, res) => {
   try {
-    const { name, skills } = req.body ?? {};
+    const { name, skills, avatar = "" } = req.body ?? {};
     if (!name || !name.trim()) return res.status(400).json({ error: "Member name is required." });
     const member = {
       userId: new mongoose.Types.ObjectId(),
       name: name.trim(),
+      avatar: typeof avatar === "string" ? avatar : "",
       skills: normalizeSkills(skills),
     };
     const team = await Team.findByIdAndUpdate(
@@ -118,6 +122,225 @@ router.post("/teams/:teamId/members", requireAuth, async (req, res) => {
     );
     if (!team) return res.status(404).json({ error: "team_not_found" });
     res.status(201).json(team);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── PATCH /api/teams/:teamId ──────────────────────────────────────────────────
+// Update team name / logo / title / description / settings. Additive, no breaking
+// changes; persists instantly so all live views (which re-fetch the team) update.
+router.patch("/teams/:teamId", requireAuth, async (req, res) => {
+  try {
+    const update = {};
+    const top = ["name", "logo", "projectTitle", "projectDescription"];
+    for (const k of top) if (req.body[k] !== undefined) update[k] = req.body[k];
+    if (update.name !== undefined && !String(update.name).trim())
+      return res.status(400).json({ error: "Team name cannot be empty." });
+    if (update.name !== undefined) update.name = String(update.name).trim();
+
+    if (req.body.settings && typeof req.body.settings === "object") {
+      const SET = ["sprintCapacity", "defaultReminder", "aiPreferences", "defaultPriority", "themeColor"];
+      for (const sk of SET) if (req.body.settings[sk] !== undefined) update[`settings.${sk}`] = req.body.settings[sk];
+    }
+    if (!Object.keys(update).length) return res.status(400).json({ error: "No valid fields to update." });
+
+    const team = await Team.findByIdAndUpdate(req.params.teamId, { $set: update }, { new: true, lean: true });
+    if (!team) return res.status(404).json({ error: "team_not_found" });
+    res.json(team);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/teams/:teamId/generate-tasks ────────────────────────────────────
+// Append more AI tasks via the EXISTING decomposer (no new decomposition logic).
+// Optionally targets a single phase when the prompt names one. Append-only:
+// never deletes or overwrites existing tasks.
+const PHASE_MATCH = [
+  { re: /\b(test|qa|quality)\b/i, cat: "Testing" },
+  { re: /\b(deploy|devops|ci\/?cd|release|monitor)\b/i, cat: "Deployment" },
+  { re: /\b(front|ui|ux|dashboard|screen)\b/i, cat: "Frontend" },
+  { re: /\b(back|api|database|server|service)\b/i, cat: "Backend" },
+  { re: /\b(ai|ml|model|machine learning|prediction)\b/i, cat: "AI / ML" },
+  { re: /\b(plan|requirement|scope)\b/i, cat: "Planning" },
+  { re: /\b(research|feasibility)\b/i, cat: "Research" },
+  { re: /\b(hardware|iot|sensor|device)\b/i, cat: "Hardware" },
+  { re: /\b(integrat|realtime|notification|alert)\b/i, cat: "Integration" },
+];
+router.post("/teams/:teamId/generate-tasks", requireAuth, async (req, res) => {
+  try {
+    const { teamId } = req.params;
+    const { prompt = "" } = req.body ?? {};
+    const team = await Team.findById(teamId).lean();
+    if (!team) return res.status(404).json({ error: "team_not_found" });
+
+    const text = String(prompt).trim() || team.projectDescription || team.projectTitle || team.name;
+    let seeds = decomposeProject(team.projectTitle || team.name, text);
+
+    // Targeted phase generation when the prompt names a phase.
+    const match = PHASE_MATCH.find((p) => p.re.test(prompt));
+    if (match) {
+      const filtered = seeds.filter((s) => s.category === match.cat).map((s) => ({ ...s, phaseIndex: 0 }));
+      if (filtered.length) seeds = filtered;
+    }
+    if (!seeds.length) return res.json({ added: 0, tasks: [] });
+
+    const added = await createSeededTasks(teamId, seeds);     // APPEND (no delete) + wire + topo
+    await Team.updateOne({ _id: teamId }, { $inc: { taskCount: added } });
+
+    const tasks = await Task.find({ teamId }).sort({ priorityScore: -1, createdAt: 1 }).lean();
+    res.json({ added, tasks });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/teams/:teamId/ai-suggest ────────────────────────────────────────
+// Team-aware AI task assistant. Reuses existing DAA building blocks (no new
+// algorithms): projectDecomposer (project-related candidates), Greedy
+// computePriorityScore (priority), Boyer-Moore boyerMooreSearch (dedup against
+// the backlog), Merge Sort (ranking) and topological reasoning (dependencies).
+// Modes: "related" | "missing-phase" | "subtasks". Returns an autofill payload
+// + an explanation. Does NOT persist — the existing create flow saves the task.
+const SUBTASKS = {
+  Planning:   ["Define success metrics", "Create project timeline", "Risk assessment"],
+  Research:   ["Competitive analysis", "Technology spike", "Feasibility report"],
+  Backend:    ["Create Express server & routing", "Design Mongo schema", "JWT authentication", "API request validation", "Error handling & logging"],
+  Frontend:   ["Build component library", "Implement primary screens", "Wire API integration", "Responsive & accessibility pass"],
+  "AI / ML":  ["Collect & clean dataset", "Feature engineering", "Train baseline model", "Evaluate & tune model", "Deploy inference endpoint"],
+  Hardware:   ["Wire sensors", "Flash firmware", "Calibrate readings", "Power management"],
+  Integration:["Define event contracts", "Implement realtime channel", "Notification delivery"],
+  Testing:    ["Write unit tests", "Build integration test suite", "Set up CI", "Manual QA pass"],
+  Deployment: ["Containerize app", "Configure CI/CD pipeline", "Provision cloud hosting", "Monitoring & alerts"],
+  General:    ["Break down requirements", "Implement core logic", "Add tests", "Write documentation"],
+};
+const tierFromScore = (s) => (s >= 80 ? "critical" : s >= 55 ? "high" : s >= 30 ? "medium" : "low");
+
+router.post("/teams/:teamId/ai-suggest", requireAuth, async (req, res) => {
+  try {
+    const { teamId } = req.params;
+    const { mode = "related", taskId } = req.body ?? {};
+    const [team, tasks] = await Promise.all([Team.findById(teamId).lean(), Task.find({ teamId }).lean()]);
+    if (!team) return res.status(404).json({ error: "team_not_found" });
+
+    const titleText = team.projectTitle || team.name;
+    const descText = team.projectDescription || team.projectTitle || team.name;
+    const keywords = extractFeatures(`${titleText} ${descText}`).slice(0, 6);
+    const existingCats = new Set(tasks.map((t) => t.category).filter(Boolean));
+    const seeds = decomposeProject(titleText, descText);     // project-related only
+
+    // Build an autofill payload with greedy priority + derived dates.
+    const buildTask = (seed, depCount = 0) => {
+      const greedy = computePriorityScore({ urgency: seed.urgency, impact: seed.impact, dependencyCount: depCount });
+      const dueInDays = Math.max(2, Math.round((seed.estimatedHours || 4) / 2));
+      const start = new Date();
+      const due = new Date(Date.now() + dueInDays * 86_400_000);
+      const reminder = new Date(due.getTime() - 86_400_000); reminder.setHours(9, 0, 0, 0);
+      return {
+        task: {
+          title: seed.title,
+          description: seed.description || "",
+          category: seed.category,
+          priorityLabel: tierFromScore(greedy),
+          urgency: seed.urgency, impact: seed.impact,
+          estimatedHours: seed.estimatedHours, businessValue: seed.businessValue,
+          startDate: start.toISOString(), dueDate: due.toISOString(), reminderAt: reminder.toISOString(),
+        },
+        greedy,
+      };
+    };
+
+    let chosen, missingPhase = null, dependencyReasoning = "", alternatives = [];
+
+    if (mode === "missing-phase") {
+      const wanted = [...new Set(seeds.map((s) => s.category))];
+      missingPhase = wanted.find((c) => !existingCats.has(c)) ?? null;
+      const pool = missingPhase ? seeds.filter((s) => s.category === missingPhase) : seeds;
+      const fresh = pool.filter((s) => boyerMooreSearch(tasks, s.title).length === 0);
+      chosen = buildTask(fresh[0] ?? pool[0], 0);
+      dependencyReasoning = missingPhase
+        ? `Phase "${missingPhase}" is missing from the roadmap; it should follow the existing phases.`
+        : "All standard phases already exist — suggested the highest-value remaining task.";
+      alternatives = pool.slice(1, 4).map((s) => s.title);
+    } else if (mode === "subtasks") {
+      const parent = tasks.find((t) => t._id.toString() === String(taskId));
+      const cat = parent?.category && SUBTASKS[parent.category] ? parent.category : "General";
+      const subs = SUBTASKS[cat];
+      const existingLower = tasks.map((t) => (t.title || "").toLowerCase());
+      const freshTitle = subs.find((t) => !existingLower.some((e) => e.includes(t.toLowerCase()))) ?? subs[0];
+      const seed = {
+        title: parent ? `${parent.title}: ${freshTitle}` : freshTitle,
+        description: `Subtask of ${parent?.title ?? "the selected task"}.`,
+        category: cat,
+        urgency: parent?.urgency ?? 3, impact: parent?.impact ?? 3,
+        estimatedHours: Math.max(1, Math.round((parent?.estimatedHours ?? 4) / 2)),
+        businessValue: parent?.businessValue ?? 6,
+      };
+      chosen = buildTask(seed, parent ? 1 : 0);
+      dependencyReasoning = parent
+        ? `Subtask of "${parent.title}" — Topological Sort places it after its parent.`
+        : "Standalone subtask.";
+      alternatives = subs.slice(1, 5).map((t) => (parent ? `${parent.title}: ${t}` : t));
+    } else { // related
+      const fresh = seeds.filter((s) => boyerMooreSearch(tasks, s.title).length === 0);
+      const pool = fresh.length ? fresh : seeds;
+      // Rank candidates by greedy priority using the existing Merge Sort.
+      const ranked = mergeSort(pool.map((s) => ({
+        ...s, status: "todo", effort: s.estimatedHours,
+        priority: computePriorityScore({ urgency: s.urgency, impact: s.impact, dependencyCount: 0 }),
+      })));
+      const pick = ranked[0];
+      chosen = buildTask(pick, 0);
+      dependencyReasoning = (pick.phaseIndex ?? 0) > 0
+        ? `Belongs to the "${pick.category}" phase, which usually follows earlier phases.`
+        : `Independent ${pick.category} task — no prerequisites.`;
+      alternatives = ranked.slice(1, 4).map((s) => s.title);
+    }
+
+    res.json({
+      task: chosen.task,
+      explanation: {
+        mode, keywords, missingPhase,
+        greedyScore: chosen.greedy,
+        businessValue: chosen.task.businessValue,
+        effort: chosen.task.estimatedHours,
+        priority: chosen.task.priorityLabel,
+        dependencyReasoning, alternatives,
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── DELETE /api/teams/:teamId/members/:userId ─────────────────────────────────
+// Remove a member; unassign any tasks they held.
+router.delete("/teams/:teamId/members/:userId", requireAuth, async (req, res) => {
+  try {
+    const { teamId, userId } = req.params;
+    const team = await Team.findByIdAndUpdate(teamId, { $pull: { members: { userId } } }, { new: true, lean: true });
+    if (!team) return res.status(404).json({ error: "team_not_found" });
+    await Task.updateMany({ teamId, assignedTo: userId }, { $set: { assignedTo: null, assignmentCost: null } });
+    res.json(team);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── PATCH /api/teams/:teamId/members/:userId ──────────────────────────────────
+// Update a member's name / role.
+router.patch("/teams/:teamId/members/:userId", requireAuth, async (req, res) => {
+  try {
+    const { teamId, userId } = req.params;
+    const set = {};
+    if (req.body.name !== undefined) set["members.$.name"] = String(req.body.name);
+    if (req.body.role !== undefined) set["members.$.role"] = String(req.body.role);
+    if (!Object.keys(set).length) return res.status(400).json({ error: "No valid member fields." });
+    const result = await Team.updateOne({ _id: teamId, "members.userId": userId }, { $set: set });
+    if (!result.matchedCount) return res.status(404).json({ error: "Team or member not found." });
+    const team = await Team.findById(teamId).lean();
+    res.json(team);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -336,17 +559,44 @@ router.post("/teams/:teamId/sprint-optimize", requireAuth, async (req, res) => {
       sprintHours = MAX_SPRINT_HOURS;
     }
 
-    const eligible = await Task.find({
-      teamId:         req.params.teamId,
-      status:         "todo",
-      estimatedHours: { $ne: null, $gt: 0 },
-      businessValue:  { $ne: null, $gt: 0 },
-    }).lean();
+    // Fetch ALL backlog tasks (every status) so we can explain — per task — why it
+    // is or isn't a Knapsack candidate, instead of silently filtering in the query.
+    const allTasks = await Task.find({ teamId: req.params.teamId })
+      .select("title status estimatedHours businessValue")
+      .lean();
+
+    // ── Eligibility classification (with human-readable reasons) ──────────────
+    // A task is a Knapsack candidate iff: status==="todo" AND estimatedHours>0
+    // AND businessValue>0. Anything else is reported with the exact reason.
+    const eligible = [];
+    const ineligible = [];
+    for (const t of allTasks) {
+      const reasons = [];
+      if (t.status === "done")        reasons.push("Already completed");
+      else if (t.status === "in_progress") reasons.push("In progress (only backlog/To-Do tasks are planned)");
+      if (!(t.estimatedHours > 0))    reasons.push("Missing estimated hours (weight)");
+      if (!(t.businessValue > 0))     reasons.push("Missing business value");
+
+      if (reasons.length === 0) eligible.push(t);
+      else ineligible.push({
+        _id: String(t._id), title: t.title, status: t.status,
+        estimatedHours: t.estimatedHours ?? null, businessValue: t.businessValue ?? null,
+        reason: reasons.join(" · "),
+      });
+    }
 
     if (eligible.length === 0)
-      return res.json({ selectedTasks: [], totalValue: 0, totalHours: 0,
-        message: "No eligible tasks. Set estimatedHours and businessValue on backlog tasks." });
+      return res.json({
+        selectedTasks: [], eligible: [], ineligible,
+        totalValue: 0, totalHours: 0, sprintCapacity: sprintHours,
+        utilizationPct: 0, algorithm: "0/1 Knapsack (bottom-up DP)",
+        warning: capacityWarning,
+        message: allTasks.length === 0
+          ? "No tasks yet. Add backlog tasks with estimated hours and business value."
+          : "No eligible tasks. Each task below needs status To-Do plus estimated hours and business value.",
+      });
 
+    // ── 0/1 Knapsack DP (weights scaled ×10 so fractional hours stay integral) ─
     const SCALE    = 10;
     const capacity = Math.floor(sprintHours * SCALE);
     const n        = eligible.length;
@@ -365,19 +615,39 @@ router.post("/teams/:teamId/sprint-optimize", requireAuth, async (req, res) => {
       }
     }
 
-    const selected = [];
+    const selectedIdx = new Set();
     let w = capacity;
     for (let i = n; i >= 1; i--) {
-      if (dp[i][w] !== dp[i - 1][w]) { selected.push(i - 1); w -= weights[i - 1]; }
+      if (dp[i][w] !== dp[i - 1][w]) { selectedIdx.add(i - 1); w -= weights[i - 1]; }
     }
 
-    const selectedTasks = selected.map((idx) => eligible[idx]);
-    const totalHours    = selectedTasks.reduce((s, t) => s + t.estimatedHours, 0);
+    const selectedTasks = [];
+    const eligibleReport = eligible.map((t, idx) => {
+      const picked = selectedIdx.has(idx);
+      const ratio  = +(t.businessValue / t.estimatedHours).toFixed(2);
+      const row = {
+        _id: String(t._id), title: t.title, status: t.status,
+        estimatedHours: t.estimatedHours, businessValue: t.businessValue,
+        ratio, selected: picked,
+        reason: picked
+          ? `Selected — value ${t.businessValue} for ${t.estimatedHours}h (ratio ${ratio}) fits the optimal subset`
+          : (weights[idx] > capacity
+              ? `Not selected — ${t.estimatedHours}h alone exceeds the ${sprintHours}h capacity`
+              : `Not selected — a higher-value combination used the remaining capacity`),
+      };
+      if (picked) selectedTasks.push(t);
+      return row;
+    });
+
+    const totalHours = selectedTasks.reduce((s, t) => s + t.estimatedHours, 0);
 
     res.json({
       selectedTasks,
+      eligible      : eligibleReport,
+      ineligible,
       totalValue    : dp[n][capacity],
       totalHours    : Math.round(totalHours * 100) / 100,
+      totalEligible : eligible.length,
       sprintCapacity: sprintHours,
       utilizationPct: Math.round((totalHours / sprintHours) * 100),
       algorithm     : "0/1 Knapsack (bottom-up DP)",
@@ -479,7 +749,7 @@ router.post("/teams/:teamId/tasks/:taskId/duplicate", requireAuth, async (req, r
       source: src.source,
       dependencies: cloneDependencies ? (src.dependencies ?? []) : [],
       dependencyCount: cloneDependencies ? (src.dependencies?.length ?? 0) : 0,
-      createdBy: req.user?.id,
+      ...(mongoose.isValidObjectId(req.user?.id) ? { createdBy: req.user.id } : {}),
     });
     await Team.updateOne({ _id: teamId }, { $inc: { taskCount: 1 } });
     res.status(201).json(copy.toObject());

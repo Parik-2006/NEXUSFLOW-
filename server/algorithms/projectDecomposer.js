@@ -45,7 +45,7 @@ const HARDWARE_SPECIALS = [
   { re: /\b(wearable|heart|spo2|vitals)\b/i, task: "Wearable Device Data Ingestion" },
 ];
 
-function extractFeatures(text) {
+export function extractFeatures(text) {
   const counts = new Map();
   for (const raw of String(text).toLowerCase().match(/[a-z][a-z-]{2,}/g) ?? []) {
     if (STOPWORDS.has(raw) || raw.length < 4) continue;

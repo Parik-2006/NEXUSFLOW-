@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTeam } from "@/hooks/useTeam";
 import { Avatar, AvatarStack } from "@/components/ui";
 import NotificationCenter from "@/components/NotificationCenter";
+import FloatingBackground from "@/components/FloatingBackground";
 import OverviewPanel from "@/components/workspace/OverviewPanel";
 import TasksPanel from "@/components/workspace/TasksPanel";
 import SprintPanel from "@/components/workspace/SprintPanel";
@@ -37,20 +38,22 @@ export default function Workspace() {
   const [active, setActive] = useState<TabKey>((tab as TabKey) && TABS.some((t) => t.key === tab) ? (tab as TabKey) : "overview");
 
   const names = (team?.members ?? []).map((m) => m.name || "Member");
+  const memberImages = (team?.members ?? []).map((m) => m.avatar || null);
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
+      <FloatingBackground />
       {/* Header */}
       <View style={[s.header, { paddingTop: insets.top + 8 }]}>
         <Pressable onPress={() => router.back()} hitSlop={10} style={s.back}>
           <Ionicons name="chevron-back" size={22} color={colors.text} />
         </Pressable>
-        <Avatar name={team?.name ?? "Team"} size={36} />
+        <Avatar name={team?.name ?? "Team"} size={36} image={team?.logo} />
         <View style={{ flex: 1 }}>
           <Text style={font.h3} numberOfLines={1}>{team?.name ?? "Workspace"}</Text>
           <Text style={s.headerSub}>{team?.members?.length ?? 0} members · {team?.taskCount ?? 0} tasks</Text>
         </View>
-        {names.length > 0 && <AvatarStack names={names} max={3} />}
+        {names.length > 0 && <AvatarStack names={names} images={memberImages} max={3} />}
         {teamId && <NotificationCenter teamId={teamId} />}
       </View>
 

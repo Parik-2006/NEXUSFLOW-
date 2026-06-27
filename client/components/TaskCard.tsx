@@ -10,7 +10,7 @@
  * Backward compatible: every new prop is optional.
  */
 import { useState } from "react";
-import { View, Text, Pressable, StyleSheet } from "react-native";
+import { View, Text, Pressable, StyleSheet, Image } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { Task } from "@/hooks/useTeamTasks";
 import { colors, statusMeta, taskPriorityKey, PRIORITY_META, deadlineMeta } from "@/theme";
@@ -68,6 +68,7 @@ export default function TaskCard({
   highlight,
   showMeta,
   assigneeName,
+  assigneeImage,
   onEdit,
   onDelete,
   onDuplicate,
@@ -79,6 +80,7 @@ export default function TaskCard({
   /** Show extended metadata (source, due, effort, value, deps, assignee). */
   showMeta?: boolean;
   assigneeName?: string;
+  assigneeImage?: string | null;
   onEdit?: () => void;
   onDelete?: () => void;
   onDuplicate?: () => void;
@@ -153,7 +155,16 @@ export default function TaskCard({
           {task.estimatedHours ? <Meta icon="time-outline" text={`${task.estimatedHours}h`} /> : null}
           {task.businessValue ? <Meta icon="trending-up-outline" text={`value ${task.businessValue}`} /> : null}
           {(task.dependencies?.length ?? 0) > 0 ? <Meta icon="git-branch-outline" text={`${task.dependencies!.length} deps`} /> : null}
-          {assigneeName ? <Meta icon="person-outline" text={assigneeName} /> : null}
+          {assigneeName ? (
+            assigneeImage ? (
+              <View style={styles.meta}>
+                <Image source={{ uri: assigneeImage }} style={styles.assigneeImg} />
+                <Text style={styles.metaTxt}>{assigneeName}</Text>
+              </View>
+            ) : (
+              <Meta icon="person-outline" text={assigneeName} />
+            )
+          ) : null}
           {reminder ? <Meta icon="notifications-outline" text={reminder} color={colors.accentDark} /> : null}
         </View>
       ) : null}
@@ -224,6 +235,7 @@ const styles = StyleSheet.create({
   metaRow: { flexDirection: "row", flexWrap: "wrap", gap: 12, paddingLeft: 20, marginTop: 2 },
   meta: { flexDirection: "row", alignItems: "center", gap: 4 },
   metaTxt: { fontSize: 11, color: colors.textMuted, fontWeight: "500" },
+  assigneeImg: { width: 16, height: 16, borderRadius: 8, backgroundColor: colors.surfaceAlt },
 
   menu: { marginTop: 4, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 6, gap: 2 },
   menuItem: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8, paddingHorizontal: 4 },

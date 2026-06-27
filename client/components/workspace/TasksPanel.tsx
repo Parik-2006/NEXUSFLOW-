@@ -20,6 +20,7 @@ import TaskCard from "@/components/TaskCard";
 import KanbanBoard from "@/components/workspace/KanbanBoard";
 import DatePicker from "@/components/DatePicker";
 import { WhyButton, AlgoExplainSheet, type AlgoEntry } from "@/components/AlgoExplain";
+import AiTaskAssistant from "@/components/AiTaskAssistant";
 import { searchTasks } from "@/utils/boyerMoore";
 import { SearchBar, Chip, FAB, EmptyState, Badge, Field, Button, Stepper, Skeleton } from "@/components/ui";
 import { ModalSheet, useToast, useConfirm } from "@/components/feedback";
@@ -39,13 +40,13 @@ type Draft = {
   title: string; description: string; priorityLabel: PriorityKey;
   urgency: number; impact: number; hours: number; value: number;
   startDate: string; dueDate: string; assignedTo: string | null;
-  status: Task["status"]; reminderDate: string; reminderTime: string;
+  status: Task["status"]; reminderDate: string; reminderTime: string; category: string;
 };
 const EMPTY_DRAFT: Draft = {
   title: "", description: "", priorityLabel: "medium",
   urgency: 3, impact: 3, hours: 4, value: 6,
   startDate: "", dueDate: "", assignedTo: null,
-  status: "todo", reminderDate: "", reminderTime: "09:00",
+  status: "todo", reminderDate: "", reminderTime: "09:00", category: "",
 };
 
 const STATUS_ORDER: Task["status"][] = ["todo", "in_progress", "done"];
@@ -68,7 +69,7 @@ const reminderParts = (iso?: string | null) => {
 };
 
 export default function TasksPanel({ teamId, onGenerateAI }: { teamId: string; onGenerateAI: () => void }) {
-  const { tasks, rawTasks, loading, setStatus, setTaskPriority, createTask, updateTask, deleteTask, duplicateTask } = useTeamTasks(teamId);
+  const { tasks, rawTasks, loading, setStatus, setTaskPriority, createTask, updateTask, deleteTask, duplicateTask, aiSuggest } = useTeamTasks(teamId);
   const { members } = useTeam(teamId);
   const toast = useToast();
   const confirm = useConfirm();
@@ -82,6 +83,7 @@ export default function TasksPanel({ teamId, onGenerateAI }: { teamId: string; o
   const [explain, setExplain] = useState<AlgoEntry[] | null>(null);
 
   const memberName = (id?: string | null) => members.find((m) => m.userId === id)?.name;
+  const memberImage = (id?: string | null) => members.find((m) => m.userId === id)?.avatar || null;
 
   const trimmed = query.trim();
   const searching = trimmed.length > 0;
@@ -100,8 +102,29 @@ export default function TasksPanel({ teamId, onGenerateAI }: { teamId: string; o
       startDate: fromIso(t.startDate), dueDate: fromIso(t.dueDate ?? t.deadline),
       assignedTo: t.assignedTo ?? null,
       status: t.status, reminderDate: rp.date, reminderTime: rp.time,
+      category: t.category ?? "",
     });
     setShowForm(true);
+  };
+
+  // Fill the form from an AI suggestion (Generate With AI). Manual flow unchanged.
+  const applyAiTask = (t: any) => {
+    const rp = reminderParts(t.reminderAt);
+    setDraft((d) => ({
+      ...d,
+      title: t.title ?? d.title,
+      description: t.description ?? d.description,
+      priorityLabel: (t.priorityLabel as PriorityKey) ?? d.priorityLabel,
+      urgency: t.urgency ?? d.urgency,
+      impact: t.impact ?? d.impact,
+      hours: t.estimatedHours ?? d.hours,
+      value: t.businessValue ?? d.value,
+      startDate: t.startDate ? fromIso(t.startDate) : d.startDate,
+      dueDate: t.dueDate ? fromIso(t.dueDate) : d.dueDate,
+      reminderDate: rp.date || d.reminderDate,
+      reminderTime: rp.time || d.reminderTime,
+      category: t.category ?? d.category,
+    }));
   };
 
   const submit = async () => {
@@ -125,6 +148,7 @@ export default function TasksPanel({ teamId, onGenerateAI }: { teamId: string; o
         startDate: toIso(draft.startDate), dueDate: toIso(draft.dueDate),
         status: draft.status, assignedTo: draft.assignedTo,
         reminderAt: toReminderIso(draft.reminderDate, draft.reminderTime),
+        category: draft.category || undefined,
       });
       setBusy(false);
       if (error) return toast(error, "error");
@@ -152,6 +176,7 @@ export default function TasksPanel({ teamId, onGenerateAI }: { teamId: string; o
       task={t}
       showMeta
       assigneeName={memberName(t.assignedTo)}
+      assigneeImage={memberImage(t.assignedTo)}
       highlight={searching ? trimmed : undefined}
       onCycle={(next) => setStatus(t._id, next)}
       onSetPriority={(u, i) => setTaskPriority(t._id, u, i)}
@@ -283,6 +308,7 @@ export default function TasksPanel({ teamId, onGenerateAI }: { teamId: string; o
       {/* Create / Edit modal */}
       <ModalSheet visible={showForm} onClose={() => setShowForm(false)} title={editId ? "Edit Task" : "New Task"}>
         <Field label="Title" placeholder="e.g. Build payment webhook" value={draft.title} onChangeText={(v) => setDraft((d) => ({ ...d, title: v }))} />
+        {!editId && <AiTaskAssistant tasks={rawTasks} suggest={aiSuggest} onApply={applyAiTask} />}
         <Field label="Description" placeholder="What needs to happen and why." value={draft.description} onChangeText={(v) => setDraft((d) => ({ ...d, description: v }))} multiline />
 
         <View style={{ gap: 8 }}>

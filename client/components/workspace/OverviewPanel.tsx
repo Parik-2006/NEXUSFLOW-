@@ -112,6 +112,7 @@ export default function OverviewPanel({ teamId, onNavigate }: { teamId: string; 
   }), [rawTasks]);
 
   const names = (team?.members ?? []).map((m) => m.name || "Member");
+  const memberImages = (team?.members ?? []).map((m) => m.avatar || null);
 
   return (
     <ScrollView contentContainerStyle={s.scroll}>
@@ -243,7 +244,7 @@ export default function OverviewPanel({ teamId, onNavigate }: { teamId: string; 
             </View>
             {names.length > 0 ? (
               <View style={s.rowBetween}>
-                <AvatarStack names={names} max={6} />
+                <AvatarStack names={names} images={memberImages} max={6} />
                 <Pressable onPress={() => onNavigate("members")}><Text style={s.link}>Manage →</Text></Pressable>
               </View>
             ) : (

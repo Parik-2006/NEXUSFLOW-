@@ -5,7 +5,7 @@
 import React, { useState } from "react";
 import { View, Text, StyleSheet, ScrollView } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { useTeam, type SprintResult } from "@/hooks/useTeam";
+import { useTeam, type SprintResult, type SprintTaskRow } from "@/hooks/useTeam";
 import { Card, Button, Stepper, Badge, ProgressBar, EmptyState } from "@/components/ui";
 import { useToast } from "@/components/feedback";
 import { colors, spacing, radius, font } from "@/theme";
@@ -48,7 +48,23 @@ export default function SprintPanel({ teamId }: { teamId: string }) {
       </Card>
 
       {result && (result.selectedTasks.length === 0 ? (
-        <EmptyState icon="cube-outline" title="No eligible tasks" message={result.message ?? "Add estimated hours and business value to backlog tasks so the optimizer can select them."} />
+        <>
+          <EmptyState icon="cube-outline" title="No eligible tasks" message={result.message ?? "Add estimated hours and business value to backlog tasks so the optimizer can select them."} />
+          {!!result.ineligible?.length && (
+            <Card style={{ gap: spacing.sm }}>
+              <Text style={s.selTitle}>Why each task was skipped</Text>
+              {result.ineligible.map((t) => (
+                <View key={t._id} style={s.reasonRow}>
+                  <Ionicons name="close-circle" size={15} color={colors.danger} style={{ marginTop: 1 }} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.taskTitle}>{t.title}</Text>
+                    <Text style={s.reasonTxt}>{t.reason}</Text>
+                  </View>
+                </View>
+              ))}
+            </Card>
+          )}
+        </>
       ) : (
         <Card style={{ gap: spacing.md }}>
           <View style={s.statRow}>
@@ -59,16 +75,54 @@ export default function SprintPanel({ teamId }: { teamId: string }) {
           </View>
           <View style={{ gap: 4 }}>
             <ProgressBar value={util / 100} color={utilColor} height={10} />
-            <Text style={s.utilTxt}>{util}% capacity utilised</Text>
+            <Text style={s.utilTxt}>{util}% capacity utilised · {result.sprintCapacity - result.totalHours}h remaining</Text>
           </View>
+
           <Text style={s.selTitle}>Selected for this sprint</Text>
-          {result.selectedTasks.map((t) => (
+          {(result.eligible?.filter((t) => t.selected)
+            ?? result.selectedTasks.map((t): SprintTaskRow => ({ ...t, selected: true }))
+          ).map((t) => (
             <View key={t._id} style={s.taskRow}>
               <View style={[s.dot, { backgroundColor: colors.knapsack }]} />
-              <Text style={s.taskTitle}>{t.title}</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={s.taskTitle}>{t.title}</Text>
+                {t.reason ? <Text style={s.reasonTxt}>{t.reason}</Text> : null}
+              </View>
               <Text style={s.taskMeta}>{t.estimatedHours}h · V{t.businessValue}</Text>
             </View>
           ))}
+
+          {/* Eligible-but-not-selected, so the user sees the full decision */}
+          {!!result.eligible?.some((t) => !t.selected) && (
+            <>
+              <Text style={s.selTitle}>Eligible · not selected</Text>
+              {result.eligible.filter((t) => !t.selected).map((t) => (
+                <View key={t._id} style={s.taskRow}>
+                  <View style={[s.dot, { backgroundColor: colors.textFaint }]} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={[s.taskTitle, { color: colors.textMuted }]}>{t.title}</Text>
+                    {t.reason ? <Text style={s.reasonTxt}>{t.reason}</Text> : null}
+                  </View>
+                  <Text style={s.taskMeta}>{t.estimatedHours}h · V{t.businessValue}</Text>
+                </View>
+              ))}
+            </>
+          )}
+
+          {!!result.ineligible?.length && (
+            <>
+              <Text style={s.selTitle}>Excluded ({result.ineligible.length})</Text>
+              {result.ineligible.map((t) => (
+                <View key={t._id} style={s.reasonRow}>
+                  <Ionicons name="close-circle" size={15} color={colors.danger} style={{ marginTop: 1 }} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={[s.taskTitle, { color: colors.textMuted }]}>{t.title}</Text>
+                    <Text style={s.reasonTxt}>{t.reason}</Text>
+                  </View>
+                </View>
+              ))}
+            </>
+          )}
         </Card>
       ))}
 
@@ -103,4 +157,6 @@ const s = StyleSheet.create({
   dot: { width: 8, height: 8, borderRadius: 4 },
   taskTitle: { flex: 1, fontSize: 14, fontWeight: "600", color: colors.text },
   taskMeta: { fontSize: 12, color: colors.textMuted },
+  reasonRow: { flexDirection: "row", alignItems: "flex-start", gap: 8, paddingVertical: 8, borderTopWidth: 1, borderTopColor: colors.border },
+  reasonTxt: { fontSize: 11, color: colors.textMuted, marginTop: 2, lineHeight: 15 },
 });

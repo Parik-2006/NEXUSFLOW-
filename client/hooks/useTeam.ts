@@ -23,9 +23,17 @@ export type AssignResult = {
   meta: { nodesExplored?: number; nodesPruned?: number; pruningRatio?: string; algorithm?: string; complexity?: { time: string; space: string } };
 };
 
+export type SprintTaskRow = {
+  _id: string; title: string; status?: string;
+  estimatedHours?: number; businessValue?: number; ratio?: number;
+  selected?: boolean; reason?: string;
+};
 export type SprintResult = {
   selectedTasks: { _id: string; title: string; estimatedHours?: number; businessValue?: number }[];
-  totalValue: number; totalHours: number; sprintCapacity: number; utilizationPct: number;
+  eligible?: SprintTaskRow[];
+  ineligible?: SprintTaskRow[];
+  totalValue: number; totalHours: number; totalEligible?: number;
+  sprintCapacity: number; utilizationPct: number;
   algorithm: string; warning?: string | null; message?: string;
 };
 

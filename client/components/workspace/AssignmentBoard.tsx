@@ -91,7 +91,7 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
         return (
           <Card key={m.userId} style={{ gap: open ? spacing.sm : 0 }}>
             <Pressable style={s.memberHead} onPress={() => setExpanded(open ? null : m.userId)}>
-              <Avatar name={m.name || "Member"} size={36} />
+              <Avatar name={m.name || "Member"} size={36} image={m.avatar} />
               <View style={{ flex: 1 }}>
                 <Text style={s.memberName}>{m.name || "Member"}</Text>
                 <Text style={s.memberSub}>Top skill: {top.k} ({top.v}/10)</Text>
@@ -151,7 +151,7 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
             return (
               <Card key={id} style={{ gap: spacing.sm }}>
                 <View style={s.memberHead}>
-                  <Avatar name={m.name} size={32} />
+                  <Avatar name={m.name} size={32} image={memberById(id)?.avatar} />
                   <View style={{ flex: 1 }}>
                     <Text style={s.memberName}>{m.name}</Text>
                     {top ? <Text style={s.memberSub}>Top skill: {top.k} ({top.v}/10)</Text> : null}

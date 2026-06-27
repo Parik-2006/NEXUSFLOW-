@@ -309,6 +309,7 @@ export function useTeamTasks(teamId: string) {
     description?: string; deadline?: string | null; startDate?: string | null;
     dueDate?: string | null; priorityLabel?: Task["priorityLabel"];
     reminderAt?: string | null; status?: Task["status"]; assignedTo?: string | null;
+    category?: string;
   };
   const createTask = useCallback(
     (title: string, opts?: CreateOpts) =>
@@ -323,6 +324,7 @@ export function useTeamTasks(teamId: string) {
             description: opts?.description, deadline: opts?.deadline,
             startDate: opts?.startDate, dueDate: opts?.dueDate, priorityLabel: opts?.priorityLabel,
             reminderAt: opts?.reminderAt, status: opts?.status, assignedTo: opts?.assignedTo,
+            category: opts?.category,
           },
           (ack: { ok: boolean; task?: Task; error?: string }) =>
             resolve(ack?.ok ? {} : { error: ack?.error ?? "Failed to create task" })
@@ -370,6 +372,35 @@ export function useTeamTasks(teamId: string) {
       if (!res.ok) return { error: data.error ?? "Failed to duplicate task" };
       setRawTasks((prev) => (prev.some((t) => t._id === data._id) ? prev : [data, ...prev]));
       return {};
+    },
+    [teamId, token]
+  );
+
+  // ── AI task assistant (team-aware; reuses server DAA algorithms) ────────────
+  type AiSuggestResult = {
+    error?: string;
+    task?: {
+      title: string; description: string; category: string;
+      priorityLabel: "critical" | "high" | "medium" | "low";
+      urgency: number; impact: number; estimatedHours: number; businessValue: number;
+      startDate: string; dueDate: string; reminderAt: string;
+    };
+    explanation?: {
+      mode: string; keywords: string[]; missingPhase: string | null;
+      greedyScore: number; businessValue: number; effort: number; priority: string;
+      dependencyReasoning: string; alternatives: string[];
+    };
+  };
+  const aiSuggest = useCallback(
+    async (mode: string, taskId?: string): Promise<AiSuggestResult> => {
+      const res = await fetch(`${API}/api/teams/${teamId}/ai-suggest`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ mode, taskId }),
+      });
+      const data = await res.json();
+      if (!res.ok) return { error: data.error ?? "AI suggestion failed" };
+      return { task: data.task, explanation: data.explanation };
     },
     [teamId, token]
   );
@@ -431,6 +462,7 @@ export function useTeamTasks(teamId: string) {
     updateTask,
     deleteTask,
     duplicateTask,
+    aiSuggest,
     restoreBacklog,
     addDependency,
     removeDependency,

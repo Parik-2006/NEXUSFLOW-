@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { View, Text, ScrollView, StyleSheet, Pressable, RefreshControl } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -11,6 +11,9 @@ import {
 import { useToast, useConfirm } from "@/components/feedback";
 import CreateTeamModal from "@/components/CreateTeamModal";
 import JoinTeamModal from "@/components/JoinTeamModal";
+import TeamMenu from "@/components/TeamMenu";
+import FloatingBackground from "@/components/FloatingBackground";
+import { getItem } from "@/utils/storage";
 import { colors, radius, spacing, font, layout } from "@/theme";
 
 const QUICK = [
@@ -28,7 +31,7 @@ const ONBOARD = [
 ] as const;
 
 export default function Dashboard() {
-  const { teams, loading, error, refetch, createTeam, deleteTeam, joinTeam } = useTeams();
+  const { teams, loading, error, refetch, createTeam, deleteTeam, joinTeam, updateTeam, generateTasks, addMember, removeMember, updateMember } = useTeams();
   const { user } = useAuth();
   const router = useRouter();
   const toast = useToast();
@@ -37,6 +40,12 @@ export default function Dashboard() {
   const [showCreate, setShowCreate] = useState(false);
   const [showJoin, setShowJoin] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [myImage, setMyImage] = useState<string | null>(null);
+  useEffect(() => {
+    getItem(`nf_profile_${user?.email ?? "anon"}`).then((raw) => {
+      if (raw) try { setMyImage(JSON.parse(raw).image ?? null); } catch {}
+    });
+  }, [user?.email]);
 
   const stats = useMemo(() => {
     const totalTasks = teams.reduce((s, t) => s + (t.taskCount ?? 0), 0);
@@ -66,6 +75,7 @@ export default function Dashboard() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
+      <FloatingBackground />
       <ScrollView
         contentContainerStyle={[s.scroll, { paddingTop: insets.top + spacing.lg, paddingBottom: 120 }]}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
@@ -78,7 +88,7 @@ export default function Dashboard() {
               <Text style={font.h1}>{user?.name ?? "there"}</Text>
             </View>
             <Pressable onPress={() => router.push("/(tabs)/profile" as any)} hitSlop={8}>
-              <Avatar name={user?.name ?? "User"} size={46} />
+              <Avatar name={user?.name ?? "User"} size={46} image={myImage} />
             </Pressable>
           </View>
 
@@ -136,15 +146,26 @@ export default function Dashboard() {
               {teams.map((team) => {
                 const ratio = team.taskCount ? team.doneCount / team.taskCount : 0;
                 const names = (team.members ?? []).map((m) => m.name || "Member");
+                const memberImages = (team.members ?? []).map((m) => m.avatar || null);
                 return (
                   <Card key={team._id} style={{ gap: spacing.md }}>
                     <Pressable onPress={() => open(team._id)} style={s.cardTop}>
-                      <Avatar name={team.name} size={42} />
+                      <Avatar name={team.name} size={42} image={team.logo} />
                       <View style={{ flex: 1 }}>
                         <Text style={font.h3} numberOfLines={1}>{team.name}</Text>
                         <Text style={s.cardSub}>{team.doneCount}/{team.taskCount} tasks · {names.length} member{names.length !== 1 ? "s" : ""}</Text>
                       </View>
-                      {names.length > 0 && <AvatarStack names={names} />}
+                      {names.length > 0 && <AvatarStack names={names} images={memberImages} />}
+                      <TeamMenu
+                        team={team}
+                        onUpdate={(patch) => updateTeam(team._id, patch)}
+                        onGenerate={(prompt) => generateTasks(team._id, prompt)}
+                        onAddMember={(name, skills) => addMember(team._id, name, skills)}
+                        onRemoveMember={(uid) => removeMember(team._id, uid)}
+                        onUpdateMember={(uid, fields) => updateMember(team._id, uid, fields)}
+                        onDelete={() => onDelete(team._id, team.name)}
+                        onNavigate={(tab) => open(team._id, tab)}
+                      />
                       <Pressable onPress={() => onDelete(team._id, team.name)} hitSlop={8} style={s.trash}>
                         <Ionicons name="trash-outline" size={18} color={colors.textFaint} />
                       </Pressable>
