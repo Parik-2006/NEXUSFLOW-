@@ -36,7 +36,15 @@
       "Bash(git commit *)",
       "Bash(git push *)",
       "Bash(grep -E \"\\\\.env$\")",
-      "Bash(echo \"exit: $?\")"
+      "Bash(echo \"exit: $?\")",
+      "Bash(grep -rl \"update/\" client server)",
+      "Bash(diff -q \"client/app/\\(tabs\\)/dashboard.tsx\" \"update/client/app/\\(tabs\\)/dashboard.tsx\")",
+      "Bash(diff -q \"server/models/Task.js\" \"update/server/models/Task.js\")",
+      "Bash(grep -rl \"SortComparisonCard\" client server)",
+      "Bash(kill %1)",
+      "Bash(rm -f ALGORITHM_USAGE.md DAA_INTEGRATION_REPORT.md DIFF_ANALYSIS_REPORT.md IMPROVEMENTS_V2.md MERGE_DISCOVERY_REPORT.md MERGE_PLAN.md PROJECT_UNIQUENESS.md PROJECT_WORKFLOW.md TASK_MANAGEMENT_UPGRADE.md USER_FLOW.md)",
+      "Bash(mv MENTOR_DEMO_GUIDE.md docs/MENTOR_DEMO_GUIDE.md)",
+      "Bash(rm -rf update)"
     ]
   }
 }
