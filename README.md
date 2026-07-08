@@ -72,11 +72,15 @@ The architecture follows a layered design consisting of a React Native frontend,
 - Tailwind CSS
 - Socket.IO Client
 
+Deployed frontend: https://nexusflow-eta.vercel.app/
+
 ### Backend
 - Node.js
 - Express.js
 - MongoDB
 - Socket.IO
+
+Deployed backend: https://nexusflow-nxeg.onrender.com/
 
 ### Artificial Intelligence
 - Google Gemini API

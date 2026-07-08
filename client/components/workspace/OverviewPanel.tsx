@@ -15,7 +15,7 @@ import { useToast, useConfirm } from "@/components/feedback";
 import { PieChart, type Datum } from "@/components/charts";
 import { colors, spacing, radius, font, healthLabel, deadlineMeta, taskPriorityKey, PRIORITY_META, type PriorityKey } from "@/theme";
 
-const API = process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:4000";
+const API = process.env.EXPO_PUBLIC_API_URL ?? "https://nexusflow-nxeg.onrender.com";
 
 type Health = {
   score: number; grade: string; total: number;

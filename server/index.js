@@ -12,9 +12,10 @@ import { sign, verify, requireAuth } from "./auth.js";
 
 const PORT = process.env.PORT ?? 4000;
 const MONGO_URI = process.env.MONGO_URI ?? "mongodb://localhost:27017/nexusflow";
+const FRONTEND_URL = process.env.FRONTEND_URL ?? "https://nexusflow-eta.vercel.app";
 
 const app = express();
-app.use(cors());
+app.use(cors({ origin: [FRONTEND_URL, "http://localhost:8081", "http://localhost:19006"], credentials: true }));
 app.use(express.json());
 
 // --- Dev auth: issues a JWT for any credentials (replace with real auth). ---
@@ -29,7 +30,7 @@ app.get("/api/me", requireAuth, (req, res) => res.json(req.user));
 app.use("/api", teamRoutes);
 
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
+const io = new Server(server, { cors: { origin: [FRONTEND_URL, "http://localhost:8081", "http://localhost:19006"] } });
 
 // Socket auth middleware: validate handshake token.
 io.use((socket, next) => {

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { getSocket } from "@/services/socket";
 import { useAuth } from "@/context/AuthContext";
 
-const API = process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:4000";
+const API = process.env.EXPO_PUBLIC_API_URL ?? "https://nexusflow-nxeg.onrender.com";
 
 export type TeamMember = {
   userId: string;

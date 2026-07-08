@@ -7,7 +7,7 @@ set "ROOT=%~dp0"
 
 echo Starting NexusFlow...
 
-REM Pin the backend port to 4000 so it matches the client (EXPO_PUBLIC_API_URL).
+REM Pin the local backend port to 4000 for this launcher.
 REM This overrides any machine-wide PORT variable (e.g. PORT=5000) for this run.
 set "PORT=4000"
 REM Clear any malformed CI value (e.g. "1 ") so Expo's interactive keys work
@@ -28,7 +28,7 @@ if not exist "%ROOT%server\node_modules" (
     call npm install
     popd
 )
-start "NexusFlow Server" /D "%ROOT%server" cmd /k "echo Backend running at http://localhost:4000 && echo. && npm run dev"
+start "NexusFlow Server" /D "%ROOT%server" cmd /k "echo Local backend running at http://localhost:4000 && echo. && npm run dev"
 
 REM --- Frontend (client) ---
 if not exist "%ROOT%client\node_modules" (
@@ -44,7 +44,7 @@ echo.
 echo ============================================
 echo   NexusFlow is starting in two windows.
 echo.
-echo   Backend  (API):  http://localhost:4000
+echo   Backend  (local API):  http://localhost:4000
 echo   Frontend (web):  http://localhost:8081
 echo.
 echo   The web app opens in your browser automatically.

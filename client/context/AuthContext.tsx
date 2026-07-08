@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
 import { setItem, deleteItem } from "../utils/storage";
 
-const API = process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:4000";
+const API = process.env.EXPO_PUBLIC_API_URL ?? "https://nexusflow-nxeg.onrender.com";
 const TOKEN_KEY = "nf_jwt";
 
 type User = { id: string; email: string; name: string };

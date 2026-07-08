@@ -11,8 +11,8 @@ P:\DAA OPTIONAL
 └── docs/      Product & engineering documentation
 ```
 
-Launch both with `start.bat` (pins `PORT=4000` for the server; the client points
-at it via `EXPO_PUBLIC_API_URL`).
+Launch both with `start.bat` (pins `PORT=4000` for the local server; the client
+points at the deployed backend via `EXPO_PUBLIC_API_URL`).
 
 ## Client
 

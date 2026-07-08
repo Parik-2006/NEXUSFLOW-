@@ -9,7 +9,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import type { Team, TeamMember } from "@/hooks/useTeams";
 
-const API = process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:4000";
+const API = process.env.EXPO_PUBLIC_API_URL ?? "https://nexusflow-nxeg.onrender.com";
 
 export type Assignment = {
   taskId: string; taskTitle: string; memberId: string; memberName: string; cost: number;

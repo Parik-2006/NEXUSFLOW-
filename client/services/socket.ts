@@ -1,6 +1,6 @@
 import { io, Socket } from "socket.io-client";
 
-const API = process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:4000";
+const API = process.env.EXPO_PUBLIC_API_URL ?? "https://nexusflow-nxeg.onrender.com";
 let socket: Socket | null = null;
 
 /**
