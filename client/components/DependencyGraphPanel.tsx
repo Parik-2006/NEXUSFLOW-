@@ -1,60 +1,47 @@
 /**
- * DependencyGraphPanel — dependency planning surface.
+ * DependencyGraphPanel — Execution Roadmap (Topological Sort / Kahn's).
  * ---------------------------------------------------------------------------------
- * Focused on the one thing that's genuinely useful: the **Execution Roadmap**
- * produced by Topological Sort (Kahn's). The previous node-link canvas (zoom/pan)
- * was removed — it added confusion without insight.
- *
- * Renders:
- *   • Cycle warning (when the DAG has a circular dependency)
- *   • Execution Roadmap — ordered Step → Task cards with priority, status,
- *     assignee, deadline and dependency details.
- *
- * DFS/BFS still run server-side (cycle check) but are not surfaced here.
+ * Presentational: receives the dependency graph (already fetched by GraphPanel
+ * via useDependencyGraph) and renders the ordered Step → Task roadmap with
+ * priority, status, assignee, deadline and "Depends on" details, plus a cycle
+ * warning when the DAG is broken. No fetching, no ScrollView — the parent
+ * page owns both. If no dependencies exist yet, shows "No execution order
+ * available." instead of fake steps.
  */
 import React, { useMemo } from "react";
-import { View, Text, ScrollView, Pressable, ActivityIndicator, StyleSheet } from "react-native";
+import { View, Text, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { useDependencyGraph } from "@/hooks/useDependencyGraph";
+import type { DependencyGraph } from "@/hooks/useDependencyGraph";
 import { colors, radius, PRIORITY_META, priorityKeyFromScore, statusMeta, deadlineMeta } from "@/theme";
 
 const statusColor = (s: string) => statusMeta[s as keyof typeof statusMeta]?.color ?? colors.textMuted;
 const statusLabel = (s: string) => statusMeta[s as keyof typeof statusMeta]?.label ?? s;
 const tierOf = (score: number) => PRIORITY_META[priorityKeyFromScore(score ?? 0)];
 
-export default function DependencyGraphPanel({ teamId }: { teamId: string }) {
-  const { graph, loading, error, refetch } = useDependencyGraph(teamId);
+export default function DependencyGraphPanel({ graph }: { graph: DependencyGraph }) {
   const nodeMap = useMemo(() => new Map(graph.nodes.map((n) => [n.id, n])), [graph.nodes]);
 
-  if (loading) {
-    return <View style={s.center}><ActivityIndicator color={colors.primary} /><Text style={s.muted}>Computing roadmap…</Text></View>;
-  }
-  if (error) {
-    return <View style={s.center}><Text style={{ color: colors.danger }}>Failed to load graph: {error}</Text><Pressable onPress={refetch} style={s.retry}><Text style={s.retryTxt}>Retry</Text></Pressable></View>;
-  }
-  if (!graph.nodes.length) {
-    return <View style={s.center}><Text style={s.emptyTitle}>No tasks yet</Text><Text style={s.muted}>Create tasks to build the execution roadmap.</Text></View>;
+  // No dependencies ⇒ Kahn's has nothing meaningful to sequence.
+  if (graph.edges.length === 0) {
+    return (
+      <View style={s.emptyBox}>
+        <Ionicons name="list-outline" size={22} color={colors.textFaint} />
+        <Text style={s.emptyTitle}>No execution order available.</Text>
+        <Text style={s.emptySub}>Add dependencies between tasks and Topological Sort will generate the roadmap.</Text>
+      </View>
+    );
   }
 
   const topoOrder = graph.topoResult.order;
 
   return (
-    <ScrollView contentContainerStyle={s.scroll}>
+    <View style={{ gap: 12 }}>
       {graph.topoResult.hasCycle && (
         <View style={s.cycle}>
           <Ionicons name="warning" size={16} color={colors.danger} />
           <Text style={s.cycleTxt}>Circular dependency detected — execution order is partial until the cycle is resolved.</Text>
         </View>
       )}
-
-      {/* ── Execution Roadmap (Topological Sort) ── */}
-      <View style={s.sectionHead}>
-        <View style={[s.sectionIcon, { backgroundColor: colors.topo + "1a" }]}><Ionicons name="map" size={18} color={colors.topo} /></View>
-        <View style={{ flex: 1 }}>
-          <Text style={s.sectionTitle}>Execution Roadmap</Text>
-          <Text style={s.sectionSub}>Topological Sort (Kahn's) · O(V+E) · {topoOrder.length} steps</Text>
-        </View>
-      </View>
 
       <View style={s.roadmap}>
         {topoOrder.map((id, i) => {
@@ -92,7 +79,7 @@ export default function DependencyGraphPanel({ teamId }: { teamId: string }) {
                     ) : null}
                   </View>
                   {deps.length > 0 && (
-                    <Text style={s.deps} numberOfLines={2}>↳ depends on: {deps.join(", ")}</Text>
+                    <Text style={s.deps} numberOfLines={2}>↳ Depends on: {deps.join(", ")}</Text>
                   )}
                 </View>
               </View>
@@ -106,26 +93,20 @@ export default function DependencyGraphPanel({ teamId }: { teamId: string }) {
           );
         })}
       </View>
-      <View style={{ height: 24 }} />
-    </ScrollView>
+    </View>
   );
 }
 
 const s = StyleSheet.create({
-  scroll: { padding: 16, gap: 12 },
-  center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 10, padding: 32 },
-  muted: { color: colors.textMuted, fontSize: 13, textAlign: "center" },
-  emptyTitle: { color: colors.text, fontSize: 17, fontWeight: "800" },
-  retry: { backgroundColor: colors.surfaceAlt, paddingHorizontal: 18, paddingVertical: 8, borderRadius: 8 },
-  retryTxt: { color: colors.text, fontWeight: "700" },
+  emptyBox: {
+    alignItems: "center", gap: 6, padding: 28, backgroundColor: colors.surface,
+    borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, borderStyle: "dashed",
+  },
+  emptyTitle: { fontSize: 14, fontWeight: "800", color: colors.text },
+  emptySub: { fontSize: 12, color: colors.textMuted, textAlign: "center", lineHeight: 17 },
 
   cycle: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.dangerSoft, borderRadius: radius.md, padding: 12, borderWidth: 1, borderColor: colors.danger + "55" },
   cycleTxt: { flex: 1, fontSize: 12, color: colors.danger, fontWeight: "600", lineHeight: 17 },
-
-  sectionHead: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 4 },
-  sectionIcon: { width: 32, height: 32, borderRadius: 10, alignItems: "center", justifyContent: "center" },
-  sectionTitle: { fontSize: 16, fontWeight: "800", color: colors.text },
-  sectionSub: { fontSize: 11, color: colors.textMuted, marginTop: 1 },
 
   roadmap: { gap: 0 },
   roadCard: { flexDirection: "row", gap: 12, backgroundColor: colors.surface, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, borderLeftWidth: 5, padding: 12 },

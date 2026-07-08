@@ -68,6 +68,32 @@ export function useTeam(teamId: string | undefined) {
     return {};
   }, [teamId, token]);
 
+  // Remove a member; server unassigns their tasks. Caller re-runs Branch &
+  // Bound afterwards so the cost matrix / assignments recompute automatically.
+  const deleteMember = useCallback(async (userId: string): Promise<{ error?: string }> => {
+    const res = await fetch(`${API}/api/teams/${teamId}/members/${userId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { error: data.error ?? "Failed to delete member" };
+    setTeam(data); // route returns the updated team (member row removed)
+    return {};
+  }, [teamId, token]);
+
+  // Update member name / role (PATCH /members/:userId).
+  const updateMember = useCallback(async (userId: string, fields: { name?: string; role?: string }): Promise<{ error?: string }> => {
+    const res = await fetch(`${API}/api/teams/${teamId}/members/${userId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(fields),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { error: data.error ?? "Failed to update member" };
+    setTeam(data); // route returns the updated team
+    return {};
+  }, [teamId, token]);
+
   const setMemberSkill = useCallback(async (userId: string, skill: string, value: number): Promise<{ error?: string }> => {
     const res = await fetch(`${API}/api/teams/${teamId}/members/${userId}/skills`, {
       method: "PATCH",
@@ -105,5 +131,5 @@ export function useTeam(teamId: string | undefined) {
     return { result: data };
   }, [teamId, token]);
 
-  return { team, members, loading, refetch: hydrate, addMember, setMemberSkill, runAssignment, sprintOptimize };
+  return { team, members, loading, refetch: hydrate, addMember, deleteMember, updateMember, setMemberSkill, runAssignment, sprintOptimize };
 }

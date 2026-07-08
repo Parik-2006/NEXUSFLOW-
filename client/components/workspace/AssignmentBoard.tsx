@@ -1,15 +1,18 @@
 /**
  * AssignmentBoard — Branch & Bound optimal task→member assignment.
  *   • Member roster with editable skill profiles (required for a meaningful cost matrix)
- *   • Add member
+ *   • Add / edit / delete members — deletion animates out, then automatically
+ *     re-runs Branch & Bound so the cost matrix, assignments and pruning stats
+ *     recompute live (demonstrates B&B adapting to resource constraints).
  *   • Run B&B → member-to-task mapping cards + cost matrix + pruning stats
  */
-import React, { useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
+import React, { useEffect, useRef, useState } from "react";
+import { View, Text, StyleSheet, ScrollView, Pressable, Animated } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTeam, type AssignResult } from "@/hooks/useTeam";
+import type { TeamMember } from "@/hooks/useTeams";
 import { Card, Button, Badge, Avatar, EmptyState, Field, Stepper } from "@/components/ui";
-import { ModalSheet, useToast } from "@/components/feedback";
+import { ModalSheet, useToast, useConfirm } from "@/components/feedback";
 import SkillMatrix from "@/components/workspace/SkillMatrix";
 import { WhyButton, AlgoExplainSheet, type AlgoEntry } from "@/components/AlgoExplain";
 import { colors, spacing, radius, font, avatarColor } from "@/theme";
@@ -17,14 +20,19 @@ import { colors, spacing, radius, font, avatarColor } from "@/theme";
 const SKILLS = ["frontend", "backend", "devops", "design", "ml", "testing"];
 
 export default function AssignmentBoard({ teamId }: { teamId: string }) {
-  const { members, loading, addMember, setMemberSkill, runAssignment, refetch } = useTeam(teamId);
+  const { members, loading, addMember, deleteMember, updateMember, setMemberSkill, runAssignment } = useTeam(teamId);
   const toast = useToast();
+  const confirm = useConfirm();
   const [expanded, setExpanded] = useState<string | null>(null);
   const [result, setResult] = useState<AssignResult | null>(null);
+  const [resultVersion, setResultVersion] = useState(0); // keys the fade-in of fresh results
   const [running, setRunning] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [name, setName] = useState("");
   const [primary, setPrimary] = useState("frontend");
+  const [editing, setEditing] = useState<TeamMember | null>(null);
+  const [editName, setEditName] = useState("");
+  const [removingId, setRemovingId] = useState<string | null>(null);
   const [explain, setExplain] = useState<AlgoEntry[] | null>(null);
 
   // Member lookup for assignment explanations (top skill / fit reasoning).
@@ -35,13 +43,19 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
     return SKILLS.map((k) => ({ k, v: m.skills?.[k] ?? 5 })).sort((a, b) => b.v - a.v)[0];
   };
 
-  const run = async () => {
+  const run = async (opts?: { silent?: boolean }) => {
     setRunning(true);
     const { result: r, error } = await runAssignment();
     setRunning(false);
-    if (error) { toast(error, "error"); return; }
+    if (error) {
+      // A failed recompute means the old result (matrix, stats) is stale — drop it.
+      setResult(null);
+      toast(error, opts?.silent ? "info" : "error");
+      return;
+    }
     setResult(r!);
-    toast("Assignment computed", "success");
+    setResultVersion((v) => v + 1);
+    if (!opts?.silent) toast("Assignment computed", "success");
   };
 
   const onAddMember = async () => {
@@ -52,6 +66,43 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
     if (error) { toast(error, "error"); return; }
     toast("Member added", "success");
     setName(""); setShowAdd(false);
+  };
+
+  // Delete flow: confirm → fade/collapse the card → DELETE member →
+  // automatically re-run Branch & Bound (no "Run Assignment" click needed).
+  const onDeleteMember = async (m: TeamMember) => {
+    const ok = await confirm({
+      title: "Delete Member?",
+      message: "Deleting this member will remove them from the assignment engine.\nAll assignments and the cost matrix will be recalculated.",
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (!ok) return;
+
+    setRemovingId(m.userId);                       // triggers exit animation
+    await new Promise((r) => setTimeout(r, 280));  // let the fade/collapse play
+    const { error } = await deleteMember(m.userId);
+    setRemovingId(null);
+    if (error) { toast(error, "error"); return; }
+    if (expanded === m.userId) setExpanded(null);
+
+    const remaining = members.length - 1;
+    if (remaining === 0) {
+      setResult(null); // hide assignment panel entirely
+      toast("Member deleted — no team members available.", "info");
+      return;
+    }
+    toast(`${m.name || "Member"} deleted — recomputing optimal assignment…`, "info");
+    await run({ silent: true }); // B&B recomputes: matrix rows, stats, gaps all update live
+  };
+
+  const onSaveEdit = async () => {
+    if (!editing) return;
+    if (!editName.trim()) { toast("Name required", "error"); return; }
+    const { error } = await updateMember(editing.userId, { name: editName.trim() });
+    if (error) { toast(error, "error"); return; }
+    toast("Member updated", "success");
+    setEditing(null);
   };
 
   // group assignments by member
@@ -77,46 +128,34 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
         <Text style={s.hint}>Give members differentiated skills so the cost matrix is meaningful, then run the engine.</Text>
         <View style={{ flexDirection: "row", gap: spacing.sm }}>
           <Button title="Add member" icon="person-add" variant="secondary" onPress={() => setShowAdd(true)} style={{ flex: 1 }} small />
-          <Button title="Run Assignment" icon="git-branch" onPress={run} loading={running} style={{ flex: 1 }} small />
+          <Button title="Run Assignment" icon="git-branch" onPress={() => run()} loading={running} style={{ flex: 1 }} small disabled={members.length === 0} />
         </View>
       </Card>
+
+      {/* Low-resource warnings for the B&B demo */}
+      {members.length === 1 && (
+        <View style={s.warnBar}>
+          <Ionicons name="warning-outline" size={15} color={colors.warning} />
+          <Text style={s.warnTxt}>Only one team member available. Assignment quality may be poor.</Text>
+        </View>
+      )}
 
       {/* Roster with editable skills */}
       <Text style={s.sectionLabel}>ROSTER ({members.length})</Text>
       {members.length === 0 ? (
-        <EmptyState icon="person-add-outline" title="No members yet" message="Add members with distinct skills to enable assignment." actionLabel="Add member" actionIcon="person-add" onAction={() => setShowAdd(true)} />
-      ) : members.map((m) => {
-        const open = expanded === m.userId;
-        const top = SKILLS.map((k) => ({ k, v: m.skills?.[k] ?? 5 })).sort((a, b) => b.v - a.v)[0];
-        return (
-          <Card key={m.userId} style={{ gap: open ? spacing.sm : 0 }}>
-            <Pressable style={s.memberHead} onPress={() => setExpanded(open ? null : m.userId)}>
-              <Avatar name={m.name || "Member"} size={36} image={m.avatar} />
-              <View style={{ flex: 1 }}>
-                <Text style={s.memberName}>{m.name || "Member"}</Text>
-                <Text style={s.memberSub}>Top skill: {top.k} ({top.v}/10)</Text>
-              </View>
-              <Ionicons name={open ? "chevron-up" : "chevron-down"} size={18} color={colors.textFaint} />
-            </Pressable>
-            {open && (
-              <View style={{ gap: 8, marginTop: 4 }}>
-                {SKILLS.map((k) => {
-                  const v = m.skills?.[k] ?? 5;
-                  return (
-                    <View key={k} style={s.skillRow}>
-                      <Text style={s.skillName}>{k}</Text>
-                      <View style={s.skillBarTrack}>
-                        <View style={[s.skillBarFill, { width: `${v * 10}%`, backgroundColor: avatarColor(m.name || k) }]} />
-                      </View>
-                      <Stepper value={v} onChange={(nv) => setMemberSkill(m.userId, k, nv)} min={0} max={10} />
-                    </View>
-                  );
-                })}
-              </View>
-            )}
-          </Card>
-        );
-      })}
+        <EmptyState icon="person-add-outline" title="No team members available." message="Add members with distinct skills before running Branch & Bound." actionLabel="Add member" actionIcon="person-add" onAction={() => setShowAdd(true)} />
+      ) : members.map((m) => (
+        <RosterCard
+          key={m.userId}
+          member={m}
+          open={expanded === m.userId}
+          removing={removingId === m.userId}
+          onToggle={() => setExpanded(expanded === m.userId ? null : m.userId)}
+          onEdit={() => { setEditing(m); setEditName(m.name ?? ""); }}
+          onDelete={() => onDeleteMember(m)}
+          onSkill={(k, v) => setMemberSkill(m.userId, k, v)}
+        />
+      ))}
 
       {/* Skill Matrix (Feature 5) — evidence for Branch & Bound */}
       {members.length > 0 && (
@@ -127,9 +166,9 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
         </Card>
       )}
 
-      {/* Assignment result */}
-      {result && (
-        <>
+      {/* Assignment result — hidden entirely when no members exist */}
+      {result && members.length > 0 && (
+        <FadeIn key={resultVersion}>
           <View style={s.resultHead}>
             <Text style={s.sectionLabel}>ASSIGNMENT RESULT</Text>
             <WhyButton color={colors.branch} onPress={() => setExplain([{
@@ -149,7 +188,7 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
           {[...byMember.entries()].map(([id, m]) => {
             const top = topSkillOf(id);
             return (
-              <Card key={id} style={{ gap: spacing.sm }}>
+              <Card key={id} style={{ gap: spacing.sm, marginTop: spacing.md }}>
                 <View style={s.memberHead}>
                   <Avatar name={m.name} size={32} image={memberById(id)?.avatar} />
                   <View style={{ flex: 1 }}>
@@ -178,8 +217,8 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
 
           {/* Cost matrix */}
           {result.costMatrix?.length > 0 && (
-            <Card style={{ gap: spacing.sm }}>
-              <Text style={s.sectionLabel}>COST MATRIX (member × task)</Text>
+            <Card style={{ gap: spacing.sm, marginTop: spacing.md }}>
+              <Text style={s.sectionLabel}>COST MATRIX (member × task · {result.memberLabels.length} × {result.taskLabels.length})</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                 <View>
                   <View style={s.matrixRow}>
@@ -202,7 +241,7 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
               </ScrollView>
             </Card>
           )}
-        </>
+        </FadeIn>
       )}
 
       <ModalSheet visible={showAdd} onClose={() => setShowAdd(false)} title="Add Member">
@@ -218,8 +257,81 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
         <Button title="Add member" icon="person-add" onPress={onAddMember} style={{ marginTop: spacing.sm }} />
       </ModalSheet>
 
+      <ModalSheet visible={!!editing} onClose={() => setEditing(null)} title="Edit Member">
+        <Field label="Name" value={editName} onChangeText={setEditName} placeholder="Member name" />
+        <Button title="Save changes" icon="checkmark" onPress={onSaveEdit} style={{ marginTop: spacing.sm }} />
+      </ModalSheet>
+
       <AlgoExplainSheet visible={!!explain} onClose={() => setExplain(null)} title="Why this assignment?" entries={explain ?? []} />
     </ScrollView>
+  );
+}
+
+// ── Roster card with edit / delete actions and exit animation ─────────────────
+function RosterCard({ member: m, open, removing, onToggle, onEdit, onDelete, onSkill }: {
+  member: TeamMember; open: boolean; removing: boolean;
+  onToggle: () => void; onEdit: () => void; onDelete: () => void;
+  onSkill: (skill: string, value: number) => void;
+}) {
+  const anim = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    // Fade out + collapse when this member is being deleted.
+    if (removing) Animated.timing(anim, { toValue: 0, duration: 260, useNativeDriver: false }).start();
+  }, [removing, anim]);
+  const top = SKILLS.map((k) => ({ k, v: m.skills?.[k] ?? 5 })).sort((a, b) => b.v - a.v)[0];
+
+  return (
+    <Animated.View style={{ opacity: anim, transform: [{ scaleY: anim }] }}>
+      <Card style={{ gap: open ? spacing.sm : 0 }}>
+        <View style={s.memberHead}>
+          <Pressable style={[s.memberHead, { flex: 1 }]} onPress={onToggle}>
+            <Avatar name={m.name || "Member"} size={36} image={m.avatar} />
+            <View style={{ flex: 1 }}>
+              <Text style={s.memberName}>{m.name || "Member"}</Text>
+              <Text style={s.memberSub}>Top skill: {top.k} ({top.v}/10)</Text>
+            </View>
+          </Pressable>
+          <Pressable onPress={onEdit} hitSlop={6} style={({ hovered, pressed }: any) => [s.iconBtn, (hovered || pressed) && { backgroundColor: colors.primarySoft }]}>
+            {({ hovered, pressed }: any) => <Ionicons name="pencil-outline" size={15} color={hovered || pressed ? colors.primary : colors.textFaint} />}
+          </Pressable>
+          <Pressable onPress={onDelete} hitSlop={6} style={({ hovered, pressed }: any) => [s.iconBtn, (hovered || pressed) && { backgroundColor: colors.dangerSoft }]}>
+            {({ hovered, pressed }: any) => <Ionicons name="trash-outline" size={15} color={hovered || pressed ? colors.danger : colors.textFaint} />}
+          </Pressable>
+          <Pressable onPress={onToggle} hitSlop={6} style={s.iconBtn}>
+            <Ionicons name={open ? "chevron-up" : "chevron-down"} size={18} color={colors.textFaint} />
+          </Pressable>
+        </View>
+        {open && (
+          <View style={{ gap: 8, marginTop: 4 }}>
+            {SKILLS.map((k) => {
+              const v = m.skills?.[k] ?? 5;
+              return (
+                <View key={k} style={s.skillRow}>
+                  <Text style={s.skillName}>{k}</Text>
+                  <View style={s.skillBarTrack}>
+                    <View style={[s.skillBarFill, { width: `${v * 10}%`, backgroundColor: avatarColor(m.name || k) }]} />
+                  </View>
+                  <Stepper value={v} onChange={(nv) => onSkill(k, nv)} min={0} max={10} />
+                </View>
+              );
+            })}
+          </View>
+        )}
+      </Card>
+    </Animated.View>
+  );
+}
+
+// ── Gentle entrance for freshly recomputed results ────────────────────────────
+function FadeIn({ children }: { children: React.ReactNode }) {
+  const anim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.timing(anim, { toValue: 1, duration: 320, useNativeDriver: false }).start();
+  }, [anim]);
+  return (
+    <Animated.View style={{ opacity: anim, transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [10, 0] }) }], gap: spacing.md }}>
+      {children}
+    </Animated.View>
   );
 }
 
@@ -238,9 +350,16 @@ const s = StyleSheet.create({
   sub: { fontSize: 12, color: colors.textMuted, marginTop: 1 },
   hint: { fontSize: 12, color: colors.textMuted, lineHeight: 17 },
   sectionLabel: { fontSize: 11, fontWeight: "800", letterSpacing: 0.8, color: colors.textFaint, marginTop: 4 },
+  warnBar: {
+    flexDirection: "row", alignItems: "center", gap: 8,
+    backgroundColor: colors.warningSoft, borderWidth: 1, borderColor: colors.warning + "55",
+    borderRadius: radius.md, paddingVertical: 10, paddingHorizontal: 12,
+  },
+  warnTxt: { flex: 1, fontSize: 12, fontWeight: "600", color: colors.warning, lineHeight: 16 },
   memberHead: { flexDirection: "row", alignItems: "center", gap: 10 },
   memberName: { fontSize: 15, fontWeight: "700", color: colors.text },
   memberSub: { fontSize: 12, color: colors.textMuted },
+  iconBtn: { width: 30, height: 30, borderRadius: 8, alignItems: "center", justifyContent: "center" },
   skillRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   skillName: { fontSize: 12, fontWeight: "600", color: colors.textMuted, width: 64, textTransform: "capitalize" },
   skillBarTrack: { flex: 1, height: 8, borderRadius: 4, backgroundColor: colors.border, overflow: "hidden" },

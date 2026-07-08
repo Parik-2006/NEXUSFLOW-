@@ -8,8 +8,10 @@
     "ios": "expo start --ios"
   },
   "dependencies": {
+    "@dagrejs/dagre": "^3.0.0",
     "@expo/vector-icons": "^14.0.0",
     "@types/react": "~18.2.79",
+    "@xyflow/react": "^12.11.2",
     "expo": "~51.0.0",
     "expo-router": "~3.5.0",
     "expo-secure-store": "~13.0.0",

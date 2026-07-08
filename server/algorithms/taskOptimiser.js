@@ -67,7 +67,7 @@ export const greedySchedule = greedySprintRanking;
 // ─────────────────────────────────────────────────────────────────────────────
 export function knapsackSprint(tasks, capacity) {
   const n  = tasks.length;
-  // (n+1) × (capacity+1) DP table initialised to 0.
+  // (n+1) × (capacity+1) DP table initialised to 0. // rows = tasks, cols = capacity.
   const dp = Array.from({ length: n + 1 }, () => new Int32Array(capacity + 1));
 
   for (let i = 1; i <= n; i++) {

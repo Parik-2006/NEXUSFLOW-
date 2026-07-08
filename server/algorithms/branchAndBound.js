@@ -32,18 +32,111 @@
 
 const SKILL_KEYS = ["frontend", "backend", "devops", "design", "ml", "testing"];
 
+// ── Skill-demand inference (cost-matrix input only — solver untouched) ────────
+//
+// BUG FIX: tasks created through the app (socket create, AI decomposition,
+// starter tasks) never populate `skillWeights`; the schema defaults every
+// dimension to 0. With demand ≡ 0, cost(i,j) = Σ max(0, 0 − supply) = 0 for
+// EVERY cell, so the matrix was all zeros and every assignment looked like a
+// "perfect fit". Explicit skillWeights (e.g. seeded demo tasks) remain
+// authoritative; for all other tasks the demand profile is DERIVED from the
+// task's own data — category, title/description keywords, urgency and impact —
+// so nothing is hardcoded per task and no schema/API changes are needed.
+
+/** Keyword evidence per skill dimension (matched on title + description). */
+const SKILL_HINTS = {
+  frontend: /\b(front[- ]?end|ui|screen|page|dashboard|component|client|react|web app)\b/i,
+  backend:  /\b(back[- ]?end|api|database|schema|server|service|auth|login|payment|order|storage|rest)\b/i,
+  devops:   /\b(devops|deploy(ment)?|ci\/?cd|pipeline|docker|infra(structure)?|monitor(ing)?|alert(ing)?|cloud|provision|hardware|sensor|microcontroller)\b/i,
+  design:   /\b(design|ux|wireframe|mock-?up|prototype|figma|branding)\b/i,
+  ml:       /\b(ml|machine learning|model|dataset|training|label(l)?ing|prediction|ai)\b/i,
+  testing:  /\b(test(s|ing)?|qa|quality|acceptance|bug|regression)\b/i,
+};
+
+/** Category → skill dimensions (first entry = primary demand). */
+const CATEGORY_SKILLS = {
+  frontend: ["frontend", "design"],
+  "ui/ux": ["design", "frontend"],
+  design: ["design"],
+  backend: ["backend"],
+  integration: ["backend", "devops"],
+  deployment: ["devops"],
+  devops: ["devops"],
+  hardware: ["devops"],
+  "ai / ml": ["ml"],
+  ai: ["ml"],
+  ml: ["ml"],
+  testing: ["testing"],
+  qa: ["testing"],
+};
+
+/**
+ * Derive a task's skill-demand profile from its own attributes.
+ *
+ * Demand intensity scales with the task's urgency and impact (each 1–5):
+ *   primary  = 4 + 0.6·(urgency + impact)  → 5..10  (rounded, capped at 10)
+ *   secondary = 50% of primary             (supporting dimensions)
+ * A critical Backend task therefore demands backend ≈ 9–10, while a routine
+ * one demands ≈ 5–6 — derived, never hardcoded per task.
+ *
+ * Tasks with no skill evidence at all (e.g. "Planning", "Research") get a
+ * light uniform demand across every dimension, so stronger all-round members
+ * stay cheaper without favouring any single specialism.
+ */
+function deriveSkillDemand(task) {
+  const urgency = Number(task.urgency) || 1;
+  const impact  = Number(task.impact)  || 1;
+  const primary   = Math.min(10, Math.round(4 + 0.6 * (urgency + impact)));
+  const secondary = Math.max(1, Math.round(primary * 0.5));
+
+  // Ordered evidence: category mapping first (primary), then keyword hits.
+  const ordered = [];
+  const seen = new Set();
+  const push = (k) => { if (!seen.has(k)) { seen.add(k); ordered.push(k); } };
+
+  const cat = String(task.category ?? "").toLowerCase().trim();
+  (CATEGORY_SKILLS[cat] ?? []).forEach(push);
+
+  const text = `${task.title ?? ""} ${task.description ?? ""}`;
+  for (const key of SKILL_KEYS) if (SKILL_HINTS[key].test(text)) push(key);
+
+  const demand = Object.fromEntries(SKILL_KEYS.map((k) => [k, 0]));
+  if (ordered.length === 0) {
+    const light = Math.max(1, Math.round(primary * 0.4));
+    for (const key of SKILL_KEYS) demand[key] = light;
+    return demand;
+  }
+  ordered.forEach((key, i) => { demand[key] = i === 0 ? primary : secondary; });
+  return demand;
+}
+
+/**
+ * Effective demand profile for a task: explicit skillWeights win when any
+ * dimension is positive; otherwise infer from category/keywords/priority.
+ */
+function effectiveDemand(task) {
+  const explicit = task.skillWeights ?? {};
+  const hasExplicit = SKILL_KEYS.some((key) => (explicit?.[key] ?? 0) > 0);
+  return hasExplicit ? explicit : deriveSkillDemand(task);
+}
+
 /**
  * Build an (nMembers x nTasks) cost matrix.
  *
  * matrix[memberIdx][taskIdx] = skill-gap cost of assigning that task to that member.
+ *
+ *   cost(i, j) = Σ_k max(0, demand_j[k] − supply_i[k])
+ *
+ * cost = 0  ⇔ the member meets or exceeds EVERY demanded dimension (true
+ * perfect fit). A member short by s points on a demanded skill pays exactly s.
  */
 export function buildCostMatrix(members, tasks) {
+  const demands = tasks.map(effectiveDemand); // derive once per task, not per cell
   return members.map((member) =>
-    tasks.map((task) =>
+    demands.map((demand) =>
       SKILL_KEYS.reduce((acc, key) => {
-        const demand = task.skillWeights?.[key] ?? 0;
         const supply = member.skills?.[key] ?? 5;
-        return acc + Math.max(0, demand - supply);
+        return acc + Math.max(0, (demand?.[key] ?? 0) - supply);
       }, 0)
     )
   );

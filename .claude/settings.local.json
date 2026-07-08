@@ -44,7 +44,11 @@
       "Bash(kill %1)",
       "Bash(rm -f ALGORITHM_USAGE.md DAA_INTEGRATION_REPORT.md DIFF_ANALYSIS_REPORT.md IMPROVEMENTS_V2.md MERGE_DISCOVERY_REPORT.md MERGE_PLAN.md PROJECT_UNIQUENESS.md PROJECT_WORKFLOW.md TASK_MANAGEMENT_UPGRADE.md USER_FLOW.md)",
       "Bash(mv MENTOR_DEMO_GUIDE.md docs/MENTOR_DEMO_GUIDE.md)",
-      "Bash(rm -rf update)"
+      "Bash(rm -rf update)",
+      "Bash(npm install *)",
+      "Bash(node -e \"console.log\\(require\\('@xyflow/react/package.json'\\).version, require\\('@dagrejs/dagre/package.json'\\).version\\)\")",
+      "Bash(echo \"EXPORT_EXIT=$?\")",
+      "Bash(node \"C:/Users/DELL/AppData/Local/Temp/claude/P--DAA-OPTIONAL/1f95c336-468b-46c5-8531-e75f9b221960/scratchpad/verify-costmatrix.mjs\")"
     ]
   }
 }
