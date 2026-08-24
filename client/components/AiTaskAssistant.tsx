@@ -14,11 +14,13 @@ import type { Task } from "@/hooks/useTeamTasks";
 import { useToast } from "@/components/feedback";
 import { colors, spacing, radius, PRIORITY_META } from "@/theme";
 
-type Mode = "related" | "missing-phase" | "subtasks";
+type Mode = "related" | "missing-phase" | "subtasks" | "architecture" | "research";
 const MODES: { key: Mode; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
-  { key: "related", label: "Related task", icon: "git-branch-outline" },
+  { key: "related", label: "Related", icon: "git-branch-outline" },
   { key: "missing-phase", label: "Missing phase", icon: "layers-outline" },
   { key: "subtasks", label: "Subtasks", icon: "list-outline" },
+  { key: "architecture", label: "Architecture", icon: "hardware-chip-outline" },
+  { key: "research", label: "Research", icon: "book-outline" },
 ];
 
 type Suggest = (mode: string, taskId?: string) => Promise<{ error?: string; task?: any; explanation?: any }>;
@@ -58,9 +60,13 @@ export default function AiTaskAssistant({
 
       {open && (
         <View style={{ gap: spacing.sm }}>
-          <Text style={s.hint}>Team-aware — suggestions stay within this project. Greedy priority, decomposer & Boyer-Moore power the picks.</Text>
+          <View style={s.contextPill}>
+            <Ionicons name="shield-checkmark" size={12} color={colors.accentDark} />
+            <Text style={s.contextPillText}>Project Context Active (Architecture & Decisions)</Text>
+          </View>
+          <Text style={s.hint}>Team & Project-aware — suggestions stay grounded in your architecture, accepted decisions & DAA Greedy scoring.</Text>
 
-          <View style={s.modeRow}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.modeRow}>
             {MODES.map((m) => {
               const on = mode === m.key;
               return (
@@ -70,7 +76,7 @@ export default function AiTaskAssistant({
                 </Pressable>
               );
             })}
-          </View>
+          </ScrollView>
 
           {mode === "subtasks" && (
             <View style={{ gap: 4 }}>
@@ -146,8 +152,10 @@ const s = StyleSheet.create({
   headerTxt: { flex: 1, fontSize: 13, fontWeight: "800", color: colors.accentDark },
   hint: { fontSize: 11, color: colors.textMuted, lineHeight: 15 },
 
-  modeRow: { flexDirection: "row", gap: 6 },
-  mode: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4, paddingVertical: 8, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.accentBorder, backgroundColor: colors.surface },
+  contextPill: { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: colors.surface, paddingHorizontal: 8, paddingVertical: 4, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.accentBorder, alignSelf: "flex-start" },
+  contextPillText: { fontSize: 10, fontWeight: "700", color: colors.accentDark },
+  modeRow: { flexDirection: "row", gap: 6, paddingVertical: 2 },
+  mode: { minWidth: 80, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4, paddingVertical: 8, paddingHorizontal: 10, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.accentBorder, backgroundColor: colors.surface },
   modeOn: { backgroundColor: colors.accentDark, borderColor: colors.accentDark },
   modeTxt: { fontSize: 11, fontWeight: "700", color: colors.accentDark },
 

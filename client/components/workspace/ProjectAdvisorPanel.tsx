@@ -72,6 +72,15 @@ interface ResearchItemType {
   status: string;
 }
 
+interface GeneratedTaskPreview {
+  title: string;
+  category: string;
+  estimatedHours: number;
+  urgency: number;
+  impact: number;
+  reason?: string;
+}
+
 interface ChatTurn {
   _id: string;
   role: "user" | "assistant";
@@ -91,6 +100,8 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
 
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
+  const [generatingTasks, setGeneratingTasks] = useState(false);
+  const [generatedResult, setGeneratedResult] = useState<{ added: number; duplicatesSkipped: number } | null>(null);
   const [activeSection, setActiveSection] = useState<"advisor" | "recommendations" | "decisions" | "architecture" | "research">("advisor");
 
   // Chat State
@@ -192,6 +203,34 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
       console.error("[ProjectAdvisorPanel] runAnalysis error:", err);
     } finally {
       setAnalyzing(false);
+    }
+  };
+
+  // Generate Backlog Tasks from Project Context
+  const generateProjectTasks = async (mode = "project") => {
+    if (!projectId || !token || generatingTasks) return;
+    try {
+      setGeneratingTasks(true);
+      setGeneratedResult(null);
+      const res = await fetch(`${API}/api/projects/${projectId}/tasks/generate`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ mode }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setGeneratedResult({
+          added: data.added || 0,
+          duplicatesSkipped: data.duplicatesSkipped || 0,
+        });
+      }
+    } catch (err) {
+      console.error("[ProjectAdvisorPanel] generateProjectTasks error:", err);
+    } finally {
+      setGeneratingTasks(false);
     }
   };
 
@@ -346,21 +385,46 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
                 <Text style={font.caption}>Phase: <Text style={{ fontWeight: "700", color: colors.topo }}>{projectData?.currentPhase || "idea"}</Text></Text>
               </View>
             </View>
-            <Pressable
-              style={[s.analyzeBtn, analyzing && { opacity: 0.7 }]}
-              onPress={runAnalysis}
-              disabled={analyzing}
-            >
-              {analyzing ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <>
-                  <Ionicons name="sparkles" size={15} color="#fff" />
-                  <Text style={s.analyzeBtnText}>Analyze AI</Text>
-                </>
-              )}
-            </Pressable>
+            <View style={{ flexDirection: "row", gap: 6 }}>
+              <Pressable
+                style={[s.analyzeBtn, analyzing && { opacity: 0.7 }]}
+                onPress={runAnalysis}
+                disabled={analyzing}
+              >
+                {analyzing ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="sparkles" size={14} color="#fff" />
+                    <Text style={s.analyzeBtnText}>Analyze AI</Text>
+                  </>
+                )}
+              </Pressable>
+              <Pressable
+                style={[s.genTaskBtn, generatingTasks && { opacity: 0.7 }]}
+                onPress={() => generateProjectTasks("project")}
+                disabled={generatingTasks}
+              >
+                {generatingTasks ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="list" size={14} color="#fff" />
+                    <Text style={s.analyzeBtnText}>Decompose Tasks</Text>
+                  </>
+                )}
+              </Pressable>
+            </View>
           </View>
+
+          {generatedResult && (
+            <View style={s.resultPill}>
+              <Ionicons name="checkmark-circle" size={14} color={colors.success} />
+              <Text style={s.resultPillText}>
+                Added {generatedResult.added} new tasks ({generatedResult.duplicatesSkipped} duplicate{generatedResult.duplicatesSkipped === 1 ? "" : "s"} skipped)
+              </Text>
+            </View>
+          )}
 
           {context.problemStatement ? (
             <View style={s.contextBox}>
@@ -726,6 +790,30 @@ const s = StyleSheet.create({
     color: "#fff",
     fontSize: 13,
     fontWeight: "700",
+  },
+  genTaskBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: colors.greedy,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: radius.md,
+  },
+  resultPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: colors.successSoft,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: radius.md,
+    marginTop: spacing.sm,
+  },
+  resultPillText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: colors.success,
   },
   contextBox: {
     backgroundColor: colors.surfaceAlt,

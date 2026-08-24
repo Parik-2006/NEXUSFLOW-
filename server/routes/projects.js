@@ -79,11 +79,13 @@ import Resource         from "../models/Resource.js";
 import AIConversation   from "../models/AIConversation.js";
 import AIMessage        from "../models/AIMessage.js";
 
-// Phase 2: Project Intelligence Services
+// Phase 2 & 3: Project Intelligence & Task Decomposition Services
 import {
   buildProjectContext,
   analyzeProject,
   chatWithProjectAdvisor,
+  decomposeTasksWithContext,
+  buildTaskGenerationContext,
 } from "../services/projectIntelligence.js";
 
 const router = Router();
@@ -1042,5 +1044,96 @@ router.post("/projects/:projectId/ai/chat", requireAuth, async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE 3: PROJECT-AWARE TASK DECOMPOSITION ENDPOINTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── POST /api/projects/:projectId/tasks/generate ─────────────────────────────
+// Generates project tasks using Phase 2 Project Intelligence context (accepted
+// decisions, architecture components, recommendations, research topics, team skills).
+// Supports modes: "project", "related", "missing_phases", "subtasks", "architecture", "research".
+// Also supports previewOnly: true for reviewing proposed tasks before persisting.
+router.post("/projects/:projectId/tasks/generate", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const { mode = "project", prompt = "", taskId, phase, previewOnly = false } = req.body ?? {};
+
+    const result = await decomposeTasksWithContext({
+      projectId: req.params.projectId,
+      teamId: project.teamId,
+      mode,
+      prompt,
+      taskId,
+      phase,
+      previewOnly: Boolean(previewOnly),
+      user: req.user,
+    });
+
+    res.json(result);
+  } catch (e) {
+    console.error("[POST /projects/:id/tasks/generate] error:", e.message);
+    res.status(500).json({ error: e.message || "Task decomposition failed" });
+  }
+});
+
+// ── POST /api/projects/:projectId/tasks/ai-suggest ───────────────────────────
+// Project-aware AI autofill suggestion for the Create Task modal.
+router.post("/projects/:projectId/tasks/ai-suggest", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const { mode = "related", taskId } = req.body ?? {};
+
+    const result = await decomposeTasksWithContext({
+      projectId: req.params.projectId,
+      teamId: project.teamId,
+      mode,
+      taskId,
+      previewOnly: true,
+      user: req.user,
+    });
+
+    const candidate = result.tasks?.[0] || null;
+    if (!candidate) {
+      return res.status(404).json({ error: "No suggestion could be generated." });
+    }
+
+    const dueInDays = Math.max(2, Math.round((candidate.estimatedHours || 4) / 2));
+    const start = new Date();
+    const due = new Date(Date.now() + dueInDays * 86_400_000);
+    const reminder = new Date(due.getTime() - 86_400_000);
+    reminder.setHours(9, 0, 0, 0);
+
+    res.json({
+      task: {
+        title: candidate.title,
+        description: candidate.description,
+        category: candidate.category,
+        urgency: candidate.urgency,
+        impact: candidate.impact,
+        estimatedHours: candidate.estimatedHours,
+        businessValue: candidate.businessValue,
+        skillWeights: candidate.skillWeights,
+        startDate: start.toISOString(),
+        dueDate: due.toISOString(),
+        reminderAt: reminder.toISOString(),
+      },
+      explanation: {
+        mode,
+        reason: candidate.reason,
+        domain: result.contextHighlights?.domain,
+        acceptedDecisionsCount: result.contextHighlights?.acceptedDecisionsCount,
+      },
+    });
+  } catch (e) {
+    console.error("[POST /projects/:id/tasks/ai-suggest] error:", e.message);
+    res.status(500).json({ error: e.message || "AI suggestion failed" });
+  }
+});
+
 export default router;
+
 

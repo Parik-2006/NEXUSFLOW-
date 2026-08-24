@@ -9,6 +9,7 @@ import { buildGraph, dfs, bfs, topologicalSort as topoSortGraph } from "../algor
 import { compareSortAlgorithms, mergeSortTasks, quickSortTasks } from "../utils/sortAlgorithms.js";
 import { decomposeProject, extractFeatures } from "../algorithms/projectDecomposer.js";
 import { boyerMooreSearch, mergeSort } from "../algorithms/taskOptimiser.js";
+import { decomposeTasksWithContext } from "../services/taskDecomposer.js";
 
 const router = Router();
 
@@ -175,6 +176,22 @@ router.post("/teams/:teamId/generate-tasks", requireAuth, async (req, res) => {
     const team = await Team.findById(teamId).lean();
     if (!team) return res.status(404).json({ error: "team_not_found" });
 
+    // NEXUSFLOW 2.0: If team has an active project, use project-aware task decomposition
+    if (team.activeProjectId) {
+      const match = PHASE_MATCH.find((p) => p.re.test(prompt));
+      const mode = match ? "missing_phases" : "project";
+      const result = await decomposeTasksWithContext({
+        projectId: team.activeProjectId,
+        teamId,
+        mode,
+        prompt: String(prompt).trim(),
+        phase: match?.cat,
+        user: req.user,
+      });
+      return res.json(result);
+    }
+
+    // Legacy fallback when no active project exists
     const text = String(prompt).trim() || team.projectDescription || team.projectTitle || team.name;
     let seeds = decomposeProject(team.projectTitle || team.name, text);
 

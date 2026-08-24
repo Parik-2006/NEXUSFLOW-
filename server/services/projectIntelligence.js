@@ -863,3 +863,14 @@ INSTRUCTIONS:
     assistantMessage: assistantMsgDoc,
   };
 }
+
+// ── Phase 3 Re-exports ────────────────────────────────────────────────────────
+export {
+  buildTaskGenerationContext,
+  decomposeTasksWithContext,
+  validateDecomposedTasks,
+  generateHeuristicProjectTasks,
+  normalizeTaskTitle,
+  persistGeneratedTasks,
+} from "./taskDecomposer.js";
+
