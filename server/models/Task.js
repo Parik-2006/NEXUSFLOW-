@@ -17,6 +17,20 @@ const SkillWeightsSchema = new mongoose.Schema(
 const TaskSchema = new mongoose.Schema(
   {
     teamId:    { type: mongoose.Schema.Types.ObjectId, ref: "Team", required: true, index: true },
+
+    // ── NEXUSFLOW 2.0: Project association (optional, migration-safe) ─────────
+    // WHY OPTIONAL: Existing tasks were created before the Project model existed.
+    // Making projectId required would immediately break every existing task,
+    // every existing API call, and every socket handler that creates tasks.
+    //
+    // Strategy: projectId starts as null for all legacy tasks.
+    // When a new Project is created and tasks are subsequently created for it,
+    // they receive a projectId. Legacy tasks are backfilled later via
+    // the migration script (server/scripts/migratePhase1.js).
+    //
+    // The existing `teamId` field remains the primary task grouping key.
+    // `projectId` adds a FINER level of scoping (multiple projects per team).
+    projectId: { type: mongoose.Schema.Types.ObjectId, ref: "Project", default: null, index: true },
     title:     { type: String, required: true },
     description: { type: String, default: "" },   // Boyer-Moore search field
     status:    { type: String, enum: ["todo", "in_progress", "done"], default: "todo" },
@@ -60,9 +74,17 @@ const TaskSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Compound indexes
-TaskSchema.index({ teamId: 1, priorityScore: -1 }); // greedy sort
-TaskSchema.index({ teamId: 1, topoOrder: 1 });       // topo sort
+// Compound indexes (existing — teamId-scoped, unchanged)
+TaskSchema.index({ teamId: 1, priorityScore: -1 }); // greedy sort by team
+TaskSchema.index({ teamId: 1, topoOrder: 1 });       // topo sort by team
+
+// NEXUSFLOW 2.0: project-scoped equivalents (for when projectId is present)
+// WHY NEEDED: Future endpoints like GET /api/projects/:projectId/tasks
+// will query by projectId + sort by priorityScore or topoOrder.
+// Without these indexes, those queries would do full collection scans.
+// Tasks with projectId=null simply do not appear in projectId-scoped queries.
+TaskSchema.index({ projectId: 1, priorityScore: -1 }); // greedy sort by project
+TaskSchema.index({ projectId: 1, topoOrder: 1 });       // topo sort by project
 
 // ── pre('save'): recompute priorityScore ─────────────────────────────────────
 TaskSchema.pre("save", function (next) {

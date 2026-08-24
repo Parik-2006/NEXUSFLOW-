@@ -65,6 +65,27 @@ const TeamSchema = new mongoose.Schema(
     taskCount: { type: Number, default: 0 },
     doneCount: { type: Number, default: 0 },
 
+    // ── NEXUSFLOW 2.0: Active Project pointer (optional, migration-safe) ───────
+    // WHY OPTIONAL: All existing teams predate the Project model.
+    // Making it required would break team creation and all existing teams.
+    //
+    // When a team creates their first Project via the new /api/projects endpoint,
+    // this field is set to that project's _id so the dashboard can
+    // quickly load the team's current work context without querying the
+    // projects collection.
+    //
+    // A team may have MANY projects over time; this points to the ONE currently active.
+    // The full list of projects for a team is fetched from the projects collection.
+    //
+    // NOTE: Team.projectTitle and Team.projectDescription continue to work for
+    // the legacy decomposer and for teams that haven't created a formal Project yet.
+    // They are intentionally NOT removed — they serve as the fallback description.
+    activeProjectId: {
+      type:    mongoose.Schema.Types.ObjectId,
+      ref:     "Project",
+      default: null,
+    },
+
     // Original AI-generated backlog snapshot (for Restore AI Backlog).
     aiGeneratedTasks: { type: [AiTaskSeedSchema], default: [] },
   },

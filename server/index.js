@@ -5,7 +5,8 @@ import http from "http";
 import mongoose from "mongoose";
 import { Server } from "socket.io";
 
-import teamRoutes from "./routes/teams.js";
+import teamRoutes    from "./routes/teams.js";
+import projectRoutes from "./routes/projects.js";   // NEXUSFLOW 2.0 — Phase 1
 import { registerTaskHandlers } from "./socket/taskHandlers.js";
 import { registerAiOrchestrator } from "./socket/aiOrchestrator.js";
 import { sign, verify, requireAuth } from "./auth.js";
@@ -28,6 +29,7 @@ app.post("/api/login", (req, res) => {
 
 app.get("/api/me", requireAuth, (req, res) => res.json(req.user));
 app.use("/api", teamRoutes);
+app.use("/api", projectRoutes);   // NEXUSFLOW 2.0 — Phase 1 project routes
 
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: [FRONTEND_URL, "http://localhost:8081", "http://localhost:19006"] } });
