@@ -15,19 +15,21 @@ import GraphPanel from "@/components/workspace/GraphPanel";
 import AnalyticsPanel from "@/components/workspace/AnalyticsPanel";
 import ChatPanel from "@/components/workspace/ChatPanel";
 import RecommendationPanel from "@/components/RecommendationPanel";
+import ProjectAdvisorPanel from "@/components/workspace/ProjectAdvisorPanel";
 import { colors, spacing, radius, font } from "@/theme";
 
-type TabKey = "overview" | "tasks" | "chat" | "sprint" | "graph" | "members" | "analytics" | "recommend";
+type TabKey = "overview" | "advisor" | "tasks" | "chat" | "sprint" | "graph" | "members" | "analytics" | "recommend";
 
 const TABS: { key: TabKey; label: string; icon: keyof typeof Ionicons.glyphMap; color: string }[] = [
-  { key: "overview",  label: "Overview",  icon: "grid",                color: colors.primary },
-  { key: "tasks",     label: "Tasks",     icon: "list",                color: colors.greedy },
-  { key: "chat",      label: "Chat",      icon: "chatbubbles",         color: colors.primary },
-  { key: "sprint",    label: "Sprint",    icon: "rocket",              color: colors.knapsack },
-  { key: "graph",     label: "Graph",     icon: "git-network",         color: colors.topo },
-  { key: "members",   label: "Members",   icon: "people",              color: colors.branch },
-  { key: "analytics", label: "Analytics", icon: "stats-chart",         color: colors.merge },
-  { key: "recommend", label: "AI Rec",    icon: "sparkles",            color: colors.accent },
+  { key: "overview",  label: "Overview",   icon: "grid",                color: colors.primary },
+  { key: "advisor",   label: "Project AI", icon: "sparkles",            color: colors.accent },
+  { key: "tasks",     label: "Tasks",      icon: "list",                color: colors.greedy },
+  { key: "chat",      label: "Chat",       icon: "chatbubbles",         color: colors.primary },
+  { key: "sprint",    label: "Sprint",     icon: "rocket",              color: colors.knapsack },
+  { key: "graph",     label: "Graph",      icon: "git-network",         color: colors.topo },
+  { key: "members",   label: "Members",    icon: "people",              color: colors.branch },
+  { key: "analytics", label: "Analytics",  icon: "stats-chart",         color: colors.merge },
+  { key: "recommend", label: "Sprint DAA", icon: "flash",               color: colors.warning },
 ];
 
 export default function Workspace() {
@@ -75,6 +77,7 @@ export default function Workspace() {
       {/* Panel */}
       <View style={{ flex: 1 }}>
         {teamId && active === "overview" && <OverviewPanel teamId={teamId} onNavigate={(t) => setActive(t as TabKey)} />}
+        {teamId && active === "advisor" && <ProjectAdvisorPanel teamId={teamId} />}
         {teamId && active === "tasks" && <TasksPanel teamId={teamId} onGenerateAI={() => setActive("chat")} />}
         {teamId && active === "sprint" && <SprintPanel teamId={teamId} />}
         {teamId && active === "members" && <AssignmentBoard teamId={teamId} />}

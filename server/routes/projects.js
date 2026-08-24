@@ -79,10 +79,17 @@ import Resource         from "../models/Resource.js";
 import AIConversation   from "../models/AIConversation.js";
 import AIMessage        from "../models/AIMessage.js";
 
+// Phase 2: Project Intelligence Services
+import {
+  buildProjectContext,
+  analyzeProject,
+  chatWithProjectAdvisor,
+} from "../services/projectIntelligence.js";
+
 const router = Router();
 
-// ── Helper: verify project exists and return it ─────────────────────────────
-async function findProject(projectId, res) {
+// ── Helper: verify project exists, check authorization, and return it ────────
+async function findProject(projectId, res, user = null) {
   if (!mongoose.isValidObjectId(projectId)) {
     res.status(400).json({ error: "invalid_project_id" });
     return null;
@@ -92,6 +99,30 @@ async function findProject(projectId, res) {
     res.status(404).json({ error: "project_not_found" });
     return null;
   }
+
+  // Security Check: Verify team access if user context is available
+  if (user && project.teamId) {
+    const team = await Team.findById(project.teamId).lean();
+    if (team && Array.isArray(team.members) && team.members.length > 0) {
+      const isMember = team.members.some((m) => {
+        const uidStr = m.userId ? m.userId.toString() : "";
+        const targetIdStr = user.id ? user.id.toString() : "";
+        return (
+          (uidStr && uidStr === targetIdStr) ||
+          (m.name && user.name && m.name.toLowerCase() === user.name.toLowerCase()) ||
+          (m.name && user.email && m.name.toLowerCase() === user.email.toLowerCase()) ||
+          (m.email && user.email && m.email.toLowerCase() === user.email.toLowerCase())
+        );
+      });
+      // In strict multi-tenant environments, reject unauthorized users.
+      // If team members are defined and user is not a member and has a different specific user id:
+      if (!isMember && user.id && user.id !== "anon" && user.role !== "admin" && team.isPrivate) {
+        res.status(403).json({ error: "forbidden_project_access" });
+        return null;
+      }
+    }
+  }
+
   return project;
 }
 
@@ -941,4 +972,75 @@ router.get("/projects/:projectId/summary", requireAuth, async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE 2: PROJECT INTELLIGENCE & ADVISOR ENDPOINTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── POST /api/projects/:projectId/analyze ────────────────────────────────────
+// Triggers structured AI / heuristic analysis of the project.
+// Extracts domain, requirements, recommendations, decision candidates,
+// research topics, and architecture components with duplicate prevention.
+router.post("/projects/:projectId/analyze", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const result = await analyzeProject(req.params.projectId, req.body);
+    res.json(result);
+  } catch (e) {
+    console.error("[POST /projects/:id/analyze] error:", e.message);
+    res.status(500).json({ error: e.message || "Project analysis failed" });
+  }
+});
+
+// ── GET /api/projects/:projectId/intelligence ────────────────────────────────
+// Returns aggregated project intelligence snapshot (context, accepted decisions,
+// pending decisions, recommendations, architecture, research, risks, and task stats).
+router.get("/projects/:projectId/intelligence", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const context = await buildProjectContext(req.params.projectId);
+    res.json({
+      success: true,
+      intelligence: context,
+    });
+  } catch (e) {
+    console.error("[GET /projects/:id/intelligence] error:", e.message);
+    res.status(500).json({ error: e.message || "Failed to load project intelligence" });
+  }
+});
+
+// ── POST /api/projects/:projectId/ai/chat ────────────────────────────────────
+// Project-aware AI chat conversation endpoint.
+// Injects project context, decisions, architecture, and recent conversation turns.
+router.post("/projects/:projectId/ai/chat", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const { message, conversationId } = req.body ?? {};
+    if (!message || !String(message).trim()) {
+      return res.status(400).json({ error: "Message content is required" });
+    }
+
+    const response = await chatWithProjectAdvisor({
+      projectId: req.params.projectId,
+      conversationId,
+      message,
+      user: req.user,
+    });
+
+    res.json({
+      success: true,
+      ...response,
+    });
+  } catch (e) {
+    console.error("[POST /projects/:id/ai/chat] error:", e.message);
+    res.status(500).json({ error: e.message || "Project chat advisory failed" });
+  }
+});
+
 export default router;
+
