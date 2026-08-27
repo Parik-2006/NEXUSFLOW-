@@ -1114,6 +1114,49 @@ router.delete("/teams/:teamId", requireAuth, async (req, res) => {
   }
 });
 
+// ── POST /api/teams/:teamId/tasks ────────────────────────────────────────────
+// Create a single task via REST. Triggers pre-save Greedy priorityScore calculation.
+router.post("/teams/:teamId/tasks", requireAuth, async (req, res) => {
+  try {
+    const { teamId } = req.params;
+    const {
+      title, description = "", category = "General", urgency = 1, impact = 1,
+      estimatedHours = null, businessValue = null, source = "manual",
+      status = "todo", deadline = null, dueDate = null, priorityLabel = null
+    } = req.body ?? {};
+
+    if (!title || !title.trim()) {
+      return res.status(400).json({ error: "Task title is required." });
+    }
+
+    const team = await Team.findById(teamId);
+    if (!team) return res.status(404).json({ error: "team_not_found" });
+
+    const task = await Task.create({
+      teamId,
+      projectId: team.activeProjectId || null,
+      title: title.trim(),
+      description: description.trim(),
+      category: category.trim(),
+      urgency: Number(urgency) || 1,
+      impact: Number(impact) || 1,
+      estimatedHours: estimatedHours !== null ? Number(estimatedHours) : null,
+      businessValue: businessValue !== null ? Number(businessValue) : null,
+      source,
+      status,
+      deadline,
+      dueDate,
+      priorityLabel,
+      createdBy: req.user?._id || null,
+    });
+
+    await Team.updateOne({ _id: teamId }, { $inc: { taskCount: 1 } });
+    res.status(201).json(task);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── GET /api/teams/:teamId/tasks ──────────────────────────────────────────────
 // Returns tasks sorted by priorityScore DESC (Greedy Scheduler order).
 router.get("/teams/:teamId/tasks", requireAuth, async (req, res) => {
