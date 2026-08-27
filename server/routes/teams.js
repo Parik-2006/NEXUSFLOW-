@@ -10,6 +10,7 @@ import { compareSortAlgorithms, mergeSortTasks, quickSortTasks } from "../utils/
 import { decomposeProject, extractFeatures } from "../algorithms/projectDecomposer.js";
 import { boyerMooreSearch, mergeSort } from "../algorithms/taskOptimiser.js";
 import { decomposeTasksWithContext } from "../services/taskDecomposer.js";
+import { buildCompactProjectContext } from "../utils/projectContextBuilder.js";
 
 const router = Router();
 
@@ -214,119 +215,507 @@ router.post("/teams/:teamId/generate-tasks", requireAuth, async (req, res) => {
 });
 
 // ── POST /api/teams/:teamId/ai-suggest ────────────────────────────────────────
-// Team-aware AI task assistant. Reuses existing DAA building blocks (no new
-// algorithms): projectDecomposer (project-related candidates), Greedy
-// computePriorityScore (priority), Boyer-Moore boyerMooreSearch (dedup against
-// the backlog), Merge Sort (ranking) and topological reasoning (dependencies).
-// Modes: "related" | "missing-phase" | "subtasks". Returns an autofill payload
-// + an explanation. Does NOT persist — the existing create flow saves the task.
+// PHASE 4 — Team-aware AI Project Assistant.
+//
+// Reuses existing DAA building blocks (NO new algorithms created):
+//   • projectDecomposer  → deterministic project-related candidate pool
+//   • computePriorityScore (Greedy) → priority scoring
+//   • boyerMooreSearch   → duplicate detection against existing backlog
+//   • mergeSort          → candidate ranking
+//   • Topological reasoning → dependency awareness
+//   • buildCompactProjectContext → lean team-aware context object
+//
+// When OPENAI_API_KEY is present: uses OpenAI gpt-4o-mini with structured JSON
+//   output for genuinely project-specific suggestions in all modes.
+// When no key: falls back to the existing deterministic decomposer path.
+//
+// Modes:
+//   "related"      → A new task genuinely related to this project
+//   "missing-phase"→ Identify an important missing project phase
+//   "subtasks"     → Break a specific existing task into subtasks
+//   "project-plan" → Structured project plan: tech stack, research, risks, effort
+//   "architecture" → Architecture-level implementation tasks
+//   "research"     → Research spike tasks for the project domain
+//
+// Returns an autofill payload + explanation.
+// Does NOT persist — the existing task:create socket / REST pipeline saves the task.
+
+const OPENAI_KEY_FOR_SUGGEST = process.env.OPENAI_API_KEY;
+
 const SUBTASKS = {
-  Planning:   ["Define success metrics", "Create project timeline", "Risk assessment"],
-  Research:   ["Competitive analysis", "Technology spike", "Feasibility report"],
-  Backend:    ["Create Express server & routing", "Design Mongo schema", "JWT authentication", "API request validation", "Error handling & logging"],
-  Frontend:   ["Build component library", "Implement primary screens", "Wire API integration", "Responsive & accessibility pass"],
-  "AI / ML":  ["Collect & clean dataset", "Feature engineering", "Train baseline model", "Evaluate & tune model", "Deploy inference endpoint"],
-  Hardware:   ["Wire sensors", "Flash firmware", "Calibrate readings", "Power management"],
-  Integration:["Define event contracts", "Implement realtime channel", "Notification delivery"],
-  Testing:    ["Write unit tests", "Build integration test suite", "Set up CI", "Manual QA pass"],
-  Deployment: ["Containerize app", "Configure CI/CD pipeline", "Provision cloud hosting", "Monitoring & alerts"],
-  General:    ["Break down requirements", "Implement core logic", "Add tests", "Write documentation"],
+  Planning:    ["Define success metrics", "Create project timeline", "Risk assessment"],
+  Research:    ["Competitive analysis", "Technology spike", "Feasibility report"],
+  Backend:     ["Create Express server & routing", "Design database schema", "JWT authentication", "API request validation", "Error handling & logging"],
+  Frontend:    ["Build component library", "Implement primary screens", "Wire API integration", "Responsive & accessibility pass"],
+  "AI / ML":   ["Collect & clean dataset", "Feature engineering", "Train baseline model", "Evaluate & tune model", "Deploy inference endpoint"],
+  Hardware:    ["Wire sensors", "Flash firmware", "Calibrate readings", "Power management"],
+  Integration: ["Define event contracts", "Implement realtime channel", "Notification delivery"],
+  Testing:     ["Write unit tests", "Build integration test suite", "Set up CI", "Manual QA pass"],
+  Deployment:  ["Containerize app", "Configure CI/CD pipeline", "Provision cloud hosting", "Monitoring & alerts"],
+  Security:    ["JWT validation audit", "Input sanitization", "Role-based access control", "Penetration test checklist"],
+  General:     ["Break down requirements", "Implement core logic", "Add tests", "Write documentation"],
 };
+
 const tierFromScore = (s) => (s >= 80 ? "critical" : s >= 55 ? "high" : s >= 30 ? "medium" : "low");
+
+// Build an autofill task payload with Greedy priorityScore + derived dates.
+// AI proposes values; Greedy computePriorityScore computes the final score.
+function buildTaskPayload(seed, depCount = 0) {
+  const greedy = computePriorityScore({ urgency: seed.urgency, impact: seed.impact, dependencyCount: depCount });
+  const dueInDays = Math.max(2, Math.round((seed.estimatedHours || 4) / 2));
+  const start    = new Date();
+  const due      = new Date(Date.now() + dueInDays * 86_400_000);
+  const reminder = new Date(due.getTime() - 86_400_000);
+  reminder.setHours(9, 0, 0, 0);
+  return {
+    task: {
+      title:          seed.title,
+      description:    seed.description || "",
+      category:       seed.category,
+      priorityLabel:  tierFromScore(greedy),
+      urgency:        seed.urgency,
+      impact:         seed.impact,
+      estimatedHours: seed.estimatedHours,
+      businessValue:  seed.businessValue,
+      startDate:      start.toISOString(),
+      dueDate:        due.toISOString(),
+      reminderAt:     reminder.toISOString(),
+    },
+    greedy,
+  };
+}
+
+// ── OpenAI helper: call with timeout and structured JSON response ────────────
+async function callOpenAiStructured(systemPrompt, userMessage, timeoutMs = 20_000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method:  "POST",
+      signal:  controller.signal,
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENAI_KEY_FOR_SUGGEST}` },
+      body: JSON.stringify({
+        model:           "gpt-4o-mini",
+        response_format: { type: "json_object" },
+        temperature:     0.3,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user",   content: userMessage },
+        ],
+      }),
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    const raw  = json.choices?.[0]?.message?.content;
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ── Build the compact system prompt shared across most modes ─────────────────
+function buildBaseSystemPrompt(ctx, mode) {
+  const taskLines = ctx.existingTasks.length > 0
+    ? ctx.existingTasks.map((t) => `  • [${t.category}] ${t.title} (${t.status})`).join("\n")
+    : "  (none yet)";
+  const memberLines = ctx.members.length > 0
+    ? ctx.members.map((m) => `  • ${m.name} (${m.role})`).join("\n")
+    : "  (none listed)";
+
+  return `You are an expert Technical Project Advisor embedded in NEXUSFLOW — a student hackathon project management platform.
+
+PROJECT CONTEXT:
+  Team: ${ctx.teamName}
+  Project Title: ${ctx.projectTitle}
+  Description: ${ctx.projectDescription || "(not provided)"}
+  Domain: ${ctx.domain}
+  Requires Hardware/IoT: ${ctx.needsHardware}
+  Requires AI/ML: ${ctx.needsAiMl}
+  Requires Realtime: ${ctx.needsRealtime}
+  Existing Task Count: ${ctx.taskCount} (${ctx.doneCount} done)
+  Current Categories: ${ctx.categories.join(", ") || "none"}
+
+EXISTING BACKLOG (DO NOT DUPLICATE):
+${taskLines}
+
+TEAM MEMBERS:
+${memberLines}
+
+MODE: ${mode}
+
+CRITICAL RULES:
+1. Ground ALL suggestions specifically in this project ("${ctx.projectTitle}").
+2. NEVER suggest tasks unrelated to the project domain (e.g., do not suggest payment/e-commerce tasks for an IoT irrigation project).
+3. Return ONLY a valid JSON object. No prose, no markdown fences.
+4. AI proposes — keep urgency/impact/estimatedHours as reasonable estimates only.`;
+}
 
 router.post("/teams/:teamId/ai-suggest", requireAuth, async (req, res) => {
   try {
     const { teamId } = req.params;
     const { mode = "related", taskId } = req.body ?? {};
-    const [team, tasks] = await Promise.all([Team.findById(teamId).lean(), Task.find({ teamId }).lean()]);
+
+    // --- Security: verify team exists and belongs to authenticated scope ---
+    const team = await Team.findById(teamId).lean();
     if (!team) return res.status(404).json({ error: "team_not_found" });
 
-    const titleText = team.projectTitle || team.name;
-    const descText = team.projectDescription || team.projectTitle || team.name;
-    const keywords = extractFeatures(`${titleText} ${descText}`).slice(0, 6);
-    const existingCats = new Set(tasks.map((t) => t.category).filter(Boolean));
-    const seeds = decomposeProject(titleText, descText);     // project-related only
-
-    // Build an autofill payload with greedy priority + derived dates.
-    const buildTask = (seed, depCount = 0) => {
-      const greedy = computePriorityScore({ urgency: seed.urgency, impact: seed.impact, dependencyCount: depCount });
-      const dueInDays = Math.max(2, Math.round((seed.estimatedHours || 4) / 2));
-      const start = new Date();
-      const due = new Date(Date.now() + dueInDays * 86_400_000);
-      const reminder = new Date(due.getTime() - 86_400_000); reminder.setHours(9, 0, 0, 0);
-      return {
-        task: {
-          title: seed.title,
-          description: seed.description || "",
-          category: seed.category,
-          priorityLabel: tierFromScore(greedy),
-          urgency: seed.urgency, impact: seed.impact,
-          estimatedHours: seed.estimatedHours, businessValue: seed.businessValue,
-          startDate: start.toISOString(), dueDate: due.toISOString(), reminderAt: reminder.toISOString(),
-        },
-        greedy,
-      };
-    };
+    // Build compact context (works without a formal Project document)
+    const ctx = await buildCompactProjectContext(teamId);
+    const tasks  = ctx._rawTasks;
+    const seeds  = decomposeProject(ctx.projectTitle, ctx.projectDescription); // deterministic base
+    const keywords = extractFeatures(`${ctx.projectTitle} ${ctx.projectDescription}`).slice(0, 6);
+    const existingCats = new Set(ctx.categories);
 
     let chosen, missingPhase = null, dependencyReasoning = "", alternatives = [];
+    let plan = null; // only populated for project-plan mode
 
-    if (mode === "missing-phase") {
-      const wanted = [...new Set(seeds.map((s) => s.category))];
-      missingPhase = wanted.find((c) => !existingCats.has(c)) ?? null;
-      const pool = missingPhase ? seeds.filter((s) => s.category === missingPhase) : seeds;
-      const fresh = pool.filter((s) => boyerMooreSearch(tasks, s.title).length === 0);
-      chosen = buildTask(fresh[0] ?? pool[0], 0);
-      dependencyReasoning = missingPhase
-        ? `Phase "${missingPhase}" is missing from the roadmap; it should follow the existing phases.`
-        : "All standard phases already exist — suggested the highest-value remaining task.";
-      alternatives = pool.slice(1, 4).map((s) => s.title);
-    } else if (mode === "subtasks") {
+    // ════════════════════════════════════════════════════════════════════════
+    // MODE: project-plan  (NEW in Phase 4)
+    // Returns a structured project plan + one representative task to pre-fill
+    // ════════════════════════════════════════════════════════════════════════
+    if (mode === "project-plan") {
+      let aiResult = null;
+
+      if (OPENAI_KEY_FOR_SUGGEST) {
+        const sysPrompt = buildBaseSystemPrompt(ctx, "project-plan") + `
+
+Return a JSON object with this exact shape:
+{
+  "plan": {
+    "summary": "One paragraph describing the project.",
+    "domain": "Domain/category of the project",
+    "coreGoal": "The primary goal in one sentence.",
+    "technicalAreas": ["area1", "area2"],
+    "recommendations": {
+      "frontend": ["Technology / framework suggestion with brief reason"],
+      "backend":  ["Technology / framework suggestion with brief reason"],
+      "database": ["Database suggestion with brief reason"],
+      "aiMl":     ["AI/ML framework/model suggestion — only if project needs AI"],
+      "hardware": ["Hardware component suggestion — only if project needs hardware"],
+      "apis":     ["External API/service suggestion — only if relevant"],
+      "tools":    ["Dev tool/platform suggestion"]
+    },
+    "researchTopics": [
+      { "topic": "Topic title", "why": "Why the student should research this" }
+    ],
+    "risks": [
+      { "risk": "Risk description", "mitigation": "How to mitigate" }
+    ],
+    "nextSteps": ["Ordered list of immediate next actions"],
+    "estimatedEffort": "e.g. 4–6 weeks for a 2-person team",
+    "missingPhases": ["Phase names missing from the existing backlog"]
+  },
+  "task": {
+    "title": "Most important immediate task title (imperative, 3–7 words)",
+    "description": "What needs to be done and why",
+    "category": "Planning",
+    "urgency": 5,
+    "impact": 4,
+    "estimatedHours": 4,
+    "businessValue": 8,
+    "reason": "Why this is the most critical first task",
+    "dependsOn": []
+  }
+}`;
+        aiResult = await callOpenAiStructured(
+          sysPrompt,
+          `Generate a structured project plan for: "${ctx.projectTitle}" — ${ctx.projectDescription || "(no description provided)"}`
+        );
+      }
+
+      // Heuristic fallback for project-plan
+      if (!aiResult || !aiResult.plan) {
+        const missingPhasesList = [];
+        const wantedPhases = [...new Set(seeds.map((s) => s.category))];
+        for (const p of wantedPhases) {
+          if (!existingCats.has(p)) missingPhasesList.push(p);
+        }
+        aiResult = {
+          plan: {
+            summary: `${ctx.projectTitle} is a ${ctx.domain} project. ${ctx.projectDescription ? ctx.projectDescription.slice(0, 200) : ""}`,
+            domain: ctx.domain,
+            coreGoal: `Build and deploy ${ctx.projectTitle}.`,
+            technicalAreas: [...new Set(seeds.map((s) => s.category))],
+            recommendations: {
+              frontend:  ["React / React Native — component-based UI"],
+              backend:   ["Node.js + Express — familiar JS stack"],
+              database:  ["MongoDB — flexible schema for rapid iteration"],
+              aiMl:      ctx.needsAiMl  ? ["scikit-learn / TensorFlow Lite — lightweight inference"] : [],
+              hardware:  ctx.needsHardware ? ["ESP32 — WiFi-capable microcontroller for IoT"] : [],
+              apis:      [],
+              tools:     ["Git + GitHub — version control", "Postman — API testing"],
+            },
+            researchTopics: [
+              { topic: `${ctx.domain} architecture patterns`, why: "Understand best practices before coding" },
+              { topic: "MVP scoping for hackathon projects", why: "Focus on core features under time pressure" },
+            ],
+            risks: [
+              { risk: "Scope creep", mitigation: "Define MVP features and freeze scope early" },
+              { risk: "Integration failures between components", mitigation: "Test interfaces incrementally" },
+            ],
+            nextSteps: [
+              "Finalize project requirements and technology decisions",
+              "Set up development environment and repository",
+              "Build the core backend API first",
+              "Iterate on frontend once data layer is stable",
+            ],
+            estimatedEffort: "4–6 weeks for a 2–3 person team",
+            missingPhases: missingPhasesList,
+          },
+          task: {
+            title: seeds[0]?.title || "Define Project Requirements & Architecture",
+            description: seeds[0]?.description || "Establish technical specifications before implementation begins.",
+            category: seeds[0]?.category || "Planning",
+            urgency: 5, impact: 4, estimatedHours: 4, businessValue: 8,
+            reason: "Planning tasks must be completed before any implementation begins.",
+            dependsOn: [],
+          },
+        };
+      }
+
+      plan = aiResult.plan;
+      const taskSeed = aiResult.task || seeds[0] || { title: "Define Project Requirements", category: "Planning", urgency: 4, impact: 4, estimatedHours: 4, businessValue: 8 };
+      chosen = buildTaskPayload(taskSeed, 0);
+      // Merge AI reason into the task description
+      if (aiResult.task?.reason && !chosen.task.description) {
+        chosen.task.description = aiResult.task.reason;
+      }
+      dependencyReasoning = aiResult.task?.reason || "Foundation task for the project.";
+      alternatives = (plan.nextSteps || []).slice(0, 3);
+      missingPhase = (plan.missingPhases || [])[0] || null;
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // MODE: missing-phase
+    // ════════════════════════════════════════════════════════════════════════
+    else if (mode === "missing-phase") {
+      let aiResult = null;
+
+      if (OPENAI_KEY_FOR_SUGGEST) {
+        const sysPrompt = buildBaseSystemPrompt(ctx, "missing-phase") + `
+
+Analyze the existing backlog and identify the MOST IMPORTANT missing project phase.
+
+Return a JSON object:
+{
+  "missingPhase": "Phase name (e.g. Testing, Deployment, AI / ML, Hardware)",
+  "why": "One sentence explaining why this phase is critical for the project.",
+  "task": {
+    "title": "First task for the missing phase (imperative, 3–7 words)",
+    "description": "What needs to be done in this task",
+    "category": "<same as missingPhase>",
+    "urgency": 3,
+    "impact": 4,
+    "estimatedHours": 5,
+    "businessValue": 8,
+    "reason": "Why this task addresses the gap",
+    "dependsOn": ["Title of an existing task this depends on, if any"]
+  },
+  "alternatives": ["Other task titles for this phase"]
+}`;
+        aiResult = await callOpenAiStructured(
+          sysPrompt,
+          `Identify missing phase for "${ctx.projectTitle}". Current categories: ${ctx.categories.join(", ") || "none"}.`
+        );
+      }
+
+      // Deterministic fallback (existing logic)
+      if (!aiResult || !aiResult.task) {
+        const wanted = [...new Set(seeds.map((s) => s.category))];
+        missingPhase = wanted.find((c) => !existingCats.has(c)) ?? null;
+        const pool  = missingPhase ? seeds.filter((s) => s.category === missingPhase) : seeds;
+        const fresh = pool.filter((s) => boyerMooreSearch(tasks, s.title).length === 0);
+        chosen = buildTaskPayload(fresh[0] ?? pool[0], 0);
+        dependencyReasoning = missingPhase
+          ? `Phase "${missingPhase}" is missing from the roadmap; it should follow the existing phases.`
+          : "All standard phases already exist — suggested the highest-value remaining task.";
+        alternatives = pool.slice(1, 4).map((s) => s.title);
+      } else {
+        missingPhase = aiResult.missingPhase || null;
+        chosen = buildTaskPayload(aiResult.task, aiResult.task.dependsOn?.length > 0 ? 1 : 0);
+        if (aiResult.task.reason) chosen.task.description = chosen.task.description || aiResult.task.reason;
+        dependencyReasoning = aiResult.why
+          ? `Phase "${missingPhase}" is missing. ${aiResult.why}`
+          : `Phase "${missingPhase}" is missing from the roadmap.`;
+        alternatives = Array.isArray(aiResult.alternatives) ? aiResult.alternatives.slice(0, 4) : [];
+      }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // MODE: subtasks
+    // ════════════════════════════════════════════════════════════════════════
+    else if (mode === "subtasks") {
       const parent = tasks.find((t) => t._id.toString() === String(taskId));
-      const cat = parent?.category && SUBTASKS[parent.category] ? parent.category : "General";
-      const subs = SUBTASKS[cat];
-      const existingLower = tasks.map((t) => (t.title || "").toLowerCase());
-      const freshTitle = subs.find((t) => !existingLower.some((e) => e.includes(t.toLowerCase()))) ?? subs[0];
-      const seed = {
-        title: parent ? `${parent.title}: ${freshTitle}` : freshTitle,
-        description: `Subtask of ${parent?.title ?? "the selected task"}.`,
-        category: cat,
-        urgency: parent?.urgency ?? 3, impact: parent?.impact ?? 3,
-        estimatedHours: Math.max(1, Math.round((parent?.estimatedHours ?? 4) / 2)),
-        businessValue: parent?.businessValue ?? 6,
-      };
-      chosen = buildTask(seed, parent ? 1 : 0);
-      dependencyReasoning = parent
-        ? `Subtask of "${parent.title}" — Topological Sort places it after its parent.`
-        : "Standalone subtask.";
-      alternatives = subs.slice(1, 5).map((t) => (parent ? `${parent.title}: ${t}` : t));
-    } else { // related
-      const fresh = seeds.filter((s) => boyerMooreSearch(tasks, s.title).length === 0);
-      const pool = fresh.length ? fresh : seeds;
-      // Rank candidates by greedy priority using the existing Merge Sort.
-      const ranked = mergeSort(pool.map((s) => ({
-        ...s, status: "todo", effort: s.estimatedHours,
-        priority: computePriorityScore({ urgency: s.urgency, impact: s.impact, dependencyCount: 0 }),
-      })));
-      const pick = ranked[0];
-      chosen = buildTask(pick, 0);
-      dependencyReasoning = (pick.phaseIndex ?? 0) > 0
-        ? `Belongs to the "${pick.category}" phase, which usually follows earlier phases.`
-        : `Independent ${pick.category} task — no prerequisites.`;
-      alternatives = ranked.slice(1, 4).map((s) => s.title);
+      let aiResult = null;
+
+      if (OPENAI_KEY_FOR_SUGGEST && parent) {
+        const sysPrompt = buildBaseSystemPrompt(ctx, "subtasks") + `
+
+Break the following task into concrete, specific subtasks for this project.
+Parent task: "${parent.title}" (Category: ${parent.category || "General"})
+
+Return a JSON object:
+{
+  "subtasks": [
+    {
+      "title": "Subtask title (imperative, 3–7 words)",
+      "description": "What specifically needs to happen",
+      "category": "${parent.category || "General"}",
+      "urgency": 3,
+      "impact": 4,
+      "estimatedHours": 3,
+      "businessValue": 6,
+      "reason": "Why this subtask is needed",
+      "dependsOn": ["Previous subtask title if sequential"]
+    }
+  ]
+}`;
+        aiResult = await callOpenAiStructured(
+          sysPrompt,
+          `Break down: "${parent.title}" into subtasks for project "${ctx.projectTitle}".`
+        );
+      }
+
+      if (!aiResult || !Array.isArray(aiResult.subtasks) || aiResult.subtasks.length === 0) {
+        // Deterministic fallback using SUBTASKS map
+        const cat = parent?.category && SUBTASKS[parent.category] ? parent.category : "General";
+        const subs = SUBTASKS[cat];
+        const existingLower = tasks.map((t) => (t.title || "").toLowerCase());
+        const freshTitle = subs.find((t) => !existingLower.some((e) => e.includes(t.toLowerCase()))) ?? subs[0];
+        const seed = {
+          title:          parent ? `${parent.title}: ${freshTitle}` : freshTitle,
+          description:    `Subtask of ${parent?.title ?? "the selected task"}.`,
+          category:       cat,
+          urgency:        parent?.urgency ?? 3,
+          impact:         parent?.impact  ?? 3,
+          estimatedHours: Math.max(1, Math.round((parent?.estimatedHours ?? 4) / 2)),
+          businessValue:  parent?.businessValue ?? 6,
+        };
+        chosen = buildTaskPayload(seed, parent ? 1 : 0);
+        dependencyReasoning = parent
+          ? `Subtask of "${parent.title}" — Topological Sort places it after its parent.`
+          : "Standalone subtask.";
+        alternatives = subs.slice(1, 5).map((t) => (parent ? `${parent.title}: ${t}` : t));
+      } else {
+        // Pick the first fresh subtask from OpenAI response
+        const existingLower = tasks.map((t) => (t.title || "").toLowerCase());
+        const freshSub = aiResult.subtasks.find(
+          (s) => !existingLower.some((e) => e.includes((s.title || "").toLowerCase()))
+        ) || aiResult.subtasks[0];
+
+        const seed = {
+          title:          freshSub.title,
+          description:    freshSub.description || `Subtask of ${parent?.title}.`,
+          category:       freshSub.category || parent?.category || "General",
+          urgency:        Math.min(5, Math.max(1, Number(freshSub.urgency) || 3)),
+          impact:         Math.min(5, Math.max(1, Number(freshSub.impact)  || 3)),
+          estimatedHours: Math.max(1, Number(freshSub.estimatedHours) || 3),
+          businessValue:  Math.max(1, Number(freshSub.businessValue)   || 6),
+        };
+        chosen = buildTaskPayload(seed, (freshSub.dependsOn?.length || 0) > 0 ? 1 : 0);
+        if (freshSub.reason) chosen.task.description = chosen.task.description || freshSub.reason;
+        dependencyReasoning = parent
+          ? `Subtask of "${parent.title}" (${ctx.projectTitle}) — Topological Sort places it after its parent.`
+          : "Subtask suggested for this project.";
+        alternatives = aiResult.subtasks.slice(1, 5).map((s) => s.title).filter(Boolean);
+      }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // MODE: related  (default)
+    // ════════════════════════════════════════════════════════════════════════
+    else {
+      let aiResult = null;
+
+      if (OPENAI_KEY_FOR_SUGGEST) {
+        const sysPrompt = buildBaseSystemPrompt(ctx, "related") + `
+
+Suggest ONE new task that is genuinely related to this specific project and not already in the backlog.
+
+Return a JSON object:
+{
+  "task": {
+    "title": "Task title (imperative, 3–7 words)",
+    "description": "What needs to be done and why — specific to this project",
+    "category": "Backend|Frontend|Planning|Research|Hardware|AI / ML|Integration|Testing|Deployment|Security",
+    "urgency": 3,
+    "impact": 4,
+    "estimatedHours": 5,
+    "businessValue": 8,
+    "reason": "Why this task is important for THIS specific project",
+    "dependsOn": ["Existing task title this depends on, if applicable"]
+  },
+  "alternatives": ["Other possible related task titles"]
+}`;
+        aiResult = await callOpenAiStructured(
+          sysPrompt,
+          `Suggest a related task for "${ctx.projectTitle}" (${ctx.domain}). Existing: ${ctx.existingTasks.slice(0, 10).map((t) => t.title).join(", ")}.`
+        );
+      }
+
+      if (!aiResult || !aiResult.task) {
+        // Deterministic fallback: Boyer-Moore dedup + Merge Sort ranking
+        const fresh  = seeds.filter((s) => boyerMooreSearch(tasks, s.title).length === 0);
+        const pool   = fresh.length ? fresh : seeds;
+        const ranked = mergeSort(pool.map((s) => ({
+          ...s, status: "todo", effort: s.estimatedHours,
+          priority: computePriorityScore({ urgency: s.urgency, impact: s.impact, dependencyCount: 0 }),
+        })));
+        const pick = ranked[0];
+        chosen = buildTaskPayload(pick, 0);
+        dependencyReasoning = (pick.phaseIndex ?? 0) > 0
+          ? `Belongs to the "${pick.category}" phase, which usually follows earlier phases.`
+          : `Independent ${pick.category} task — no prerequisites.`;
+        alternatives = ranked.slice(1, 4).map((s) => s.title);
+      } else {
+        // Validate AI suggestion against existing backlog using Boyer-Moore
+        const bmHit = boyerMooreSearch(tasks, aiResult.task.title);
+        const seed  = bmHit.length > 0
+          ? // Duplicate detected — fall back to deterministic result
+            (() => { const r = mergeSort(seeds.filter((s) => boyerMooreSearch(tasks, s.title).length === 0)); return r[0] || seeds[0]; })()
+          : {
+              title:          aiResult.task.title,
+              description:    aiResult.task.description || "",
+              category:       aiResult.task.category    || "General",
+              urgency:        Math.min(5, Math.max(1, Number(aiResult.task.urgency)        || 3)),
+              impact:         Math.min(5, Math.max(1, Number(aiResult.task.impact)         || 3)),
+              estimatedHours: Math.max(1,              Number(aiResult.task.estimatedHours) || 5),
+              businessValue:  Math.max(1,              Number(aiResult.task.businessValue)  || 8),
+            };
+
+        chosen = buildTaskPayload(seed, (aiResult.task.dependsOn?.length || 0) > 0 ? 1 : 0);
+        if (aiResult.task.reason) chosen.task.description = chosen.task.description || aiResult.task.reason;
+        dependencyReasoning = aiResult.task.reason
+          ? `${aiResult.task.reason}${aiResult.task.dependsOn?.length ? " Depends on: " + aiResult.task.dependsOn.join(", ") + "." : ""}`
+          : `Related ${chosen.task.category} task for ${ctx.projectTitle}.`;
+        alternatives = Array.isArray(aiResult.alternatives) ? aiResult.alternatives.slice(0, 4) : [];
+      }
     }
 
     res.json({
       task: chosen.task,
+      ...(plan ? { plan } : {}),
       explanation: {
-        mode, keywords, missingPhase,
-        greedyScore: chosen.greedy,
-        businessValue: chosen.task.businessValue,
-        effort: chosen.task.estimatedHours,
-        priority: chosen.task.priorityLabel,
-        dependencyReasoning, alternatives,
+        mode,
+        keywords,
+        missingPhase,
+        greedyScore:         chosen.greedy,
+        businessValue:       chosen.task.businessValue,
+        effort:              chosen.task.estimatedHours,
+        priority:            chosen.task.priorityLabel,
+        dependencyReasoning,
+        alternatives,
+        // Phase 4 additions:
+        projectTitle:        ctx.projectTitle,
+        domain:              ctx.domain,
+        reason:              chosen.task.description,
       },
     });
   } catch (e) {
+    console.error("[ai-suggest] error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });

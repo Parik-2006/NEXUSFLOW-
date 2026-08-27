@@ -304,6 +304,10 @@ export function useTeamTasks(teamId: string) {
   );
 
   // ── createTask (full-field socket create) ───────────────────────────────────
+  // PHASE 4 BUG FIX: The ack callback on a disconnected socket is NEVER called,
+  // which left setBusy(true) permanently in the UI. We now race the socket emit
+  // against a 15-second timeout. If the connection drops between emit and ack,
+  // the timeout wins and the caller receives a clear error — loading state resets.
   type CreateOpts = {
     urgency?: number; impact?: number; estimatedHours?: number; businessValue?: number;
     description?: string; deadline?: string | null; startDate?: string | null;
@@ -312,9 +316,10 @@ export function useTeamTasks(teamId: string) {
     category?: string;
   };
   const createTask = useCallback(
-    (title: string, opts?: CreateOpts) =>
-      new Promise<{ error?: string }>((resolve) => {
-        const socket = getSocket(token);
+    (title: string, opts?: CreateOpts) => {
+      const socket = getSocket(token);
+
+      const ackPromise = new Promise<{ error?: string }>((resolve) => {
         socket.emit(
           "task:create",
           {
@@ -329,7 +334,16 @@ export function useTeamTasks(teamId: string) {
           (ack: { ok: boolean; task?: Task; error?: string }) =>
             resolve(ack?.ok ? {} : { error: ack?.error ?? "Failed to create task" })
         );
-      }),
+      });
+
+      // Safety timeout: if the socket disconnects before the ack fires, resolve
+      // with a descriptive error after 15 s so the UI is never permanently stuck.
+      const timeoutPromise = new Promise<{ error?: string }>((resolve) =>
+        setTimeout(() => resolve({ error: "Network timeout — check your connection and try again" }), 15_000)
+      );
+
+      return Promise.race([ackPromise, timeoutPromise]);
+    },
     [teamId, token]
   );
 
@@ -389,6 +403,22 @@ export function useTeamTasks(teamId: string) {
       mode: string; keywords: string[]; missingPhase: string | null;
       greedyScore: number; businessValue: number; effort: number; priority: string;
       dependencyReasoning: string; alternatives: string[];
+      // Phase 4 additions:
+      projectTitle?: string; domain?: string; reason?: string;
+    };
+    // Phase 4 — populated when mode === "project-plan"
+    plan?: {
+      summary: string; domain: string; coreGoal: string;
+      technicalAreas: string[];
+      recommendations: {
+        frontend?: string[]; backend?: string[]; database?: string[];
+        aiMl?: string[]; hardware?: string[]; apis?: string[]; tools?: string[];
+      };
+      researchTopics?: { topic: string; why: string }[];
+      risks?: { risk: string; mitigation: string }[];
+      nextSteps?: string[];
+      estimatedEffort?: string;
+      missingPhases?: string[];
     };
   };
   const aiSuggest = useCallback(
@@ -400,7 +430,7 @@ export function useTeamTasks(teamId: string) {
       });
       const data = await res.json();
       if (!res.ok) return { error: data.error ?? "AI suggestion failed" };
-      return { task: data.task, explanation: data.explanation };
+      return { task: data.task, explanation: data.explanation, plan: data.plan };
     },
     [teamId, token]
   );
