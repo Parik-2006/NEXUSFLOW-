@@ -11,6 +11,7 @@ import { decomposeProject, extractFeatures } from "../algorithms/projectDecompos
 import { boyerMooreSearch, mergeSort } from "../algorithms/taskOptimiser.js";
 import { decomposeTasksWithContext } from "../services/taskDecomposer.js";
 import { buildCompactProjectContext } from "../utils/projectContextBuilder.js";
+import { evaluateDecision, listDecisionTypes } from "../algorithms/decisionEngine.js";
 
 const router = Router();
 
@@ -718,6 +719,215 @@ Return a JSON object:
     console.error("[ai-suggest] error:", e.message);
     res.status(500).json({ error: e.message });
   }
+});
+
+// ── POST /api/teams/:teamId/decide ────────────────────────────────────────────
+// Phase 5: Decision & Recommendation Engine
+//
+// Centralized decision endpoint that evaluates options using existing DAA
+// algorithms (Greedy, Knapsack, Branch & Bound, Merge Sort, Topo Sort).
+// AI (OpenAI) is ONLY called for qualitative text explanation — it does NOT
+// calculate any scores. All numerical scores are deterministic.
+//
+// Decision Types:
+//   technology    → weighted factor scoring + Merge Sort ranking
+//   task-priority → greedySortTasks() + computePriorityScore()
+//   sprint        → knapsackSprint() via computeRecommendation()
+//   assignment    → assignTasksToMembers() via Branch & Bound
+//   architecture  → weighted factor scoring + Merge Sort ranking
+//   ai-ml         → weighted factor scoring + Merge Sort ranking
+//
+// Body: { decisionType, question?, options?, preferences? }
+// Response: { success, decision: { recommendation, alternatives, factors, matrix,
+//              tradeoffs, risks, reason, nextAction, confidence, daaAlgorithmsUsed } }
+router.post("/teams/:teamId/decide", requireAuth, async (req, res) => {
+  const TIMEOUT_MS = 12000;
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    if (!res.headersSent) {
+      res.status(504).json({
+        success: false,
+        error: "Decision engine timed out. Try again or simplify the request.",
+      });
+    }
+  }, TIMEOUT_MS);
+
+  try {
+    const { teamId } = req.params;
+    const {
+      decisionType,
+      question = "",
+      options = [],
+      preferences = {},
+    } = req.body ?? {};
+
+    // ── Validate inputs ────────────────────────────────────────────────────
+    if (!decisionType) {
+      clearTimeout(timer);
+      return res.status(400).json({
+        success: false,
+        error: `decisionType is required. Valid types: ${listDecisionTypes().map((t) => t.key).join(", ")}.`,
+      });
+    }
+
+    // ── Build compact project context (existing utility) ───────────────────
+    let ctx;
+    try {
+      ctx = await buildCompactProjectContext(teamId);
+    } catch (ctxErr) {
+      clearTimeout(timer);
+      return res.status(404).json({ success: false, error: ctxErr.message === "team_not_found" ? "Team not found." : ctxErr.message });
+    }
+
+    // ── Load tasks + members for DAA algorithms ────────────────────────────
+    const [allTasks, team] = await Promise.all([
+      Task.find({ teamId }).lean(),
+      Team.findById(teamId).lean(),
+    ]);
+    const members = team?.members ?? [];
+
+    // Attach sprint capacity from team settings if not in preferences
+    if (!preferences.capacity && team?.settings?.sprintCapacity) {
+      preferences.capacity = team.settings.sprintCapacity;
+    }
+
+    // ── Deterministic engine evaluation ───────────────────────────────────
+    // This runs BEFORE the AI call so the page can degrade gracefully
+    // if OpenAI is unavailable.
+    const engineResult = evaluateDecision({
+      decisionType,
+      question,
+      options: Array.isArray(options) ? options : [],
+      preferences,
+      ctx,
+      tasks: allTasks,
+      members,
+      aiQualitative: null, // filled in below if OpenAI is available
+    });
+
+    if (engineResult.error) {
+      clearTimeout(timer);
+      return res.status(400).json({ success: false, error: engineResult.error });
+    }
+
+    // ── AI qualitative layer (optional — only for explanation text) ────────
+    // AI DOES NOT override scores. It only provides:
+    //   - reason (natural-language explanation)
+    //   - nextAction
+    //   - tradeoff prose per option
+    //   - risk narrative
+    // If AI fails, the deterministic result stands as-is.
+    const OPENAI_KEY_DECIDE = process.env.OPENAI_API_KEY;
+
+    if (OPENAI_KEY_DECIDE && ["technology", "architecture", "ai-ml"].includes(decisionType) && options.length > 0) {
+      try {
+        const needsTypes = ["technology", "architecture", "ai-ml"];
+        if (needsTypes.includes(decisionType)) {
+          const systemPrompt = `You are a project advisor for NEXUSFLOW, a student project management tool.
+Your role is to EXPLAIN a decision recommendation — you do NOT calculate scores (those are deterministic).
+
+Project: "${ctx.projectTitle}" (${ctx.domain})
+Description: ${ctx.projectDescription ? ctx.projectDescription.slice(0, 200) : "(none provided)"}
+Team size: ${members.length} members
+Existing tasks: ${ctx.taskCount}
+
+Decision: ${question || `Which ${decisionType} option best fits this project?`}
+Options being compared: ${options.join(" vs ")}
+Deterministic scores: ${engineResult.alternatives
+  ? [engineResult.recommendation?.option, ...engineResult.alternatives.map((a) => a.option)]
+      .map((o, i) => `${o}: ${i === 0 ? engineResult.recommendation?.score : engineResult.alternatives?.[i - 1]?.score}`)
+      .join(", ")
+  : "N/A"}
+
+Return a JSON object:
+{
+  "reason": "2-3 sentence explanation of WHY the top option was recommended. Mention the project domain. Do NOT invent capabilities or benchmarks. If unsure, say 'Needs verification'.",
+  "nextAction": "One concrete next step the team should take.",
+  "tradeoffs": {
+    "<OptionName>": { "pros": ["benefit1", "benefit2"], "cons": ["concern1"] }
+  },
+  "risks": [
+    { "option": "<OptionName>", "risk": "specific risk", "severity": "low|medium|high", "mitigation": "mitigation step" }
+  ],
+  "alternativeReasons": {
+    "<AlternativeOptionName>": "One sentence about when this alternative makes sense."
+  }
+}`;
+
+          const aiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${OPENAI_KEY_DECIDE}`,
+            },
+            body: JSON.stringify({
+              model: "gpt-4o-mini",
+              messages: [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: `Explain the decision recommendation for the ${decisionType} choice.` },
+              ],
+              temperature: 0.3,
+              max_tokens: 600,
+              response_format: { type: "json_object" },
+            }),
+            signal: AbortSignal.timeout(8000),
+          });
+
+          if (aiRes.ok) {
+            const aiData = await aiRes.json();
+            const aiContent = aiData.choices?.[0]?.message?.content;
+            if (aiContent) {
+              const aiQualitative = JSON.parse(aiContent);
+              // Re-run engine with AI qualitative content to enrich explanations
+              if (!timedOut) {
+                const enrichedResult = evaluateDecision({
+                  decisionType, question,
+                  options: Array.isArray(options) ? options : [],
+                  preferences, ctx, tasks: allTasks, members,
+                  aiQualitative,
+                });
+                if (!enrichedResult.error) {
+                  clearTimeout(timer);
+                  if (!res.headersSent) {
+                    return res.json({
+                      success: true,
+                      decision: { ...enrichedResult, aiEnhanced: true },
+                    });
+                  }
+                  return;
+                }
+              }
+            }
+          }
+        }
+      } catch (aiErr) {
+        // AI failure is non-fatal — deterministic result stands
+        console.warn("[decide] AI qualitative layer unavailable:", aiErr.message);
+      }
+    }
+
+    // ── Return deterministic result (AI unavailable or not needed) ─────────
+    clearTimeout(timer);
+    if (!res.headersSent) {
+      res.json({
+        success: true,
+        decision: { ...engineResult, aiEnhanced: false },
+      });
+    }
+  } catch (e) {
+    clearTimeout(timer);
+    console.error("[decide] error:", e.message);
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  }
+});
+
+// ── GET /api/teams/:teamId/decide/types ───────────────────────────────────────
+// Returns metadata about supported decision types for UI rendering.
+router.get("/teams/:teamId/decide/types", requireAuth, (_req, res) => {
+  res.json({ types: listDecisionTypes() });
 });
 
 // ── DELETE /api/teams/:teamId/members/:userId ─────────────────────────────────

@@ -28,6 +28,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/context/AuthContext";
 import { colors, spacing, radius, font } from "@/theme";
+import DecisionPanel from "./DecisionPanel";
 
 const API = process.env.EXPO_PUBLIC_API_URL ?? "https://nexusflow-nxeg.onrender.com";
 
@@ -102,7 +103,7 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
   const [analyzing, setAnalyzing] = useState(false);
   const [generatingTasks, setGeneratingTasks] = useState(false);
   const [generatedResult, setGeneratedResult] = useState<{ added: number; duplicatesSkipped: number } | null>(null);
-  const [activeSection, setActiveSection] = useState<"advisor" | "recommendations" | "decisions" | "architecture" | "research">("advisor");
+  const [activeSection, setActiveSection] = useState<"advisor" | "recommendations" | "decisions" | "architecture" | "research" | "decide">("advisor");
 
   // Chat State
   const [chatMessages, setChatMessages] = useState<ChatTurn[]>([]);
@@ -351,6 +352,7 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
             { key: "decisions", label: "Decisions", icon: "git-commit", count: proposedDecisions.length },
             { key: "architecture", label: "Architecture", icon: "layers", count: architecture.length },
             { key: "research", label: "Research", icon: "book", count: researchTopics.length },
+            { key: "decide", label: "Decision Engine", icon: "analytics", count: 0 },
           ].map((tab) => {
             const on = activeSection === tab.key;
             return (
@@ -697,6 +699,10 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
           </View>
         )}
       </ScrollView>
+
+      {/* ── SECTION: DECISION ENGINE (Phase 5) ─────────────────────── */}
+      {/* Rendered outside the outer ScrollView to allow DecisionPanel its own scroll */}
+      {activeSection === "decide" && <DecisionPanel teamId={teamId} />}
     </View>
   );
 }
