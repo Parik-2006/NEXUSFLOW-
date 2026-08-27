@@ -29,6 +29,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/context/AuthContext";
 import { colors, spacing, radius, font } from "@/theme";
 import DecisionPanel from "./DecisionPanel";
+import GuidancePanel from "./GuidancePanel";
 
 const API = process.env.EXPO_PUBLIC_API_URL ?? "https://nexusflow-nxeg.onrender.com";
 
@@ -103,7 +104,7 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
   const [analyzing, setAnalyzing] = useState(false);
   const [generatingTasks, setGeneratingTasks] = useState(false);
   const [generatedResult, setGeneratedResult] = useState<{ added: number; duplicatesSkipped: number } | null>(null);
-  const [activeSection, setActiveSection] = useState<"advisor" | "recommendations" | "decisions" | "architecture" | "research" | "decide">("advisor");
+  const [activeSection, setActiveSection] = useState<"advisor" | "recommendations" | "decisions" | "architecture" | "research" | "decide" | "guidance">("advisor");
 
   // Chat State
   const [chatMessages, setChatMessages] = useState<ChatTurn[]>([]);
@@ -348,6 +349,7 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.subNavContent}>
           {[
             { key: "advisor", label: "Advisor & Chat", icon: "sparkles", count: 0 },
+            { key: "guidance", label: "Project Guidance", icon: "compass", count: 0 },
             { key: "recommendations", label: "Recommendations", icon: "bulb", count: pendingRecs.length },
             { key: "decisions", label: "Decisions", icon: "git-commit", count: proposedDecisions.length },
             { key: "architecture", label: "Architecture", icon: "layers", count: architecture.length },
@@ -703,6 +705,9 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
       {/* ── SECTION: DECISION ENGINE (Phase 5) ─────────────────────── */}
       {/* Rendered outside the outer ScrollView to allow DecisionPanel its own scroll */}
       {activeSection === "decide" && <DecisionPanel teamId={teamId} />}
+
+      {/* ── SECTION: PROJECT GUIDANCE (Phase 6) ─────────────────────── */}
+      {activeSection === "guidance" && <GuidancePanel teamId={teamId} />}
     </View>
   );
 }

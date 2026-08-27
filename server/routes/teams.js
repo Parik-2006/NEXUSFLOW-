@@ -12,6 +12,7 @@ import { boyerMooreSearch, mergeSort } from "../algorithms/taskOptimiser.js";
 import { decomposeTasksWithContext } from "../services/taskDecomposer.js";
 import { buildCompactProjectContext } from "../utils/projectContextBuilder.js";
 import { evaluateDecision, listDecisionTypes } from "../algorithms/decisionEngine.js";
+import { generateProjectGuidance } from "../algorithms/projectGuidanceEngine.js";
 
 const router = Router();
 
@@ -928,6 +929,144 @@ Return a JSON object:
 // Returns metadata about supported decision types for UI rendering.
 router.get("/teams/:teamId/decide/types", requireAuth, (_req, res) => {
   res.json({ types: listDecisionTypes() });
+});
+
+// ── POST /api/teams/:teamId/project-guidance ─────────────────────────────────
+// Phase 6: Student Project Guidance & Project Copilot
+//
+// Centralized guidance endpoint answering:
+// "I have this project idea. What exactly do I need to do?"
+//
+// Combines deterministic domain inference, hardware & AI/ML detection,
+// TopoSort phase dependency ordering, 0/1 Knapsack Hackathon Mode slicing,
+// team skill gap analysis, explainable readiness score, and next action advice.
+//
+// AI (OpenAI) only provides qualitative semantic summaries; all scores,
+// algorithms, and optimization remain deterministic.
+router.post("/teams/:teamId/project-guidance", requireAuth, async (req, res) => {
+  const TIMEOUT_MS = 12000;
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    if (!res.headersSent) {
+      res.status(504).json({
+        success: false,
+        error: "Project guidance engine timed out. Try again or check server logs.",
+      });
+    }
+  }, TIMEOUT_MS);
+
+  try {
+    const { teamId } = req.params;
+    const { hackathonHours = 24 } = req.body ?? {};
+
+    // 1. Build compact project context
+    let ctx;
+    try {
+      ctx = await buildCompactProjectContext(teamId);
+    } catch (ctxErr) {
+      clearTimeout(timer);
+      return res.status(404).json({
+        success: false,
+        error: ctxErr.message === "team_not_found" ? "Team not found." : ctxErr.message,
+      });
+    }
+
+    // 2. Fetch tasks and team members
+    const [allTasks, team] = await Promise.all([
+      Task.find({ teamId }).lean(),
+      Team.findById(teamId).lean(),
+    ]);
+    const members = team?.members ?? [];
+
+    // 3. Generate deterministic guidance baseline
+    const baselineGuidance = generateProjectGuidance({
+      ctx,
+      tasks: allTasks,
+      members,
+      hackathonHours: Number(hackathonHours) || 24,
+      aiNarrative: null,
+    });
+
+    // 4. Optional AI Qualitative Enrichment (gpt-4o-mini)
+    const OPENAI_KEY_GUIDANCE = process.env.OPENAI_API_KEY;
+    if (OPENAI_KEY_GUIDANCE && ctx.projectTitle) {
+      try {
+        const systemPrompt = `You are a Project Advisor in NEXUSFLOW helping a student understand their project.
+Project Title: "${ctx.projectTitle}"
+Description: ${ctx.projectDescription || "(none provided)"}
+Domain: ${ctx.domain}
+
+Provide a concise JSON object summarizing project understanding:
+{
+  "summary": "One or two clear sentences describing what this project is and its purpose.",
+  "problemStatement": "One sentence stating the exact problem this project solves.",
+  "targetUsers": ["User group 1", "User group 2"]
+}
+Do NOT invent fake features or mention technologies not relevant to this project. Return ONLY valid JSON.`;
+
+        const aiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${OPENAI_KEY_GUIDANCE}`,
+          },
+          body: JSON.stringify({
+            model: "gpt-4o-mini",
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: `Explain the project scope and problem for: ${ctx.projectTitle}` },
+            ],
+            temperature: 0.3,
+            max_tokens: 350,
+            response_format: { type: "json_object" },
+          }),
+          signal: AbortSignal.timeout(8000),
+        });
+
+        if (aiRes.ok) {
+          const aiData = await aiRes.json();
+          const aiContent = aiData.choices?.[0]?.message?.content;
+          if (aiContent && !timedOut) {
+            const aiNarrative = JSON.parse(aiContent);
+            const enriched = generateProjectGuidance({
+              ctx,
+              tasks: allTasks,
+              members,
+              hackathonHours: Number(hackathonHours) || 24,
+              aiNarrative,
+            });
+
+            clearTimeout(timer);
+            if (!res.headersSent) {
+              return res.json({
+                success: true,
+                guidance: { ...enriched, aiEnhanced: true },
+              });
+            }
+            return;
+          }
+        }
+      } catch (aiErr) {
+        console.warn("[project-guidance] AI qualitative layer skipped/failed:", aiErr.message);
+      }
+    }
+
+    // 5. Return deterministic guidance if AI unavailable or completed
+    clearTimeout(timer);
+    if (!res.headersSent) {
+      res.json({
+        success: true,
+        guidance: { ...baselineGuidance, aiEnhanced: false },
+      });
+    }
+  } catch (err) {
+    clearTimeout(timer);
+    console.error("[project-guidance] Error:", err.message);
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  }
 });
 
 // ── DELETE /api/teams/:teamId/members/:userId ─────────────────────────────────
