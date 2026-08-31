@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { getSocket } from "@/services/socket";
+import { API_BASE_URL } from "@/utils/api";
 
-const API = process.env.EXPO_PUBLIC_API_URL ?? "https://nexusflow-nxeg.onrender.com";
+const API = API_BASE_URL;
 
 export type GraphNode = {
   id: string;

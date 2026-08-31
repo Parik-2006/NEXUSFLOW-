@@ -8,8 +8,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import type { Team, TeamMember } from "@/hooks/useTeams";
+import { API_BASE_URL } from "@/utils/api";
 
-const API = process.env.EXPO_PUBLIC_API_URL ?? "https://nexusflow-nxeg.onrender.com";
+const API = API_BASE_URL;
 
 export type Assignment = {
   taskId: string; taskTitle: string; memberId: string; memberName: string; cost: number;
@@ -68,6 +69,22 @@ export function useTeam(teamId: string | undefined) {
     return {};
   }, [teamId, token]);
 
+  const inviteMemberByEmail = useCallback(async (email: string): Promise<{ error?: string; message?: string }> => {
+    if (!token || !teamId) return { error: "Unauthorized or invalid team" };
+    try {
+      const res = await fetch(`${API}/api/teams/${teamId}/invitations`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ email: email.trim().toLowerCase() }),
+      });
+      const data = await res.json();
+      if (!res.ok) return { error: data.error || "Failed to invite teammate" };
+      return { message: data.message };
+    } catch (e: any) {
+      return { error: e.message || "Failed to send invitation" };
+    }
+  }, [teamId, token]);
+
   // Remove a member; server unassigns their tasks. Caller re-runs Branch &
   // Bound afterwards so the cost matrix / assignments recompute automatically.
   const deleteMember = useCallback(async (userId: string): Promise<{ error?: string }> => {
@@ -100,12 +117,35 @@ export function useTeam(teamId: string | undefined) {
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({ [skill]: value }),
     });
-    if (!res.ok) { const d = await res.json().catch(() => ({})); return { error: d.error ?? "Failed" }; }
-    // optimistic local update
-    setTeam((prev) => prev ? {
-      ...prev,
-      members: (prev.members ?? []).map((m) => m.userId === userId ? { ...m, skills: { ...m.skills, [skill]: value } } : m),
-    } : prev);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { return { error: data.error ?? "Failed to update skill" }; }
+    if (data.team) {
+      setTeam(data.team);
+    } else {
+      setTeam((prev) => prev ? {
+        ...prev,
+        members: (prev.members ?? []).map((m) => (m.userId === userId || (m as any)._id === userId) ? { ...m, skills: { ...m.skills, [skill]: value } } : m),
+      } : prev);
+    }
+    return {};
+  }, [teamId, token]);
+
+  const updateMemberSkills = useCallback(async (userId: string, skills: Record<string, number>): Promise<{ error?: string }> => {
+    const res = await fetch(`${API}/api/teams/${teamId}/members/${userId}/skills`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(skills),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { error: data.error ?? "Failed to update skills" };
+    if (data.team) {
+      setTeam(data.team);
+    } else {
+      setTeam((prev) => prev ? {
+        ...prev,
+        members: (prev.members ?? []).map((m) => (m.userId === userId || (m as any)._id === userId) ? { ...m, skills: { ...m.skills, ...skills } } : m),
+      } : prev);
+    }
     return {};
   }, [teamId, token]);
 
@@ -131,5 +171,5 @@ export function useTeam(teamId: string | undefined) {
     return { result: data };
   }, [teamId, token]);
 
-  return { team, members, loading, refetch: hydrate, addMember, deleteMember, updateMember, setMemberSkill, runAssignment, sprintOptimize };
+  return { team, members, loading, refetch: hydrate, addMember, inviteMemberByEmail, deleteMember, updateMember, setMemberSkill, updateMemberSkills, runAssignment, sprintOptimize };
 }

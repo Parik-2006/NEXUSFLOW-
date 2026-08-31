@@ -5,12 +5,13 @@
  *
  * Surfaces:
  * 1. Project Brief & Context (Problem statement, hardware, software, AI/ML)
- * 2. Analyze Project Action Trigger (Runs OpenAI/Heuristic analysis with error/retry states)
- * 3. Project-Aware Copilot Chat (Multi-turn advisory grounded in project requirements)
- * 4. Project Guidance (Directly embedded Phase 6 guidance with Readiness & Roadmap)
- * 5. Architectural Decisions & AI Technology Recommendations (Filterable, with Accept/Reject)
- * 6. System Architecture Components (Tiers & Dependencies)
- * 7. Research Topics & Directions (Feasibility investigation)
+ * 2. Project Guidance (Directly embedded Phase 6 guidance with Readiness & Roadmap)
+ * 3. Project-Aware Copilot Chat (Multi-turn conversational advisor with $0 safety & memory)
+ * 4. Architectural Decisions & AI Technology Recommendations (Filterable, with Accept/Reject)
+ * 5. System Architecture Components (Tiers & Dependencies)
+ * 6. Real Academic Research Papers (OpenAlex + Crossref discovery: Open Access vs Paywalled)
+ * 7. Project APIs & Developer Tools (Dedicated recommendation support, ZERO task side effects)
+ * 8. Decision Engine (Phase 5 trade-off analysis)
  * ============================================================================
  */
 
@@ -23,15 +24,17 @@ import {
   Pressable,
   ActivityIndicator,
   StyleSheet,
+  Linking,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/context/AuthContext";
-import { useToast } from "@/components/feedback";
+import { useToast, useConfirm } from "@/components/feedback";
 import { colors, spacing, radius, font } from "@/theme";
+import { API_BASE_URL } from "@/utils/api";
 import DecisionPanel from "./DecisionPanel";
 import GuidancePanel from "./GuidancePanel";
 
-const API = process.env.EXPO_PUBLIC_API_URL ?? "https://nexusflow-nxeg.onrender.com";
+const API = API_BASE_URL;
 
 interface RecommendationItem {
   _id: string;
@@ -64,14 +67,38 @@ interface ArchitectureItem {
   status: string;
 }
 
-interface ResearchItemType {
+interface AcademicPaperType {
   _id: string;
   title: string;
+  authors: string[];
+  year?: number;
+  venue?: string;
+  doi?: string;
+  url?: string;
+  paperUrl?: string;
+  pdfUrl?: string;
+  accessStatus: "open_access" | "paywalled" | "unknown";
   abstract?: string;
-  topics?: string[];
+  simpleExplanation?: string;
+  whyRelevant?: string;
+  keyIdea?: string;
+  whatToLearn?: string;
   relevance?: number;
-  notes?: string;
   status: string;
+}
+
+interface ToolItemType {
+  name: string;
+  category: string;
+  status: "FREE" | "FREE TIER" | "LIMITED" | "PAID";
+  badgeLabel: string;
+  whatItDoes: string;
+  whyRelevant: string;
+  howToUse: string;
+  advantages: string[];
+  limitations: string;
+  alternatives: string;
+  docUrl: string;
 }
 
 interface ChatTurn {
@@ -79,30 +106,35 @@ interface ChatTurn {
   role: "user" | "assistant";
   content: string;
   createdAt?: string;
-  provider?: "openai" | "gemini" | "deterministic" | string;
+  provider?: "gemini" | "openrouter" | "deterministic" | string;
   feedback?: {
     rating?: "helpful" | "unhelpful" | null;
     comment?: string;
   };
 }
 
-type SubTabKey = "brief" | "guidance" | "copilot" | "decisions" | "architecture" | "research" | "decide";
+type SubTabKey = "brief" | "guidance" | "copilot" | "decisions" | "architecture" | "research" | "tools" | "decide";
 
 export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
   const { token, user } = useAuth();
   const toast = useToast();
+  const confirm = useConfirm();
 
   const [projectId, setProjectId] = useState<string | null>(null);
   const [projectData, setProjectData] = useState<any>(null);
   const [recommendations, setRecommendations] = useState<RecommendationItem[]>([]);
   const [decisions, setDecisions] = useState<DecisionItem[]>([]);
   const [architecture, setArchitecture] = useState<ArchitectureItem[]>([]);
-  const [researchTopics, setResearchTopics] = useState<ResearchItemType[]>([]);
+  const [academicPapers, setAcademicPapers] = useState<AcademicPaperType[]>([]);
+  const [projectTools, setProjectTools] = useState<ToolItemType[]>([]);
 
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [analysisSuccess, setAnalysisSuccess] = useState<string | null>(null);
+
+  const [discoveringResearch, setDiscoveringResearch] = useState(false);
+  const [toolsLoading, setToolsLoading] = useState(false);
 
   const [generatingTasks, setGeneratingTasks] = useState(false);
   const [generatedResult, setGeneratedResult] = useState<{ added: number; duplicatesSkipped: number } | null>(null);
@@ -112,7 +144,9 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
   const [chatMessages, setChatMessages] = useState<ChatTurn[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
+  const [clearingChat, setClearingChat] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
+  const [lastFailedMessage, setLastFailedMessage] = useState<string | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const chatScrollRef = React.useRef<ScrollView>(null);
 
@@ -135,6 +169,45 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
       }
     } catch (err) {
       console.error("[ProjectAdvisorPanel] loadConversation error:", err);
+    }
+  }, [token]);
+
+  // Load real academic research papers
+  const loadResearchPapers = useCallback(async (pid: string) => {
+    if (!pid || !token) return;
+    try {
+      const res = await fetch(`${API}/api/projects/${pid}/research`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setAcademicPapers(data);
+        }
+      }
+    } catch (err) {
+      console.error("[ProjectAdvisorPanel] loadResearchPapers error:", err);
+    }
+  }, [token]);
+
+  // Load project developer tools & APIs
+  const loadProjectTools = useCallback(async (pid: string) => {
+    if (!pid || !token) return;
+    try {
+      setToolsLoading(true);
+      const res = await fetch(`${API}/api/projects/${pid}/tools`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.tools)) {
+          setProjectTools(data.tools);
+        }
+      }
+    } catch (err) {
+      console.error("[ProjectAdvisorPanel] loadProjectTools error:", err);
+    } finally {
+      setToolsLoading(false);
     }
   }, [token]);
 
@@ -194,38 +267,38 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
       const activePid = await ensureProject();
 
       if (activePid) {
-        const [rRes, dRes, aRes, resRes] = await Promise.all([
+        const [rRes, dRes, aRes] = await Promise.all([
           fetch(`${API}/api/projects/${activePid}/recommendations`, { headers: { Authorization: `Bearer ${token}` } }),
           fetch(`${API}/api/projects/${activePid}/decisions`, { headers: { Authorization: `Bearer ${token}` } }),
           fetch(`${API}/api/projects/${activePid}/architecture`, { headers: { Authorization: `Bearer ${token}` } }),
-          fetch(`${API}/api/projects/${activePid}/research`, { headers: { Authorization: `Bearer ${token}` } }),
         ]);
 
         if (rRes.ok) setRecommendations(await rRes.json());
         if (dRes.ok) setDecisions(await dRes.json());
         if (aRes.ok) setArchitecture(await aRes.json());
-        if (resRes.ok) setResearchTopics(await resRes.json());
 
-        // Load private conversation
-        await loadConversation(activePid);
+        // Load private conversation, real research, and tools
+        await Promise.all([
+          loadConversation(activePid),
+          loadResearchPapers(activePid),
+          loadProjectTools(activePid),
+        ]);
       }
     } catch (err) {
       console.error("[ProjectAdvisorPanel] loadProject error:", err);
     } finally {
       setLoading(false);
     }
-  }, [teamId, token, ensureProject, loadConversation]);
+  }, [teamId, token, ensureProject, loadConversation, loadResearchPapers, loadProjectTools]);
 
   useEffect(() => {
     loadProject();
   }, [loadProject]);
 
-  // Run AI Project Analysis (ISSUE 2 FIX)
+  // Run AI Project Analysis
   const runAnalysis = async () => {
     let targetPid = projectId;
-    if (!targetPid) {
-      targetPid = await ensureProject();
-    }
+    if (!targetPid) targetPid = await ensureProject();
     if (!targetPid || !token) {
       setAnalysisError("Project could not be initialized. Please verify team connection.");
       return;
@@ -235,7 +308,6 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
       setAnalyzing(true);
       setAnalysisError(null);
       setAnalysisSuccess(null);
-      console.log(`[ProjectAdvisorPanel] Running AI analysis for project: ${targetPid}`);
 
       const res = await fetch(`${API}/api/projects/${targetPid}/analyze`, {
         method: "POST",
@@ -250,12 +322,11 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
         throw new Error(data.error || "AI analysis failed. Please try again.");
       }
 
-      // Reload project and sub-entities
       await loadProject();
-
       const counts = data.counts || {};
-      const msg = `AI analysis complete! Extracted ${counts.newRecommendations || 0} recommendations, ${counts.newDecisions || 0} decisions, and ${counts.newArchitectureComponents || 0} architecture components.`;
-      setAnalysisSuccess(msg);
+      setAnalysisSuccess(
+        `AI analysis complete! Extracted ${counts.newRecommendations || 0} recommendations, ${counts.newDecisions || 0} decisions, and ${counts.newArchitectureComponents || 0} architecture components.`
+      );
       toast("Project AI Analysis complete!", "success");
     } catch (err: any) {
       console.error("[ProjectAdvisorPanel] runAnalysis error:", err);
@@ -266,12 +337,36 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
     }
   };
 
+  // Discover Real Academic Papers (Fix 3)
+  const discoverResearch = async () => {
+    let targetPid = projectId;
+    if (!targetPid) targetPid = await ensureProject();
+    if (!targetPid || !token || discoveringResearch) return;
+
+    try {
+      setDiscoveringResearch(true);
+      const res = await fetch(`${API}/api/projects/${targetPid}/research/discover`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Academic research discovery failed");
+
+      if (Array.isArray(data.papers)) {
+        setAcademicPapers(data.papers);
+        toast(`Discovered ${data.papers.length} real academic papers!`, "success");
+      }
+    } catch (err: any) {
+      toast("Research discovery failed: " + err.message, "error");
+    } finally {
+      setDiscoveringResearch(false);
+    }
+  };
+
   // Generate Backlog Tasks from Project Context
   const generateProjectTasks = async (mode = "project") => {
     let targetPid = projectId;
-    if (!targetPid) {
-      targetPid = await ensureProject();
-    }
+    if (!targetPid) targetPid = await ensureProject();
     if (!targetPid || !token || generatingTasks) return;
 
     try {
@@ -345,15 +440,13 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
     }
   };
 
-  // Send Chat Message to Project Copilot (ISSUE 1 FIX)
+  // Send Chat Message to Project Copilot (Fix 1: Real conversational flow)
   const sendChatMessage = async (presetText?: string) => {
     const textToSend = presetText || chatInput;
     if (!textToSend.trim() || !token || chatLoading) return;
 
     let targetPid = projectId;
-    if (!targetPid) {
-      targetPid = await ensureProject();
-    }
+    if (!targetPid) targetPid = await ensureProject();
     if (!targetPid) {
       setChatError("Project context not ready. Please try again.");
       return;
@@ -365,6 +458,7 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
       content: textToSend.trim(),
     };
 
+    setLastFailedMessage(textToSend.trim());
     setChatMessages((prev) => [...prev, userTurn]);
     setChatInput("");
     setChatLoading(true);
@@ -401,11 +495,24 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
             feedback: data.assistantMessage.feedback || null,
           },
         ]);
+        setLastFailedMessage(null);
         setTimeout(() => chatScrollRef.current?.scrollToEnd({ animated: true }), 100);
       }
     } catch (err: any) {
       console.error("[ProjectAdvisorPanel] chat error:", err);
-      setChatError(err.message || "Failed to get Copilot response. Please retry.");
+      let humanMsg = "Project Copilot encountered a server error. Please retry.";
+      if (err.message && err.message.includes("Failed to fetch")) {
+        humanMsg = "Unable to reach the NEXUSFLOW server. Please check that the backend is running.";
+      } else if (err.message && (err.message.includes("401") || err.message.includes("expired") || err.message.includes("unauthorized"))) {
+        humanMsg = "Your session has expired. Please log in again.";
+      } else if (err.message && err.message.includes("403")) {
+        humanMsg = "You do not have authorization to access this project's Copilot.";
+      } else if (err.message && err.message.includes("rate limit")) {
+        humanMsg = "Free AI providers are temporarily rate-limited. NEXUSFLOW is using its local fallback.";
+      } else if (err.message) {
+        humanMsg = err.message;
+      }
+      setChatError(humanMsg);
     } finally {
       setChatLoading(false);
     }
@@ -427,10 +534,48 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
         body: JSON.stringify({ rating }),
       });
       if (res.ok) {
-        toast(rating === "helpful" ? "Marked as helpful 👍" : "Feedback noted. Copilot will adjust its advice 👎", "info");
+        toast(rating === "helpful" ? "Marked as helpful 👍" : "Feedback saved. Copilot will refine future suggestions 👎", "info");
       }
     } catch (err) {
       console.error("[ProjectAdvisorPanel] sendFeedback error:", err);
+    }
+  };
+
+  // Clear Copilot Conversation (Fix 3: Starts fresh without deleting project knowledge)
+  const handleClearChat = async () => {
+    let targetPid = projectId;
+    if (!targetPid) targetPid = await ensureProject();
+    if (!targetPid || !token || clearingChat) return;
+
+    const ok = await confirm({
+      title: "Clear this conversation?",
+      message: "This will remove your current Copilot conversation. Your project information and decisions will remain.",
+      confirmLabel: "Clear Chat",
+      destructive: true,
+    });
+    if (!ok) return;
+
+    try {
+      setClearingChat(true);
+      const res = await fetch(`${API}/api/projects/${targetPid}/ai/conversation`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || "Failed to clear conversation");
+      }
+
+      setChatMessages([]);
+      setConversationId(null);
+      setLastFailedMessage(null);
+      setChatError(null);
+      toast("Copilot conversation cleared. Starting fresh!", "info");
+    } catch (err: any) {
+      console.error("[ProjectAdvisorPanel] handleClearChat error:", err);
+      toast(err.message || "Failed to clear chat", "error");
+    } finally {
+      setClearingChat(false);
     }
   };
 
@@ -449,20 +594,24 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
   const acceptedDecisions = decisions.filter((d) => d.status === "accepted");
   const proposedDecisions = decisions.filter((d) => d.status === "proposed");
 
-  // Clear sub navigation tabs
+  const openAccessPapers = academicPapers.filter((p) => p.accessStatus === "open_access");
+  const paywalledPapers = academicPapers.filter((p) => p.accessStatus !== "open_access");
+
+  // Project AI Navigation Tabs
   const SUB_TABS: { key: SubTabKey; label: string; icon: keyof typeof Ionicons.glyphMap; count: number }[] = [
     { key: "brief", label: "Project Brief", icon: "document-text", count: 0 },
     { key: "guidance", label: "Project Guidance", icon: "compass", count: 0 },
     { key: "copilot", label: "Project Copilot", icon: "chatbubbles", count: chatMessages.length },
     { key: "decisions", label: "Decisions & AI Recs", icon: "git-commit", count: proposedDecisions.length + pendingRecs.length },
     { key: "architecture", label: "Architecture", icon: "layers", count: architecture.length },
-    { key: "research", label: "Research", icon: "book", count: researchTopics.length },
+    { key: "research", label: "Research", icon: "book", count: academicPapers.length },
+    { key: "tools", label: "API & Tools", icon: "construct", count: projectTools.length },
     { key: "decide", label: "Decision Engine", icon: "analytics", count: 0 },
   ];
 
   return (
     <View style={s.container}>
-      {/* ── Sub Navigation Tabs (ISSUE 3 FIX: Obvious Hierarchy) ────── */}
+      {/* ── Sub Navigation Tabs ─────────────────────────────────────────── */}
       <View style={s.subNavBar}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.subNavContent}>
           {SUB_TABS.map((tab) => {
@@ -489,7 +638,6 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
       {/* ── TAB 1: PROJECT BRIEF & CONTEXT ───────────────────────────── */}
       {activeSection === "brief" && (
         <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: spacing.md, paddingBottom: 80 }}>
-          {/* Project Context Card (Positioned directly in Project Brief tab) */}
           <View style={s.projectCard}>
             <View style={s.projectHeaderRow}>
               <View style={{ flex: 1 }}>
@@ -536,7 +684,6 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
               </View>
             </View>
 
-            {/* Error handling banner for Analyze AI */}
             {analysisError && (
               <View style={s.errorBanner}>
                 <Ionicons name="alert-circle" size={16} color={colors.danger} />
@@ -547,7 +694,6 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
               </View>
             )}
 
-            {/* Success banner for Analyze AI */}
             {analysisSuccess && (
               <View style={s.successBanner}>
                 <Ionicons name="checkmark-circle" size={16} color={colors.success} />
@@ -555,7 +701,6 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
               </View>
             )}
 
-            {/* Generated Task result badge */}
             {generatedResult && (
               <View style={s.resultPill}>
                 <Ionicons name="checkmark-circle" size={14} color={colors.success} />
@@ -572,11 +717,10 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
               </View>
             ) : (
               <Text style={[font.body, { color: colors.textMuted, marginTop: 8 }]}>
-                Click <Text style={{ fontWeight: "700" }}>Analyze AI</Text> to extract structured project intelligence, hardware/software requirements, and architecture recommendations.
+                Click <Text style={{ fontWeight: "700" }}>Analyze AI</Text> to extract structured project intelligence, requirements, and architecture recommendations.
               </Text>
             )}
 
-            {/* Requirements Matrix */}
             {(context.hardwareRequirements?.length > 0 || context.softwareRequirements?.length > 0 || context.aiMlRequirements?.length > 0) && (
               <View style={s.reqGrid}>
                 {context.hardwareRequirements?.length > 0 && (
@@ -607,7 +751,6 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
             )}
           </View>
 
-          {/* Quick Jump Callouts */}
           <View style={s.quickJumpGrid}>
             <Pressable style={s.quickJumpCard} onPress={() => setActiveSection("guidance")}>
               <Ionicons name="compass" size={20} color={colors.primary} />
@@ -621,7 +764,7 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
               <Ionicons name="chatbubbles" size={20} color={colors.accentDark} />
               <View style={{ flex: 1 }}>
                 <Text style={s.quickJumpTitle}>Project Copilot</Text>
-                <Text style={s.quickJumpSub}>Ask question about hardware, dataset, ML, or next decision.</Text>
+                <Text style={s.quickJumpSub}>Ask questions about hardware, datasets, ML, or next decisions.</Text>
               </View>
               <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
             </Pressable>
@@ -629,10 +772,10 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
         </ScrollView>
       )}
 
-      {/* ── TAB 2: PROJECT GUIDANCE (Phase 6 Engine) ─────────────────── */}
+      {/* ── TAB 2: PROJECT GUIDANCE ──────────────────────────────────── */}
       {activeSection === "guidance" && <GuidancePanel teamId={teamId} />}
 
-      {/* ── TAB 3: PROJECT COPILOT (ISSUE 1 FIX) ───────────────────────── */}
+      {/* ── TAB 3: PROJECT COPILOT (Real Multi-Turn Chat) ───────────── */}
       {activeSection === "copilot" && (
         <ScrollView
           ref={chatScrollRef}
@@ -640,12 +783,30 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
           contentContainerStyle={{ padding: spacing.md, paddingBottom: 80 }}
         >
           <View style={{ gap: spacing.md }}>
-            <View style={s.sectionHeader}>
-              <Text style={font.h3}>Project Copilot</Text>
-              <Text style={s.sectionSub}>Project-aware AI assistant grounded in your team's specific requirements.</Text>
+            <View style={s.copilotHeaderRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={font.h3}>Project Copilot</Text>
+                <Text style={s.sectionSub}>Project-aware conversational assistant grounded in your team's specific requirements.</Text>
+              </View>
+              {chatMessages.length > 0 && (
+                <Pressable
+                  style={[s.clearChatBtn, clearingChat && { opacity: 0.6 }]}
+                  onPress={handleClearChat}
+                  disabled={clearingChat}
+                >
+                  {clearingChat ? (
+                    <ActivityIndicator size="small" color={colors.danger} />
+                  ) : (
+                    <>
+                      <Ionicons name="trash-outline" size={13} color={colors.danger} />
+                      <Text style={s.clearChatBtnText}>Clear Chat</Text>
+                    </>
+                  )}
+                </Pressable>
+              )}
             </View>
 
-            {/* Intent-Aware Prompt Chips */}
+            {/* Prompt Suggestion Chips */}
             <View style={s.promptRow}>
               {[
                 "What hardware do I need?",
@@ -664,7 +825,7 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
               ))}
             </View>
 
-            {/* Chat Container */}
+            {/* Messages */}
             <View style={s.chatContainer}>
               {chatMessages.length === 0 ? (
                 <View style={s.emptyChat}>
@@ -686,14 +847,13 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
                           {!isUser && msg.provider && (
                             <View style={s.providerBadge}>
                               <Text style={s.providerBadgeText}>
-                                {msg.provider === "openai" ? "GPT-4o" : msg.provider === "gemini" ? "Gemini" : "Safety Engine"}
+                                {msg.provider === "gemini" ? "Gemini Free" : msg.provider === "openrouter" ? "OpenRouter Free" : "Local Fallback"}
                               </Text>
                             </View>
                           )}
                         </View>
                         <Text style={[s.chatText, isUser && { color: "#fff" }]}>{msg.content}</Text>
 
-                        {/* Feedback controls on AI answers */}
                         {!isUser && (
                           <View style={s.feedbackRow}>
                             <Pressable
@@ -735,7 +895,7 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
                                   msg.feedback?.rating === "unhelpful" && { color: colors.danger, fontWeight: "700" },
                                 ]}
                               >
-                                Not helpful
+                                Not Helpful
                               </Text>
                             </Pressable>
                           </View>
@@ -745,37 +905,40 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
                   );
                 })
               )}
+
               {chatLoading && (
-                <View style={[s.chatBubbleRow, { alignItems: "center", gap: 8, paddingVertical: 4 }]}>
-                  <ActivityIndicator size="small" color={colors.topo} />
-                  <Text style={[font.caption, { color: colors.textMuted }]}>Advisor is thinking...</Text>
+                <View style={s.chatLoadingRow}>
+                  <ActivityIndicator size="small" color={colors.primary} />
+                  <Text style={[font.caption, { color: colors.textMuted }]}>Reasoning with project requirements...</Text>
                 </View>
               )}
+
               {chatError && (
-                <View style={s.chatErrorBox}>
-                  <Ionicons name="alert-circle" size={14} color={colors.danger} />
-                  <Text style={s.chatErrorText}>{chatError}</Text>
-                  <Pressable style={s.retryMiniBtn} onPress={() => sendChatMessage()}>
+                <View style={s.errorBanner}>
+                  <Ionicons name="alert-circle" size={16} color={colors.danger} />
+                  <Text style={s.errorBannerText}>{chatError}</Text>
+                  <Pressable style={s.retryMiniBtn} onPress={() => sendChatMessage(lastFailedMessage || "hi")}>
                     <Text style={s.retryMiniBtnText}>Retry</Text>
                   </Pressable>
                 </View>
               )}
             </View>
 
-            {/* Chat Input */}
+            {/* Input Bar */}
             <View style={s.chatInputBar}>
               <TextInput
-                style={s.chatTextInput}
-                placeholder="Ask about hardware, dataset, architecture, or roadmap..."
+                style={s.chatInput}
+                placeholder="Ask Project Copilot (e.g. 'What hardware do I need?')..."
                 placeholderTextColor={colors.textFaint}
                 value={chatInput}
                 onChangeText={setChatInput}
                 onSubmitEditing={() => sendChatMessage()}
+                returnKeyType="send"
               />
               <Pressable
-                style={[s.chatSendBtn, chatLoading && { opacity: 0.6 }]}
+                style={[s.sendBtn, (!chatInput.trim() || chatLoading) && { opacity: 0.5 }]}
                 onPress={() => sendChatMessage()}
-                disabled={chatLoading}
+                disabled={!chatInput.trim() || chatLoading}
               >
                 <Ionicons name="send" size={16} color="#fff" />
               </Pressable>
@@ -784,61 +947,16 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
         </ScrollView>
       )}
 
-      {/* ── TAB 4: DECISIONS & RECOMMENDATIONS ───────────────────────── */}
+      {/* ── TAB 4: DECISIONS & AI RECOMMENDATIONS ────────────────────── */}
       {activeSection === "decisions" && (
         <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: spacing.md, paddingBottom: 80 }}>
           <View style={{ gap: spacing.md }}>
             <View style={s.sectionHeader}>
-              <Text style={font.h3}>Architectural Decisions ({decisions.length})</Text>
-              <Text style={s.sectionSub}>Confirmed choices vs AI-proposed decision candidates.</Text>
+              <Text style={font.h3}>Architectural Decisions & Recommendations</Text>
+              <Text style={s.sectionSub}>Review trade-offs, evaluate technical alternatives, and accept or reject.</Text>
             </View>
 
-            {decisions.length === 0 ? (
-              <View style={s.emptyCard}>
-                <Text style={font.body}>No decisions recorded yet. Click "Analyze AI" in Project Brief to generate candidates.</Text>
-              </View>
-            ) : (
-              decisions.map((dec) => (
-                <View key={dec._id} style={s.itemCard}>
-                  <View style={s.itemCardHeader}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={s.itemTitle}>{dec.title}</Text>
-                      <Text style={s.itemCategory}>{dec.category?.toUpperCase() || "ARCHITECTURE"}</Text>
-                    </View>
-                    <View style={[s.statusBadge, dec.status === "accepted" ? s.statusAccepted : s.statusPending]}>
-                      <Text style={s.statusBadgeText}>{dec.status.toUpperCase()}</Text>
-                    </View>
-                  </View>
-
-                  <Text style={[s.itemReason, { fontWeight: "600", color: colors.text }]}>Decision: {dec.decision}</Text>
-                  {dec.reasoning ? <Text style={s.itemReason}>{dec.reasoning}</Text> : null}
-
-                  {dec.alternativesConsidered && dec.alternativesConsidered.length > 0 && (
-                    <Text style={s.altText}>Options Evaluated: {dec.alternativesConsidered.join(", ")}</Text>
-                  )}
-
-                  {dec.status === "proposed" && (
-                    <View style={s.cardActions}>
-                      <Pressable style={s.acceptBtn} onPress={() => updateDecisionStatus(dec._id, "accepted")}>
-                        <Ionicons name="checkmark-circle" size={14} color="#fff" />
-                        <Text style={s.acceptBtnText}>Confirm Decision</Text>
-                      </Pressable>
-                      <Pressable style={s.rejectBtn} onPress={() => updateDecisionStatus(dec._id, "rejected")}>
-                        <Ionicons name="close-circle" size={14} color={colors.danger} />
-                        <Text style={s.rejectBtnText}>Decline</Text>
-                      </Pressable>
-                    </View>
-                  )}
-                </View>
-              ))
-            )}
-
-            {/* AI Recommendations Section */}
-            <View style={[s.sectionHeader, { marginTop: spacing.md }]}>
-              <Text style={font.h3}>AI Technology Recommendations ({recommendations.length})</Text>
-              <Text style={s.sectionSub}>Recommendations tailored to your domain and constraints.</Text>
-            </View>
-
+            <Text style={s.groupHeader}>AI RECOMMENDATIONS ({recommendations.length})</Text>
             {recommendations.length === 0 ? (
               <View style={s.emptyCard}>
                 <Text style={font.body}>No recommendations generated yet. Click "Analyze AI" in Project Brief.</Text>
@@ -849,28 +967,63 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
                   <View style={s.itemCardHeader}>
                     <View style={{ flex: 1 }}>
                       <Text style={s.itemTitle}>{rec.recommendedItem}</Text>
-                      <Text style={s.itemCategory}>{rec.category || rec.recommendationType.toUpperCase()}</Text>
+                      <Text style={s.itemCategory}>{rec.category?.toUpperCase() || "TECH CHOICE"}</Text>
                     </View>
-                    <View style={[s.statusBadge, rec.status === "accepted" ? s.statusAccepted : s.statusPending]}>
-                      <Text style={s.statusBadgeText}>{rec.status.toUpperCase()}</Text>
+                    <View style={[s.statusBadge, rec.status === "accepted" ? { backgroundColor: colors.successSoft } : rec.status === "rejected" ? { backgroundColor: colors.dangerSoft } : { backgroundColor: colors.warningSoft }]}>
+                      <Text style={[s.statusBadgeText, rec.status === "accepted" ? { color: colors.success } : rec.status === "rejected" ? { color: colors.danger } : { color: colors.warning }]}>
+                        {rec.status.toUpperCase()}
+                      </Text>
                     </View>
                   </View>
-
                   <Text style={s.itemReason}>{rec.reason}</Text>
-
                   {rec.alternatives && rec.alternatives.length > 0 && (
                     <Text style={s.altText}>Alternatives: {rec.alternatives.join(", ")}</Text>
                   )}
-
                   {rec.status === "pending" && (
-                    <View style={s.cardActions}>
-                      <Pressable style={s.acceptBtn} onPress={() => updateRecStatus(rec._id, "accepted")}>
+                    <View style={s.actionRow}>
+                      <Pressable style={[s.actionBtn, s.acceptBtn]} onPress={() => updateRecStatus(rec._id, "accepted")}>
                         <Ionicons name="checkmark" size={14} color="#fff" />
-                        <Text style={s.acceptBtnText}>Accept</Text>
+                        <Text style={s.actionBtnText}>Accept</Text>
                       </Pressable>
-                      <Pressable style={s.rejectBtn} onPress={() => updateRecStatus(rec._id, "rejected")}>
-                        <Ionicons name="close" size={14} color={colors.danger} />
-                        <Text style={s.rejectBtnText}>Reject</Text>
+                      <Pressable style={[s.actionBtn, s.rejectBtn]} onPress={() => updateRecStatus(rec._id, "rejected")}>
+                        <Ionicons name="close" size={14} color="#fff" />
+                        <Text style={s.actionBtnText}>Reject</Text>
+                      </Pressable>
+                    </View>
+                  )}
+                </View>
+              ))
+            )}
+
+            <Text style={[s.groupHeader, { marginTop: spacing.md }]}>DECISION CANDIDATES ({decisions.length})</Text>
+            {decisions.length === 0 ? (
+              <View style={s.emptyCard}>
+                <Text style={font.body}>No decisions proposed yet. Click "Analyze AI" in Project Brief.</Text>
+              </View>
+            ) : (
+              decisions.map((dec) => (
+                <View key={dec._id} style={s.itemCard}>
+                  <View style={s.itemCardHeader}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.itemTitle}>{dec.title}</Text>
+                      <Text style={s.itemCategory}>Decision: <Text style={{ fontWeight: "700", color: colors.text }}>{dec.decision}</Text></Text>
+                    </View>
+                    <View style={[s.statusBadge, dec.status === "accepted" ? { backgroundColor: colors.successSoft } : dec.status === "rejected" ? { backgroundColor: colors.dangerSoft } : { backgroundColor: colors.warningSoft }]}>
+                      <Text style={[s.statusBadgeText, dec.status === "accepted" ? { color: colors.success } : dec.status === "rejected" ? { color: colors.danger } : { color: colors.warning }]}>
+                        {dec.status.toUpperCase()}
+                      </Text>
+                    </View>
+                  </View>
+                  {dec.reasoning ? <Text style={s.itemReason}>{dec.reasoning}</Text> : null}
+                  {dec.status === "proposed" && (
+                    <View style={s.actionRow}>
+                      <Pressable style={[s.actionBtn, s.acceptBtn]} onPress={() => updateDecisionStatus(dec._id, "accepted")}>
+                        <Ionicons name="checkmark" size={14} color="#fff" />
+                        <Text style={s.actionBtnText}>Accept Decision</Text>
+                      </Pressable>
+                      <Pressable style={[s.actionBtn, s.rejectBtn]} onPress={() => updateDecisionStatus(dec._id, "rejected")}>
+                        <Ionicons name="close" size={14} color="#fff" />
+                        <Text style={s.actionBtnText}>Reject</Text>
                       </Pressable>
                     </View>
                   )}
@@ -917,33 +1070,271 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
         </ScrollView>
       )}
 
-      {/* ── TAB 6: RESEARCH ─────────────────────────────────────────── */}
+      {/* ── TAB 6: REAL ACADEMIC RESEARCH (Fix 3: Real Papers Discovery) ── */}
       {activeSection === "research" && (
         <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: spacing.md, paddingBottom: 80 }}>
           <View style={{ gap: spacing.md }}>
-            <View style={s.sectionHeader}>
-              <Text style={font.h3}>Research Directions ({researchTopics.length})</Text>
-              <Text style={s.sectionSub}>Suggested technical investigation areas for project feasibility.</Text>
+            <View style={s.researchHeaderRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={font.h3}>Academic Research Papers ({academicPapers.length})</Text>
+                <Text style={s.sectionSub}>Verified peer-reviewed papers discovered from OpenAlex & Crossref.</Text>
+              </View>
+              <Pressable
+                style={[s.discoverBtn, discoveringResearch && { opacity: 0.7 }]}
+                onPress={discoverResearch}
+                disabled={discoveringResearch}
+              >
+                {discoveringResearch ? (
+                  <>
+                    <ActivityIndicator size="small" color="#fff" />
+                    <Text style={s.discoverBtnText}>Searching...</Text>
+                  </>
+                ) : (
+                  <>
+                    <Ionicons name="search" size={14} color="#fff" />
+                    <Text style={s.discoverBtnText}>Find More Papers</Text>
+                  </>
+                )}
+              </Pressable>
             </View>
 
-            {researchTopics.length === 0 ? (
+            {academicPapers.length === 0 ? (
               <View style={s.emptyCard}>
-                <Text style={font.body}>No research topics generated yet. Click "Analyze AI" in Project Brief.</Text>
+                <Ionicons name="book-outline" size={32} color={colors.textMuted} />
+                <Text style={[font.body, { textAlign: "center", color: colors.textMuted, marginTop: 8 }]}>
+                  No academic research papers discovered yet for this project.
+                </Text>
+                <Pressable style={s.primaryActionBtn} onPress={discoverResearch}>
+                  <Ionicons name="sparkles" size={14} color="#fff" />
+                  <Text style={s.primaryActionBtnText}>Discover Academic Papers</Text>
+                </Pressable>
               </View>
             ) : (
-              researchTopics.map((res) => (
-                <View key={res._id} style={s.itemCard}>
-                  <Text style={s.itemTitle}>{res.title}</Text>
-                  {res.abstract ? <Text style={s.itemReason}>{res.abstract}</Text> : null}
-                  {res.notes ? <Text style={[s.altText, { fontStyle: "italic" }]}>Note: {res.notes}</Text> : null}
-                </View>
-              ))
+              <>
+                {/* 🟢 OPEN ACCESS PAPERS */}
+                {openAccessPapers.length > 0 && (
+                  <View style={{ gap: spacing.sm }}>
+                    <Text style={s.groupHeader}>🟢 FREE / OPEN ACCESS PAPERS ({openAccessPapers.length})</Text>
+                    {openAccessPapers.map((paper) => (
+                      <View key={paper._id} style={[s.paperCard, s.openAccessCard]}>
+                        <View style={s.paperHeader}>
+                          <View style={{ flex: 1 }}>
+                            <Text style={s.paperTitle}>{paper.title}</Text>
+                            <Text style={s.paperMeta}>
+                              {paper.authors.join(", ")} · {paper.year || "2023"} · {paper.venue || "Academic Venue"}
+                            </Text>
+                          </View>
+                          <View style={[s.badgePill, { backgroundColor: colors.successSoft }]}>
+                            <Text style={[s.badgePillText, { color: colors.success }]}>OPEN ACCESS</Text>
+                          </View>
+                        </View>
+
+                        {paper.simpleExplanation ? (
+                          <View style={s.explanationBox}>
+                            <Text style={s.explanationTitle}>STUDENT EXPLANATION</Text>
+                            <Text style={s.explanationText}>{paper.simpleExplanation}</Text>
+                          </View>
+                        ) : null}
+
+                        {paper.whyRelevant ? (
+                          <Text style={s.whyRelevantText}>
+                            <Text style={{ fontWeight: "700", color: colors.text }}>Why Relevant: </Text>
+                            {paper.whyRelevant}
+                          </Text>
+                        ) : null}
+
+                        {paper.whatToLearn ? (
+                          <Text style={s.learnText}>
+                            <Text style={{ fontWeight: "700", color: colors.accentDark }}>Key Takeaway: </Text>
+                            {paper.whatToLearn}
+                          </Text>
+                        ) : null}
+
+                        <View style={s.paperActionRow}>
+                          {paper.paperUrl ? (
+                            <Pressable style={s.paperBtn} onPress={() => Linking.openURL(paper.paperUrl!)}>
+                              <Ionicons name="open-outline" size={13} color={colors.primary} />
+                              <Text style={s.paperBtnText}>Read Paper</Text>
+                            </Pressable>
+                          ) : null}
+                          {paper.pdfUrl ? (
+                            <Pressable style={[s.paperBtn, s.pdfBtn]} onPress={() => Linking.openURL(paper.pdfUrl!)}>
+                              <Ionicons name="download-outline" size={13} color={colors.success} />
+                              <Text style={[s.paperBtnText, { color: colors.success }]}>Download PDF</Text>
+                            </Pressable>
+                          ) : null}
+                          {paper.doi ? (
+                            <Pressable style={s.paperBtn} onPress={() => Linking.openURL(`https://doi.org/${paper.doi}`)}>
+                              <Ionicons name="link-outline" size={13} color={colors.textMuted} />
+                              <Text style={[s.paperBtnText, { color: colors.textMuted }]}>DOI: {paper.doi}</Text>
+                            </Pressable>
+                          ) : null}
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                )}
+
+                {/* 🔴 PAYWALLED / INSTITUTIONAL ACCESS PAPERS */}
+                {paywalledPapers.length > 0 && (
+                  <View style={{ gap: spacing.sm, marginTop: spacing.md }}>
+                    <Text style={s.groupHeader}>🔴 PAYWALLED / SUBSCRIPTION ACCESS ({paywalledPapers.length})</Text>
+                    {paywalledPapers.map((paper) => (
+                      <View key={paper._id} style={[s.paperCard, s.paywalledCard]}>
+                        <View style={s.paperHeader}>
+                          <View style={{ flex: 1 }}>
+                            <Text style={s.paperTitle}>{paper.title}</Text>
+                            <Text style={s.paperMeta}>
+                              {paper.authors.join(", ")} · {paper.year || "2023"} · {paper.venue || "Publisher Repository"}
+                            </Text>
+                          </View>
+                          <View style={[s.badgePill, { backgroundColor: colors.dangerSoft }]}>
+                            <Text style={[s.badgePillText, { color: colors.danger }]}>PAYWALLED</Text>
+                          </View>
+                        </View>
+
+                        {paper.simpleExplanation ? (
+                          <View style={s.explanationBox}>
+                            <Text style={s.explanationTitle}>STUDENT EXPLANATION</Text>
+                            <Text style={s.explanationText}>{paper.simpleExplanation}</Text>
+                          </View>
+                        ) : null}
+
+                        {paper.whyRelevant ? (
+                          <Text style={s.whyRelevantText}>
+                            <Text style={{ fontWeight: "700", color: colors.text }}>Why Relevant: </Text>
+                            {paper.whyRelevant}
+                          </Text>
+                        ) : null}
+
+                        <View style={s.paperActionRow}>
+                          {paper.paperUrl ? (
+                            <Pressable style={s.paperBtn} onPress={() => Linking.openURL(paper.paperUrl!)}>
+                              <Ionicons name="globe-outline" size={13} color={colors.primary} />
+                              <Text style={s.paperBtnText}>View Publisher</Text>
+                            </Pressable>
+                          ) : null}
+                          {paper.doi ? (
+                            <Pressable style={s.paperBtn} onPress={() => Linking.openURL(`https://doi.org/${paper.doi}`)}>
+                              <Ionicons name="link-outline" size={13} color={colors.textMuted} />
+                              <Text style={[s.paperBtnText, { color: colors.textMuted }]}>View DOI</Text>
+                            </Pressable>
+                          ) : null}
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </>
             )}
           </View>
         </ScrollView>
       )}
 
-      {/* ── TAB 7: DECISION ENGINE (Phase 5) ─────────────────────────── */}
+      {/* ── TAB 7: API & DEVELOPER TOOLS (Fix 2: Dedicated Tab, ZERO Task Side Effects) ── */}
+      {activeSection === "tools" && (
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: spacing.md, paddingBottom: 80 }}>
+          <View style={{ gap: spacing.md }}>
+            <View style={s.researchHeaderRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={font.h3}>APIs, SDKs & Developer Tools ({projectTools.length})</Text>
+                <Text style={s.sectionSub}>Recommended technologies, protocols, and APIs tailored for this project.</Text>
+              </View>
+              <Pressable
+                style={[s.discoverBtn, toolsLoading && { opacity: 0.7 }]}
+                onPress={() => projectId && loadProjectTools(projectId)}
+                disabled={toolsLoading}
+              >
+                {toolsLoading ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="refresh" size={14} color="#fff" />
+                    <Text style={s.discoverBtnText}>Refresh Tools</Text>
+                  </>
+                )}
+              </Pressable>
+            </View>
+
+            <View style={s.infoNoticeBox}>
+              <Ionicons name="information-circle" size={16} color={colors.info} />
+              <Text style={s.infoNoticeText}>
+                This tab provides technology evaluations and integration guidance only. Exploring tools does NOT create backlog tasks or modify your Kanban.
+              </Text>
+            </View>
+
+            {projectTools.map((tool, idx) => (
+              <View key={idx} style={s.toolCard}>
+                <View style={s.toolHeader}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.toolName}>{tool.name}</Text>
+                    <Text style={s.toolCategory}>{tool.category}</Text>
+                  </View>
+                  <View
+                    style={[
+                      s.statusBadge,
+                      tool.status === "FREE"
+                        ? { backgroundColor: colors.successSoft }
+                        : tool.status === "FREE TIER"
+                        ? { backgroundColor: colors.successSoft }
+                        : tool.status === "PAID"
+                        ? { backgroundColor: colors.dangerSoft }
+                        : { backgroundColor: colors.warningSoft },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        s.statusBadgeText,
+                        tool.status === "FREE" || tool.status === "FREE TIER"
+                          ? { color: colors.success }
+                          : tool.status === "PAID"
+                          ? { color: colors.danger }
+                          : { color: colors.warning },
+                      ]}
+                    >
+                      {tool.badgeLabel}
+                    </Text>
+                  </View>
+                </View>
+
+                <Text style={s.toolDescription}>{tool.whatItDoes}</Text>
+
+                <View style={s.toolDetailBlock}>
+                  <Text style={s.toolDetailLabel}>WHY RELEVANT TO THIS PROJECT</Text>
+                  <Text style={s.toolDetailText}>{tool.whyRelevant}</Text>
+                </View>
+
+                <View style={s.toolDetailBlock}>
+                  <Text style={s.toolDetailLabel}>HOW TO INTEGRATE</Text>
+                  <Text style={s.toolDetailText}>{tool.howToUse}</Text>
+                </View>
+
+                {tool.limitations ? (
+                  <View style={s.limitationsBox}>
+                    <Text style={s.limitationsTitle}>FREE-TIER CAPS / LIMITS</Text>
+                    <Text style={s.limitationsText}>{tool.limitations}</Text>
+                  </View>
+                ) : null}
+
+                <View style={s.toolFooter}>
+                  <Text style={s.toolAlternativeText}>
+                    <Text style={{ fontWeight: "700" }}>Alternative: </Text>
+                    {tool.alternatives}
+                  </Text>
+                  {tool.docUrl ? (
+                    <Pressable style={s.docLinkBtn} onPress={() => Linking.openURL(tool.docUrl)}>
+                      <Ionicons name="book-outline" size={13} color={colors.primary} />
+                      <Text style={s.docLinkBtnText}>Official Docs</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              </View>
+            ))}
+          </View>
+        </ScrollView>
+      )}
+
+      {/* ── TAB 8: DECISION ENGINE ───────────────────────────────────── */}
       {activeSection === "decide" && <DecisionPanel teamId={teamId} />}
     </View>
   );
@@ -968,14 +1359,14 @@ const s = StyleSheet.create({
     gap: 6,
     paddingVertical: 6,
     paddingHorizontal: 12,
-    borderRadius: radius.pill,
+    borderRadius: radius.sm,
     backgroundColor: colors.surfaceAlt,
   },
   subTabActive: {
     backgroundColor: colors.primarySoft,
   },
   subTabLabel: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: "600",
     color: colors.textMuted,
   },
@@ -984,7 +1375,7 @@ const s = StyleSheet.create({
     fontWeight: "700",
   },
   badge: {
-    backgroundColor: colors.borderStrong,
+    backgroundColor: colors.border,
     paddingHorizontal: 5,
     paddingVertical: 1,
     borderRadius: 8,
@@ -992,21 +1383,23 @@ const s = StyleSheet.create({
   badgeText: {
     fontSize: 10,
     fontWeight: "700",
-    color: colors.text,
+    color: colors.textMuted,
   },
+
+  // Project Brief
   projectCard: {
     backgroundColor: colors.surface,
-    borderRadius: radius.lg,
+    borderRadius: radius.md,
     padding: spacing.md,
     borderWidth: 1,
     borderColor: colors.border,
-    marginBottom: spacing.md,
+    gap: spacing.sm,
   },
   projectHeaderRow: {
     flexDirection: "row",
-    alignItems: "center",
     justifyContent: "space-between",
-    gap: spacing.sm,
+    alignItems: "flex-start",
+    gap: spacing.md,
   },
   metaRow: {
     flexDirection: "row",
@@ -1015,117 +1408,113 @@ const s = StyleSheet.create({
     marginTop: 4,
   },
   domainTag: {
-    backgroundColor: colors.accentSoft,
+    backgroundColor: colors.surfaceAlt,
     paddingHorizontal: 8,
     paddingVertical: 2,
-    borderRadius: radius.sm,
+    borderRadius: 4,
   },
   domainTagText: {
     fontSize: 11,
     fontWeight: "700",
-    color: colors.accentDark,
+    color: colors.textMuted,
   },
   analyzeBtn: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
     backgroundColor: colors.primary,
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: radius.md,
-  },
-  analyzeBtnText: {
-    color: "#fff",
-    fontSize: 13,
-    fontWeight: "700",
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: radius.sm,
   },
   genTaskBtn: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    backgroundColor: colors.greedy,
-    paddingVertical: 8,
+    backgroundColor: colors.topo,
     paddingHorizontal: 12,
-    borderRadius: radius.md,
+    paddingVertical: 7,
+    borderRadius: radius.sm,
+  },
+  analyzeBtnText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#fff",
   },
   errorBanner: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
     backgroundColor: colors.dangerSoft,
-    padding: spacing.sm,
-    borderRadius: radius.md,
-    marginTop: spacing.sm,
+    padding: 10,
+    borderRadius: radius.sm,
+    marginTop: 4,
   },
   errorBannerText: {
     flex: 1,
     fontSize: 12,
     color: colors.danger,
-    fontWeight: "600",
   },
   retryMiniBtn: {
     backgroundColor: colors.danger,
-    paddingHorizontal: 10,
+    paddingHorizontal: 8,
     paddingVertical: 4,
-    borderRadius: radius.sm,
+    borderRadius: 4,
   },
   retryMiniBtnText: {
-    color: "#fff",
     fontSize: 11,
     fontWeight: "700",
+    color: "#fff",
   },
   successBanner: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
     backgroundColor: colors.successSoft,
-    padding: spacing.sm,
-    borderRadius: radius.md,
-    marginTop: spacing.sm,
+    padding: 10,
+    borderRadius: radius.sm,
+    marginTop: 4,
   },
   successBannerText: {
     flex: 1,
     fontSize: 12,
     color: colors.success,
-    fontWeight: "600",
   },
   resultPill: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
     backgroundColor: colors.successSoft,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: radius.md,
-    marginTop: spacing.sm,
+    padding: 8,
+    borderRadius: radius.sm,
   },
   resultPillText: {
     fontSize: 12,
-    fontWeight: "700",
+    fontWeight: "600",
     color: colors.success,
   },
   contextBox: {
     backgroundColor: colors.surfaceAlt,
-    borderRadius: radius.md,
-    padding: spacing.sm,
-    marginTop: spacing.sm,
+    padding: 10,
+    borderRadius: radius.sm,
+    marginTop: 6,
   },
   problemText: {
     fontSize: 13,
     color: colors.text,
     lineHeight: 18,
-    marginTop: 2,
+    marginTop: 4,
   },
   reqGrid: {
     flexDirection: "row",
-    gap: 8,
-    marginTop: spacing.sm,
+    gap: spacing.sm,
+    marginTop: 8,
   },
   reqCol: {
     flex: 1,
     backgroundColor: colors.surfaceAlt,
-    borderRadius: radius.sm,
     padding: 8,
+    borderRadius: radius.sm,
   },
   reqHeader: {
     fontSize: 11,
@@ -1139,7 +1528,8 @@ const s = StyleSheet.create({
     lineHeight: 16,
   },
   quickJumpGrid: {
-    gap: 8,
+    gap: spacing.sm,
+    marginTop: spacing.md,
   },
   quickJumpCard: {
     flexDirection: "row",
@@ -1161,13 +1551,36 @@ const s = StyleSheet.create({
     color: colors.textMuted,
     marginTop: 2,
   },
+
+  // Copilot Chat
   sectionHeader: {
-    marginBottom: 4,
+    gap: 2,
+  },
+  copilotHeaderRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 12,
+  },
+  clearChatBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    backgroundColor: colors.dangerSoft,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.danger + "33",
+  },
+  clearChatBtnText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: colors.danger,
   },
   sectionSub: {
     fontSize: 12,
     color: colors.textMuted,
-    marginTop: 2,
   },
   promptRow: {
     flexDirection: "row",
@@ -1177,12 +1590,12 @@ const s = StyleSheet.create({
   promptChip: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
+    gap: 5,
     backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
-    paddingVertical: 6,
     paddingHorizontal: 10,
+    paddingVertical: 6,
     borderRadius: radius.pill,
   },
   promptChipText: {
@@ -1192,12 +1605,12 @@ const s = StyleSheet.create({
   },
   chatContainer: {
     backgroundColor: colors.surface,
-    borderRadius: radius.lg,
+    borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.border,
     padding: spacing.md,
-    minHeight: 220,
-    gap: spacing.sm,
+    gap: spacing.md,
+    minHeight: 200,
   },
   emptyChat: {
     alignItems: "center",
@@ -1210,8 +1623,9 @@ const s = StyleSheet.create({
   },
   chatBubble: {
     maxWidth: "85%",
-    padding: spacing.sm,
+    padding: 12,
     borderRadius: radius.md,
+    gap: 4,
   },
   userBubble: {
     backgroundColor: colors.primary,
@@ -1219,31 +1633,35 @@ const s = StyleSheet.create({
   },
   aiBubble: {
     backgroundColor: colors.surfaceAlt,
+    borderBottomLeftRadius: 2,
     borderWidth: 1,
     borderColor: colors.border,
-    borderBottomLeftRadius: 2,
   },
   chatRole: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: "700",
-    marginBottom: 2,
   },
   providerBadge: {
-    backgroundColor: colors.primarySoft,
+    backgroundColor: colors.surface,
     paddingHorizontal: 6,
     paddingVertical: 1,
-    borderRadius: radius.pill,
+    borderRadius: 4,
   },
   providerBadgeText: {
     fontSize: 9,
     fontWeight: "700",
-    color: colors.primary,
+    color: colors.textMuted,
+  },
+  chatText: {
+    fontSize: 13,
+    color: colors.text,
+    lineHeight: 19,
   },
   feedbackRow: {
     flexDirection: "row",
-    gap: 8,
+    gap: 12,
     marginTop: 6,
-    paddingTop: 4,
+    paddingTop: 6,
     borderTopWidth: 1,
     borderTopColor: colors.border,
   },
@@ -1251,74 +1669,75 @@ const s = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
-    paddingVertical: 3,
-    paddingHorizontal: 8,
-    borderRadius: radius.pill,
-    backgroundColor: colors.surface,
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    borderRadius: 4,
   },
   feedbackBtnActive: {
-    backgroundColor: colors.surfaceAlt,
-    borderWidth: 1,
-    borderColor: colors.border,
+    backgroundColor: colors.surface,
   },
   feedbackBtnText: {
-    fontSize: 10,
+    fontSize: 11,
     color: colors.textMuted,
   },
-  chatText: {
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.text,
-  },
-  chatErrorBox: {
+  chatLoadingRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    backgroundColor: colors.dangerSoft,
-    padding: 8,
-    borderRadius: radius.sm,
-    marginTop: 4,
-  },
-  chatErrorText: {
-    fontSize: 12,
-    color: colors.danger,
+    gap: 8,
+    paddingVertical: 8,
   },
   chatInputBar: {
     flexDirection: "row",
     gap: 8,
-    alignItems: "center",
   },
-  chatTextInput: {
+  chatInput: {
     flex: 1,
     backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: radius.md,
+    borderRadius: radius.sm,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 8,
     fontSize: 13,
     color: colors.text,
   },
-  chatSendBtn: {
+  sendBtn: {
     backgroundColor: colors.primary,
-    width: 40,
-    height: 40,
-    borderRadius: radius.md,
+    width: 38,
+    height: 38,
+    borderRadius: radius.sm,
+    alignItems: "center",
     justifyContent: "center",
+  },
+
+  // Decisions & Architecture Cards
+  groupHeader: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: colors.textMuted,
+    letterSpacing: 0.5,
+  },
+  emptyCard: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    padding: spacing.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
     alignItems: "center",
   },
   itemCard: {
     backgroundColor: colors.surface,
     borderRadius: radius.md,
+    padding: spacing.md,
     borderWidth: 1,
     borderColor: colors.border,
-    padding: spacing.md,
     gap: 6,
   },
   itemCardHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "flex-start",
+    gap: 8,
   },
   itemTitle: {
     fontSize: 14,
@@ -1326,75 +1745,286 @@ const s = StyleSheet.create({
     color: colors.text,
   },
   itemCategory: {
-    fontSize: 10,
-    fontWeight: "700",
+    fontSize: 11,
     color: colors.textMuted,
     marginTop: 1,
   },
+  statusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  statusBadgeText: {
+    fontSize: 10,
+    fontWeight: "700",
+  },
   itemReason: {
-    fontSize: 13,
+    fontSize: 12,
     color: colors.text,
-    lineHeight: 18,
+    lineHeight: 17,
   },
   altText: {
     fontSize: 11,
     color: colors.textMuted,
+    fontStyle: "italic",
   },
-  statusBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  statusAccepted: {
-    backgroundColor: colors.successSoft,
-  },
-  statusPending: {
-    backgroundColor: colors.warningSoft,
-  },
-  statusBadgeText: {
-    fontSize: 9,
-    fontWeight: "800",
-    color: colors.text,
-  },
-  cardActions: {
+  actionRow: {
     flexDirection: "row",
     gap: 8,
     marginTop: 4,
   },
-  acceptBtn: {
+  actionBtn: {
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
-    backgroundColor: colors.success,
-    paddingVertical: 6,
     paddingHorizontal: 12,
+    paddingVertical: 5,
     borderRadius: radius.sm,
   },
-  acceptBtnText: {
-    color: "#fff",
-    fontSize: 12,
-    fontWeight: "700",
+  acceptBtn: {
+    backgroundColor: colors.success,
   },
   rejectBtn: {
+    backgroundColor: colors.danger,
+  },
+  actionBtnText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#fff",
+  },
+
+  // Academic Research Styles
+  researchHeaderRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 12,
+  },
+  discoverBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: colors.primary,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: radius.sm,
+  },
+  discoverBtnText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#fff",
+  },
+  primaryActionBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: colors.primary,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: radius.sm,
+    marginTop: 12,
+  },
+  primaryActionBtnText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#fff",
+  },
+  paperCard: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    gap: 8,
+  },
+  openAccessCard: {
+    borderLeftWidth: 4,
+    borderLeftColor: colors.success,
+  },
+  paywalledCard: {
+    borderLeftWidth: 4,
+    borderLeftColor: colors.danger,
+  },
+  paperHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 8,
+  },
+  paperTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: colors.text,
+    lineHeight: 19,
+  },
+  paperMeta: {
+    fontSize: 11,
+    color: colors.textMuted,
+    marginTop: 2,
+  },
+  badgePill: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  badgePillText: {
+    fontSize: 9,
+    fontWeight: "800",
+  },
+  explanationBox: {
+    backgroundColor: colors.surfaceAlt,
+    padding: 10,
+    borderRadius: radius.sm,
+    gap: 3,
+  },
+  explanationTitle: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: colors.topo,
+    letterSpacing: 0.5,
+  },
+  explanationText: {
+    fontSize: 12,
+    color: colors.text,
+    lineHeight: 17,
+  },
+  whyRelevantText: {
+    fontSize: 12,
+    color: colors.textMuted,
+    lineHeight: 16,
+  },
+  learnText: {
+    fontSize: 12,
+    color: colors.textMuted,
+    lineHeight: 16,
+  },
+  paperActionRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 4,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  paperBtn: {
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
-    backgroundColor: colors.dangerSoft,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
+    backgroundColor: colors.surfaceAlt,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
     borderRadius: radius.sm,
   },
-  rejectBtnText: {
-    color: colors.danger,
-    fontSize: 12,
-    fontWeight: "700",
+  pdfBtn: {
+    backgroundColor: colors.successSoft,
   },
-  emptyCard: {
+  paperBtnText: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: colors.primary,
+  },
+
+  // API & Developer Tools Styles
+  infoNoticeBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: colors.infoSoft,
+    padding: 10,
+    borderRadius: radius.sm,
+  },
+  infoNoticeText: {
+    flex: 1,
+    fontSize: 12,
+    color: colors.info,
+    lineHeight: 16,
+  },
+  toolCard: {
     backgroundColor: colors.surface,
-    padding: spacing.lg,
     borderRadius: radius.md,
+    padding: spacing.md,
     borderWidth: 1,
     borderColor: colors.border,
+    gap: 8,
+  },
+  toolHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 8,
+  },
+  toolName: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: colors.text,
+  },
+  toolCategory: {
+    fontSize: 11,
+    color: colors.textMuted,
+    marginTop: 1,
+  },
+  toolDescription: {
+    fontSize: 13,
+    color: colors.text,
+    lineHeight: 18,
+  },
+  toolDetailBlock: {
+    gap: 2,
+  },
+  toolDetailLabel: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: colors.textMuted,
+    letterSpacing: 0.5,
+  },
+  toolDetailText: {
+    fontSize: 12,
+    color: colors.text,
+    lineHeight: 16,
+  },
+  limitationsBox: {
+    backgroundColor: colors.warningSoft,
+    padding: 8,
+    borderRadius: radius.sm,
+    gap: 2,
+  },
+  limitationsTitle: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: colors.warning,
+  },
+  limitationsText: {
+    fontSize: 11,
+    color: colors.text,
+    lineHeight: 15,
+  },
+  toolFooter: {
+    flexDirection: "row",
+    justifyContent: "space-between",
     alignItems: "center",
+    marginTop: 4,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  toolAlternativeText: {
+    flex: 1,
+    fontSize: 11,
+    color: colors.textMuted,
+  },
+  docLinkBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: colors.surfaceAlt,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: radius.sm,
+  },
+  docLinkBtnText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: colors.primary,
   },
 });

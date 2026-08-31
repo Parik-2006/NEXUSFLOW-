@@ -79,7 +79,6 @@ import Resource         from "../models/Resource.js";
 import AIConversation   from "../models/AIConversation.js";
 import AIMessage        from "../models/AIMessage.js";
 
-// Phase 2 & 3: Project Intelligence & Task Decomposition Services
 import {
   buildProjectContext,
   analyzeProject,
@@ -87,6 +86,8 @@ import {
   decomposeTasksWithContext,
   buildTaskGenerationContext,
 } from "../services/projectIntelligence.js";
+import { discoverAcademicPapers } from "../services/academicResearchService.js";
+import { getProjectToolRecommendations } from "../services/projectToolsService.js";
 
 const router = Router();
 
@@ -105,21 +106,26 @@ async function findProject(projectId, res, user = null) {
   // Security Check: Verify team access if user context is available
   if (user && project.teamId) {
     const team = await Team.findById(project.teamId).lean();
-    if (team && Array.isArray(team.members) && team.members.length > 0) {
-      const isMember = team.members.some((m) => {
-        const uidStr = m.userId ? m.userId.toString() : "";
-        const targetIdStr = user.id ? user.id.toString() : "";
+    if (team) {
+      const userIdStr = (user._id || user.id)?.toString() || "";
+      const userEmail = (user.email || "").toLowerCase().trim();
+      const userName = (user.name || "").toLowerCase().trim();
+
+      const isOwner = team.ownerId && team.ownerId.toString() === userIdStr;
+      const isMember = Array.isArray(team.members) && team.members.some((m) => {
+        const mIdStr = (m.userId?._id || m.userId)?.toString() || "";
+        const mName = (m.name || "").toLowerCase().trim();
         return (
-          (uidStr && uidStr === targetIdStr) ||
-          (m.name && user.name && m.name.toLowerCase() === user.name.toLowerCase()) ||
-          (m.name && user.email && m.name.toLowerCase() === user.email.toLowerCase()) ||
-          (m.email && user.email && m.email.toLowerCase() === user.email.toLowerCase())
+          (mIdStr && mIdStr === userIdStr) ||
+          (mName && userEmail && mName === userEmail) ||
+          (mName && userName && mName === userName)
         );
       });
-      // In strict multi-tenant environments, reject unauthorized users.
-      // If team members are defined and user is not a member and has a different specific user id:
-      if (!isMember && user.id && user.id !== "anon" && user.role !== "admin" && team.isPrivate) {
-        res.status(403).json({ error: "forbidden_project_access" });
+
+      const isLegacy = !team.ownerId && (!team.members || team.members.length === 0);
+
+      if (!isOwner && !isMember && !isLegacy && user.role !== "admin") {
+        res.status(403).json({ error: "Forbidden: You do not have access to this project." });
         return null;
       }
     }
@@ -133,13 +139,35 @@ async function findProject(projectId, res, user = null) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── GET /api/projects ─────────────────────────────────────────────────────────
-// List all projects. Optional query param: ?teamId= to filter by team.
+// List all projects strictly scoped to teams the authenticated user belongs to.
 router.get("/projects", requireAuth, async (req, res) => {
   try {
-    const filter = {};
-    if (req.query.teamId && mongoose.isValidObjectId(req.query.teamId)) {
-      filter.teamId = req.query.teamId;
+    const userId = req.user?._id || req.user?.id;
+    const userEmail = req.user?.email?.toLowerCase()?.trim();
+    const userName = req.user?.name?.trim();
+
+    const teamConditions = [];
+    if (userId && mongoose.isValidObjectId(userId)) {
+      teamConditions.push({ ownerId: userId });
+      teamConditions.push({ "members.userId": userId });
     }
+    if (userEmail) teamConditions.push({ "members.name": userEmail });
+    if (userName) teamConditions.push({ "members.name": userName });
+
+    // Find all teams the user belongs to
+    const userTeams = await Team.find(teamConditions.length > 0 ? { $or: teamConditions } : { _id: null }).select("_id").lean();
+    const allowedTeamIds = userTeams.map((t) => t._id);
+
+    const filter = { teamId: { $in: allowedTeamIds } };
+    if (req.query.teamId && mongoose.isValidObjectId(req.query.teamId)) {
+      const requestedId = new mongoose.Types.ObjectId(req.query.teamId);
+      if (allowedTeamIds.some((id) => id.equals(requestedId))) {
+        filter.teamId = requestedId;
+      } else {
+        return res.json([]); // Not authorized for this team -> return empty
+      }
+    }
+
     const projects = await Project.find(filter).sort({ createdAt: -1 }).lean();
     res.json(projects);
   } catch (e) {
@@ -149,14 +177,6 @@ router.get("/projects", requireAuth, async (req, res) => {
 
 // ── POST /api/projects ────────────────────────────────────────────────────────
 // Create a new project.
-// Body: { teamId (required), title, description, originalPrompt, domain,
-//         projectType, academicContext, teamSize, sprintWeeks, context? }
-//
-// TEAM RELATIONSHIP:
-// When a project is created, Team.activeProjectId is updated to point to
-// the new project (if the team didn't already have an active project).
-// The Team's projectTitle/projectDescription are NOT modified — they remain
-// as the legacy fallback for existing algorithms.
 router.post("/projects", requireAuth, async (req, res) => {
   try {
     const {
@@ -175,6 +195,26 @@ router.post("/projects", requireAuth, async (req, res) => {
     // Verify the team exists
     const team = await Team.findById(teamId).lean();
     if (!team) return res.status(404).json({ error: "team_not_found" });
+
+    // Verify team ownership / membership
+    const userIdStr = (req.user?._id || req.user?.id)?.toString() || "";
+    const userEmail = (req.user?.email || "").toLowerCase().trim();
+    const userName = (req.user?.name || "").toLowerCase().trim();
+
+    const isOwner = team.ownerId && team.ownerId.toString() === userIdStr;
+    const isMember = Array.isArray(team.members) && team.members.some((m) => {
+      const mIdStr = (m.userId?._id || m.userId)?.toString() || "";
+      const mName = (m.name || "").toLowerCase().trim();
+      return (
+        (mIdStr && mIdStr === userIdStr) ||
+        (mName && userEmail && mName === userEmail) ||
+        (mName && userName && mName === userName)
+      );
+    });
+
+    if (!isOwner && !isMember && team.ownerId && req.user?.role !== "admin") {
+      return res.status(403).json({ error: "Forbidden: You are not a member of this team." });
+    }
 
     // Create the project document
     const project = await Project.create({
@@ -239,6 +279,11 @@ router.patch("/projects/:projectId", requireAuth, async (req, res) => {
       { $set: update },
       { new: true, lean: true }
     );
+
+    if (update.title && updated?.teamId) {
+      await Team.updateOne({ _id: updated.teamId }, { $set: { projectTitle: String(update.title).trim() } });
+    }
+
     res.json(updated);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -459,6 +504,46 @@ router.get("/projects/:projectId/research", requireAuth, async (req, res) => {
     res.json(items);
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/projects/:projectId/research/discover ───────────────────────────
+// Triggers real academic paper discovery from OpenAlex / Crossref.
+// Strictly $0 cost, returns real academic papers with valid DOIs and OA PDFs.
+router.post("/projects/:projectId/research/discover", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const papers = await discoverAcademicPapers(project);
+    res.json({
+      success: true,
+      count: papers.length,
+      papers,
+    });
+  } catch (e) {
+    console.error("[POST /projects/:id/research/discover] error:", e.message);
+    res.status(500).json({ error: e.message || "Failed to discover research papers" });
+  }
+});
+
+// ── GET /api/projects/:projectId/tools ────────────────────────────────────────
+// Returns project-tailored APIs, developer tools, SDKs, and models.
+// READ-ONLY / DECISION SUPPORT ONLY — DOES NOT CREATE TASKS OR MODIFY KANBAN.
+router.get("/projects/:projectId/tools", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const tools = await getProjectToolRecommendations(project);
+    res.json({
+      success: true,
+      projectId: req.params.projectId,
+      tools,
+    });
+  } catch (e) {
+    console.error("[GET /projects/:id/tools] error:", e.message);
+    res.status(500).json({ error: e.message || "Failed to load project tools" });
   }
 });
 
@@ -1043,6 +1128,39 @@ router.get("/projects/:projectId/ai/conversation", requireAuth, async (req, res)
   } catch (e) {
     console.error("[GET /projects/:id/ai/conversation] error:", e.message);
     res.status(500).json({ error: e.message || "Failed to load conversation" });
+  }
+});
+
+// ── DELETE /api/projects/:projectId/ai/conversation ─────────────────────────
+// Clears the authenticated user's private Copilot conversation for this project.
+// Strictly deletes only the active user's AIConversation and AIMessages for [projectId + userId].
+// Leaves project knowledge, brief, guidance, decisions, architecture, and team intact.
+router.delete("/projects/:projectId/ai/conversation", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const userId = mongoose.isValidObjectId(req.user?.id) ? req.user.id : null;
+    const query = { projectId: req.params.projectId };
+    if (userId) query.startedBy = userId;
+
+    const userConversations = await AIConversation.find(query).select("_id").lean();
+    const convIds = userConversations.map((c) => c._id);
+
+    if (convIds.length > 0) {
+      await Promise.all([
+        AIMessage.deleteMany({ conversationId: { $in: convIds } }),
+        AIConversation.deleteMany({ _id: { $in: convIds } }),
+      ]);
+    }
+
+    res.json({
+      success: true,
+      message: "Copilot conversation cleared successfully. Project intelligence and memory remain intact.",
+    });
+  } catch (e) {
+    console.error("[DELETE /projects/:id/ai/conversation] error:", e.message);
+    res.status(500).json({ error: e.message || "Failed to clear conversation" });
   }
 });
 

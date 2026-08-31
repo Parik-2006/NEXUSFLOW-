@@ -80,28 +80,36 @@ const ResearchItemSchema = new mongoose.Schema(
       default: "article",
     },
 
+    // Academic discovery metadata (Fix 3)
+    doi: { type: String, default: "" },
+    venue: { type: String, default: "" },
+    year: { type: Number, default: null },
+    paperUrl: { type: String, default: "" },
+    pdfUrl: { type: String, default: "" },
+    accessStatus: {
+      type: String,
+      enum: ["open_access", "paywalled", "unknown"],
+      default: "open_access",
+    },
+    simpleExplanation: { type: String, default: "" },
+    whyRelevant: { type: String, default: "" },
+    keyIdea: { type: String, default: "" },
+    whatToLearn: { type: String, default: "" },
+
     // ── Content Summary ──────────────────────────────────────────────────────
     // The abstract, summary, or excerpt of the research item
-    // e.g. "This paper proposes an LSTM-based approach for predicting
-    //       irrigation requirements with 94% accuracy using soil sensor data."
     abstract: { type: String, default: "" },
 
     // Keywords or topics covered by this item
-    // e.g. ["LSTM", "soil moisture", "IoT", "precision agriculture"]
     topics: { type: [String], default: [] },
 
     // ── Relevance Assessment ─────────────────────────────────────────────────
-    // How relevant is this to the project? (1 = barely relevant, 5 = core)
-    // Allows sorting research items by priority
     relevance: { type: Number, min: 1, max: 5, default: 3 },
 
     // Notes the student wrote about this item
-    // e.g. "The LSTM architecture from section 3 looks promising for our use case.
-    //       We should try replicating with our sensor data."
     notes: { type: String, default: "" },
 
     // ── Publication Info ─────────────────────────────────────────────────────
-    // When was it published? (null if unknown or not applicable)
     publishedAt: { type: Date, default: null },
 
     // ── Research Status ──────────────────────────────────────────────────────

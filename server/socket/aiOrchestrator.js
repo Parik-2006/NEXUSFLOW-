@@ -51,7 +51,7 @@ function normalizeForOptimiser(t) {
   };
 }
 
-const OPENAI_KEY = process.env.OPENAI_API_KEY;
+import { omniRouteGenerate } from "../services/omniRoute.js";
 
 const URGENCY_KEYWORDS = ["fix", "bug", "block", "critical", "asap", "urgent", "broken", "hotfix", "incident"];
 const IMPACT_KEYWORDS  = ["release", "deploy", "ship", "launch", "production", "customer", "demo", "revenue"];
@@ -159,9 +159,9 @@ export function registerAiOrchestrator(io, socket) {
     }
 
     let newTaskIds;
-    if (OPENAI_KEY) {
-      newTaskIds = await streamFromOpenAI(io, socket, teamId, prompt);
-    } else {
+    try {
+      newTaskIds = await streamFromOmniRoute(io, socket, teamId, prompt);
+    } catch {
       newTaskIds = await streamMock(io, socket, teamId, prompt);
     }
 
@@ -444,53 +444,37 @@ async function wirePhaseDependencies(teamId, seeds, taskIds) {
   if (bulk.length) await Task.bulkWrite(bulk, { ordered: false });
 }
 
-// ── Real OpenAI streaming ──────────────────────────────────────────────────────
-async function streamFromOpenAI(io, socket, teamId, prompt) {
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method : "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENAI_KEY}` },
-    body   : JSON.stringify({
-      model: "gpt-4o-mini", stream: true,
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a senior engineering lead breaking a project description into a backlog. " +
-            "Output ONLY a plain list of short, action-oriented engineering task titles, one per line, no numbering or prose. " +
-            "Each title MUST start with an imperative verb (Implement, Build, Develop, Design, Integrate, Configure, Set up, Test, Deploy) " +
-            "and read like a Jira/Trello card (3–7 words). " +
-            "Convert requirements into tasks: 'The system monitors soil moisture' -> 'Implement Soil Moisture Monitoring Module'; " +
-            "'Farmers can view field conditions' -> 'Develop Field Conditions Dashboard'. " +
-            "Never output a requirement sentence, user story, or acceptance criteria — only buildable engineering tasks.",
-        },
-        { role: "user",   content: prompt },
-      ],
-    }),
+// ── OmniRoute $0 LLM generation ───────────────────────────────────────────────
+async function streamFromOmniRoute(io, socket, teamId, prompt) {
+  const systemPrompt =
+    "You are a senior engineering lead breaking a project description into a backlog. " +
+    "Output ONLY a plain list of short, action-oriented engineering task titles, one per line, no numbering or prose. " +
+    "Each title MUST start with an imperative verb (Implement, Build, Develop, Design, Integrate, Configure, Set up, Test, Deploy) " +
+    "and read like a Jira/Trello card (3–7 words). " +
+    "Convert requirements into tasks: 'The system monitors soil moisture' -> 'Implement Soil Moisture Monitoring Module'; " +
+    "'Farmers can view field conditions' -> 'Develop Field Conditions Dashboard'. " +
+    "Never output a requirement sentence, user story, or acceptance criteria — only buildable engineering tasks.";
+
+  const omniResult = await omniRouteGenerate({
+    systemPrompt,
+    messages: [{ role: "user", content: prompt }],
+    temperature: 0.3,
+    maxTokens: 1000,
   });
 
-  const reader  = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "", acc = "";
+  if (!omniResult || !omniResult.content) {
+    return streamMock(io, socket, teamId, prompt);
+  }
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      if (!line.startsWith("data:")) continue;
-      const payload = line.slice(5).trim();
-      if (payload === "[DONE]") continue;
-      try {
-        const delta = JSON.parse(payload).choices?.[0]?.delta?.content ?? "";
-        if (delta) { acc += delta; io.to(`team:${teamId}`).emit("chat:stream", { id: `ai_${Date.now()}`, text: delta }); }
-      } catch { /* keep-alive */ }
+  const lines = omniResult.content.split("\n");
+  for (const line of lines) {
+    if (line.trim()) {
+      io.to(`team:${teamId}`).emit("chat:stream", { id: `ai_${Date.now()}`, text: line + "\n" });
     }
   }
 
   const newTaskIds = [];
-  const rawTitles = acc.split("\n").map((s) => toActionableTitle(s)).filter(Boolean);
+  const rawTitles = omniResult.content.split("\n").map((s) => toActionableTitle(s)).filter(Boolean);
   for (const title of rawTitles) {
     const { urgency, impact } = estimatePriority(title);
     const task = await Task.create({ teamId, title, urgency, impact, dependencyCount: 0, source: "ai" });

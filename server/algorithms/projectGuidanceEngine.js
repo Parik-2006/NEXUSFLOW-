@@ -634,38 +634,48 @@ function determineNextAction(hwInfo, aiInfo, readiness, tasks, phases) {
     return {
       action: "Refine Project Description & Scope",
       type: "planning",
-      reason: "Project readiness is below 50%. Clarifying the description and objectives will unlock accurate guidance.",
-      buttonLabel: "Update Project Info",
-      targetTab: "advisor",
+      reason: "Project readiness is below 50%. Clarifying the description and objectives in the Project Brief unlocks accurate AI recommendations and guidance.",
+      buttonLabel: "Review Project Brief",
+      targetTab: "brief",
     };
   }
 
   if (hwInfo.status === "REQUIRED" && (!tasks || tasks.length === 0)) {
     return {
-      action: "Procure & Setup ESP32 / Sensor Test Circuit",
+      action: "Verify Hardware Pinouts & Sensor Circuit Specs",
       type: "hardware_setup",
-      reason: "Hardware projects have physical lead times. Verifying the sensor circuit on a breadboard eliminates the biggest risk.",
-      buttonLabel: "Create Hardware Task",
-      targetTab: "tasks",
+      reason: "Hardware projects have physical lead times. Verifying the sensor circuit specifications on a breadboard eliminates the biggest feasibility risk.",
+      buttonLabel: "Explore Hardware Specs",
+      targetTab: "guidance",
     };
   }
 
   if (aiInfo.status === "REQUIRED") {
     return {
-      action: "Collect Initial Validation Dataset (100+ Samples)",
+      action: "Validate Dataset Schema & Feasibility (100+ Samples)",
       type: "dataset_collection",
-      reason: "Model training cannot proceed without real data. Verifying data feasibility early prevents blockers.",
-      buttonLabel: "Create Dataset Task",
-      targetTab: "tasks",
+      reason: "Model training cannot proceed without real baseline data. Verifying data schema and source feasibility early prevents downstream blockers.",
+      buttonLabel: "Explore AI & Dataset Strategy",
+      targetTab: "guidance",
+    };
+  }
+
+  if (tasks && tasks.length > 0) {
+    return {
+      action: "Prioritize & Execute High-Impact Backlog Tasks",
+      type: "sprint_execution",
+      reason: "Backlog tasks are defined. Leverage Knapsack and Greedy algorithms in Hackathon Mode to allocate sprint capacity.",
+      buttonLabel: "Create Priority Task",
+      targetTab: "hackathon",
     };
   }
 
   return {
-    action: "Initialize Backend Repository & Define API Contracts",
-    type: "backend_setup",
-    reason: "Creating the server skeleton and shared data interfaces allows frontend and backend work in parallel.",
-    buttonLabel: "Create Backend Task",
-    targetTab: "tasks",
+    action: "Plan MVP Sprint & Task Breakdown",
+    type: "sprint_planning",
+    reason: "Core requirements are identified. Break down your milestones into sprint backlog tasks using the 0/1 Knapsack optimizer.",
+    buttonLabel: "Create MVP Sprint Task",
+    targetTab: "hackathon",
   };
 }
 

@@ -9,14 +9,19 @@ import { Avatar, Button, Card, Field, Chip, Badge, StatCard } from "@/components
 import ImageUploader from "@/components/ImageUploader";
 import FloatingBackground from "@/components/FloatingBackground";
 import { ModalSheet, useConfirm, useToast } from "@/components/feedback";
-import { getItem, setItem } from "@/utils/storage";
 import { colors, spacing, radius, font, layout, glass, shadow } from "@/theme";
 
 const SKILL_OPTIONS = ["Frontend", "Backend", "DevOps", "Design", "AI/ML", "Testing", "Product", "QA"];
 const EXPERIENCE = ["Junior", "Mid-level", "Senior", "Lead", "Principal"];
 
-type ProfileData = { role: string; bio: string; skills: string[]; experience: string; image: string | null };
-const DEFAULTS: ProfileData = { role: "Product Builder", bio: "", skills: ["Frontend"], experience: "Mid-level", image: null };
+type ProfileDraft = {
+  name: string;
+  role: string;
+  bio: string;
+  skills: string[];
+  experience: string;
+  image: string | null;
+};
 
 // Web-only gradient cover; solid fallback on native.
 const coverStyle = Platform.OS === "web"
@@ -24,21 +29,37 @@ const coverStyle = Platform.OS === "web"
   : { backgroundColor: colors.primary };
 
 export default function Profile() {
-  const { user, signOut } = useAuth();
+  const { user, signOut, updateProfile } = useAuth();
   const { teams } = useTeams();
   const confirm = useConfirm();
   const toast = useToast();
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
-  const key = `nf_profile_${user?.email ?? "anon"}`;
-  const [profile, setProfile] = useState<ProfileData>(DEFAULTS);
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState<ProfileData>(DEFAULTS);
+  const [saving, setSaving] = useState(false);
+  const [draft, setDraft] = useState<ProfileDraft>({
+    name: user?.name || "",
+    role: user?.role || "Product Builder",
+    bio: user?.bio || "",
+    skills: user?.skills || ["Frontend"],
+    experience: user?.experience || "Mid-level",
+    image: user?.avatar || null,
+  });
 
+  // Sync draft when user changes
   useEffect(() => {
-    getItem(key).then((raw) => { if (raw) try { setProfile({ ...DEFAULTS, ...JSON.parse(raw) }); } catch {} });
-  }, [key]);
+    if (user) {
+      setDraft({
+        name: user.name || "",
+        role: user.role || "Product Builder",
+        bio: user.bio || "",
+        skills: user.skills || ["Frontend"],
+        experience: user.experience || "Mid-level",
+        image: user.avatar || null,
+      });
+    }
+  }, [user]);
 
   const stats = useMemo(() => {
     const totalTasks = teams.reduce((s, t) => s + (t.taskCount ?? 0), 0);
@@ -47,13 +68,43 @@ export default function Profile() {
     return { teams: teams.length, totalTasks, totalDone, completion };
   }, [teams]);
 
-  const openEdit = () => { setDraft(profile); setEditing(true); };
-  const save = async () => {
-    setProfile(draft);
-    await setItem(key, JSON.stringify(draft));
-    setEditing(false);
-    toast("Profile updated", "success");
+  const openEdit = () => {
+    setDraft({
+      name: user?.name || "",
+      role: user?.role || "Product Builder",
+      bio: user?.bio || "",
+      skills: user?.skills || ["Frontend"],
+      experience: user?.experience || "Mid-level",
+      image: user?.avatar || null,
+    });
+    setEditing(true);
   };
+
+  const save = async () => {
+    if (!draft.name.trim()) {
+      toast("Name cannot be empty", "error");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await updateProfile({
+        name: draft.name.trim(),
+        avatar: draft.image || "",
+        role: draft.role.trim() || "Product Builder",
+        bio: draft.bio.trim(),
+        experience: draft.experience,
+        skills: draft.skills,
+      });
+      setEditing(false);
+      toast("Profile updated & synchronized across all workspaces!", "success");
+    } catch (e: any) {
+      toast(e.message || "Failed to update profile", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const toggleSkill = (sk: string) =>
     setDraft((d) => ({ ...d, skills: d.skills.includes(sk) ? d.skills.filter((x) => x !== sk) : [...d.skills, sk] }));
 
@@ -73,16 +124,16 @@ export default function Profile() {
             <View style={[s.glassBody, glass as any]}>
               <View style={s.identityTop}>
                 <View style={s.avatarWrap}>
-                  <Avatar name={user?.name ?? "User"} size={92} image={profile.image} />
+                  <Avatar name={user?.name ?? "User"} size={92} image={user?.avatar || null} />
                 </View>
-                <Button title="Edit" icon="create-outline" variant="secondary" small onPress={openEdit} />
+                <Button title="Edit Profile" icon="create-outline" variant="secondary" small onPress={openEdit} />
               </View>
               <Text style={font.h2}>{user?.name ?? "User"}</Text>
-              <Text style={s.role}>{profile.role}</Text>
-              {profile.bio ? <Text style={s.bio}>{profile.bio}</Text> : <Text style={s.bioEmpty}>Add a short bio to tell your team what you do.</Text>}
+              <Text style={s.role}>{user?.role || "Product Builder"}</Text>
+              {user?.bio ? <Text style={s.bio}>{user.bio}</Text> : <Text style={s.bioEmpty}>Add a short bio to tell your team what you do.</Text>}
               <View style={s.metaRow}>
                 <View style={s.metaItem}><Ionicons name="mail-outline" size={15} color={colors.textMuted} /><Text style={s.metaTxt}>{user?.email ?? "—"}</Text></View>
-                <View style={s.metaItem}><Ionicons name="ribbon-outline" size={15} color={colors.textMuted} /><Text style={s.metaTxt}>{profile.experience}</Text></View>
+                <View style={s.metaItem}><Ionicons name="ribbon-outline" size={15} color={colors.textMuted} /><Text style={s.metaTxt}>{user?.experience || "Mid-level"}</Text></View>
               </View>
             </View>
           </View>
@@ -97,11 +148,11 @@ export default function Profile() {
           {/* Skills */}
           <Card style={{ gap: spacing.sm }}>
             <Text style={font.h3}>Skills</Text>
-            {profile.skills.length === 0 ? (
+            {(!user?.skills || user.skills.length === 0) ? (
               <Text style={s.muted}>No skills added yet.</Text>
             ) : (
               <View style={s.tagRow}>
-                {profile.skills.map((sk) => <Badge key={sk} label={sk} color={colors.accentDark} bg={colors.accentSoft} />)}
+                {user.skills.map((sk) => <Badge key={sk} label={sk} color={colors.accentDark} bg={colors.accentSoft} />)}
               </View>
             )}
           </Card>
@@ -142,7 +193,16 @@ export default function Profile() {
             )}
           </Card>
 
-          {/* Footer actions */}
+          {/* Documentation & Insights Links */}
+          <Pressable style={s.linkRow} onPress={() => router.push("/docs" as any)}>
+            <View style={[s.linkIcon, { backgroundColor: colors.accentSoft }]}><Ionicons name="book-outline" size={18} color={colors.accentDark} /></View>
+            <View style={{ flex: 1 }}>
+              <Text style={s.linkTitle}>Documentation & Architecture</Text>
+              <Text style={s.linkSub}>Explore NEXUSFLOW 2.0 systems, AI Fallback, DAA & JWT</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.textFaint} />
+          </Pressable>
+
           <Pressable style={s.linkRow} onPress={() => router.push("/daa-insights" as any)}>
             <View style={[s.linkIcon, { backgroundColor: colors.primarySoft }]}><Ionicons name="school-outline" size={18} color={colors.primary} /></View>
             <View style={{ flex: 1 }}>
@@ -158,6 +218,7 @@ export default function Profile() {
 
       <ModalSheet visible={editing} onClose={() => setEditing(false)} title="Edit profile">
         <ImageUploader label="Profile photo" value={draft.image} onChange={(img) => setDraft((d) => ({ ...d, image: img }))} shape="circle" size={88} />
+        <Field label="Display Name" placeholder="Your name" value={draft.name} onChangeText={(v) => setDraft((d) => ({ ...d, name: v }))} icon="person-outline" />
         <Field label="Role" placeholder="e.g. Senior Frontend Engineer" value={draft.role} onChangeText={(v) => setDraft((d) => ({ ...d, role: v }))} icon="briefcase-outline" />
         <Field label="Bio" placeholder="A sentence or two about your work and focus." value={draft.bio} onChangeText={(v) => setDraft((d) => ({ ...d, bio: v }))} multiline />
         <View style={{ gap: 8 }}>
@@ -172,7 +233,7 @@ export default function Profile() {
             {SKILL_OPTIONS.map((sk) => <Chip key={sk} label={sk} active={draft.skills.includes(sk)} color={colors.accentDark} onPress={() => toggleSkill(sk)} />)}
           </View>
         </View>
-        <Button title="Save changes" icon="checkmark" onPress={save} style={{ marginTop: spacing.sm }} />
+        <Button title="Save changes" icon="checkmark" onPress={save} loading={saving} style={{ marginTop: spacing.sm }} />
       </ModalSheet>
     </View>
   );

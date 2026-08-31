@@ -14,8 +14,9 @@ import { Card, ProgressBar, AvatarStack, Badge, EmptyState, SkeletonCard, Button
 import { useToast, useConfirm } from "@/components/feedback";
 import { PieChart, type Datum } from "@/components/charts";
 import { colors, spacing, radius, font, healthLabel, deadlineMeta, taskPriorityKey, PRIORITY_META, type PriorityKey } from "@/theme";
+import { API_BASE_URL } from "@/utils/api";
 
-const API = process.env.EXPO_PUBLIC_API_URL ?? "https://nexusflow-nxeg.onrender.com";
+const API = API_BASE_URL;
 
 type Health = {
   score: number; grade: string; total: number;

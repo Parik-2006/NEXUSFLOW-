@@ -3,195 +3,41 @@
  * ============================================================================
  * AI ORCHESTRATOR — Central multi-provider orchestration for NEXUSFLOW 2.0.
  *
- * THREE-TIER FALLBACK ARCHITECTURE:
- *   Tier 1: OpenAI (gpt-4o-mini)
- *   Tier 2: Google Gemini (gemini-2.0-flash / gemini-1.5-flash)
- *   Tier 3: Existing Deterministic / Hardcoded Fallback Engine
+ * HARD $0 LLM COST POLICY ENFORCED VIA OMNIROUTE:
+ *   Tier 1: Google Gemini Free Tier (gemini-2.0-flash / gemini-1.5-flash)
+ *   Tier 2: OpenRouter Free Models (openrouter/free / :free models)
+ *   Tier 3: Existing Deterministic / Hardcoded Fallback Engine ($0 local CPU)
  *
  * DESIGN PRINCIPLES:
- * 1. ZERO HARDCODED KEYS: All credentials read from environment variables.
- * 2. SERVER-SIDE ONLY: Keys are never exposed to React/Expo clients.
- * 3. GRACEFUL DEGRADATION: If any tier fails, times out, rate-limits, or returns
- *    invalid JSON, the orchestrator immediately waterfalls to the next tier.
- * 4. DETERMINISTIC SAFETY NET: The deterministic engine guarantees 100% uptime
- *    even without internet access or valid API keys.
+ * 1. HARD $0 SPENDING LIMIT: Total allowed API spending is $0.00.
+ * 2. ZERO PAID FALLBACK: Paid models (OpenAI, Claude, paid OpenRouter) are strictly forbidden and blocked.
+ * 3. ZERO HARDCODED KEYS: All credentials read from environment variables.
+ * 4. SERVER-SIDE ONLY: Keys are never exposed to React/Expo clients.
+ * 5. GRACEFUL DEGRADATION: If any free tier fails, rate-limits (429), or is exhausted,
+ *    the orchestrator cascades to the next verified free provider, ending in the local
+ *    deterministic engine.
  * ============================================================================
  */
 
 import { generateDeterministicCopilotAnswer } from "./projectIntelligence.js";
+import {
+  omniRouteGenerate,
+  executeGeminiFree,
+  executeOpenRouterFree,
+  validateZeroCostRoute,
+  ZeroCostViolationError,
+} from "./omniRoute.js";
 
-// ── Environment variable resolution ──────────────────────────────────────────
-function getOpenAIKey() {
-  return process.env.OPENAI_API_KEY || process.env.OPENAI_KEY || "";
-}
+// Re-export OmniRoute components for consumers
+export {
+  omniRouteGenerate,
+  executeGeminiFree,
+  executeOpenRouterFree,
+  validateZeroCostRoute,
+  ZeroCostViolationError,
+};
 
-function getGeminiKey() {
-  return (
-    process.env.GEMINI_API_KEY ||
-    process.env.GOOGLE_API_KEY ||
-    process.env.GEMINI_KEY ||
-    ""
-  );
-}
-
-// ── 1. Call OpenAI (Tier 1) ──────────────────────────────────────────────────
-export async function callOpenAI({
-  systemPrompt,
-  messages = [],
-  responseFormat = null,
-  temperature = 0.3,
-  maxTokens = 1200,
-  timeoutMs = 12000,
-}) {
-  const apiKey = getOpenAIKey();
-  if (!apiKey) {
-    throw new Error("OPENAI_API_KEY is not configured");
-  }
-
-  const formattedMessages = [];
-  if (systemPrompt) {
-    formattedMessages.push({ role: "system", content: systemPrompt });
-  }
-
-  for (const m of messages) {
-    formattedMessages.push({
-      role: m.role === "assistant" ? "assistant" : m.role === "system" ? "system" : "user",
-      content: String(m.content || "").trim(),
-    });
-  }
-
-  const body = {
-    model: "gpt-4o-mini",
-    messages: formattedMessages,
-    temperature,
-    max_tokens: maxTokens,
-  };
-
-  if (responseFormat === "json_object") {
-    body.response_format = { type: "json_object" };
-  }
-
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`OpenAI HTTP ${res.status}: ${errText.slice(0, 300)}`);
-  }
-
-  const data = await res.json();
-  const content = data.choices?.[0]?.message?.content?.trim();
-  if (!content) {
-    throw new Error("OpenAI returned an empty completion");
-  }
-
-  return {
-    content,
-    raw: data,
-    tokensUsed: {
-      prompt: data.usage?.prompt_tokens ?? null,
-      completion: data.usage?.completion_tokens ?? null,
-      total: data.usage?.total_tokens ?? null,
-    },
-  };
-}
-
-// ── 2. Call Gemini (Tier 2) ──────────────────────────────────────────────────
-export async function callGemini({
-  systemPrompt,
-  messages = [],
-  responseFormat = null,
-  temperature = 0.3,
-  maxTokens = 1200,
-  timeoutMs = 12000,
-}) {
-  const apiKey = getGeminiKey();
-  if (!apiKey) {
-    throw new Error("GEMINI_API_KEY is not configured");
-  }
-
-  // Format history for Gemini API
-  const contents = [];
-  for (const m of messages) {
-    const role = m.role === "assistant" ? "model" : "user";
-    contents.push({
-      role,
-      parts: [{ text: String(m.content || "").trim() }],
-    });
-  }
-
-  const requestPayload = {
-    contents,
-    generationConfig: {
-      temperature,
-      maxOutputTokens: maxTokens,
-    },
-  };
-
-  if (systemPrompt) {
-    requestPayload.systemInstruction = {
-      parts: [{ text: systemPrompt }],
-    };
-  }
-
-  if (responseFormat === "json_object") {
-    requestPayload.generationConfig.responseMimeType = "application/json";
-  }
-
-  // Try primary model gemini-2.0-flash, fallback to gemini-1.5-flash
-  const models = ["gemini-2.0-flash", "gemini-1.5-flash"];
-  let lastErr = null;
-
-  for (const model of models) {
-    try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(requestPayload),
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`Gemini ${model} HTTP ${res.status}: ${errText.slice(0, 300)}`);
-      }
-
-      const data = await res.json();
-      const candidate = data.candidates?.[0];
-      const textPart = candidate?.content?.parts?.[0]?.text?.trim();
-
-      if (!textPart) {
-        throw new Error(`Gemini ${model} returned empty response`);
-      }
-
-      const usage = data.usageMetadata || {};
-      return {
-        content: textPart,
-        raw: data,
-        tokensUsed: {
-          prompt: usage.promptTokenCount ?? null,
-          completion: usage.candidatesTokenCount ?? null,
-          total: usage.totalTokenCount ?? null,
-        },
-      };
-    } catch (err) {
-      lastErr = err;
-      // Loop to try next model
-    }
-  }
-
-  throw lastErr || new Error("Gemini generation failed");
-}
-
-// ── 3. Memory & Preference Extraction ────────────────────────────────────────
+// ── 1. Memory & Preference Extraction ────────────────────────────────────────
 /**
  * Detects user confirmation or selection statements to store in Copilot memory.
  * e.g. "I decided to use ESP32" or "We'll use PostgreSQL" or "I prefer React Native"
@@ -248,7 +94,7 @@ export function extractMemoryUpdates(userMessage) {
   return updates;
 }
 
-// ── 4. 3-Tier Copilot Chat Orchestrator ──────────────────────────────────────
+// ── 2. OmniRoute Copilot Chat Orchestration ($0 Cost Policy) ──────────────────
 export async function orchestrateCopilotChat({
   projectContext,
   systemPrompt,
@@ -285,53 +131,24 @@ export async function orchestrateCopilotChat({
     }
   }
 
-  // ── Tier 1: OpenAI ─────────────────────────────────────────────────────────
-  if (getOpenAIKey()) {
-    try {
-      const openAiResult = await callOpenAI({
-        systemPrompt: enrichedSystemPrompt,
-        messages,
-        temperature: 0.3,
-        maxTokens: 1200,
-        timeoutMs: 10000,
-      });
+  // Execute purely via OmniRoute ($0 Free Tier Cascade)
+  const omniResult = await omniRouteGenerate({
+    systemPrompt: enrichedSystemPrompt,
+    messages,
+    temperature: 0.3,
+    maxTokens: 1200,
+  });
 
-      if (openAiResult.content) {
-        return {
-          replyText: openAiResult.content,
-          provider: "openai",
-          tokensUsed: openAiResult.tokensUsed,
-        };
-      }
-    } catch (err) {
-      console.warn(`[aiOrchestrator] Tier 1 (OpenAI) failed: ${err.message}. Falling back to Tier 2 (Gemini).`);
-    }
+  if (omniResult && omniResult.content) {
+    return {
+      replyText: omniResult.content,
+      provider: omniResult.provider,
+      model: omniResult.model,
+      tokensUsed: omniResult.tokensUsed,
+    };
   }
 
-  // ── Tier 2: Gemini ─────────────────────────────────────────────────────────
-  if (getGeminiKey()) {
-    try {
-      const geminiResult = await callGemini({
-        systemPrompt: enrichedSystemPrompt,
-        messages,
-        temperature: 0.3,
-        maxTokens: 1200,
-        timeoutMs: 10000,
-      });
-
-      if (geminiResult.content) {
-        return {
-          replyText: geminiResult.content,
-          provider: "gemini",
-          tokensUsed: geminiResult.tokensUsed,
-        };
-      }
-    } catch (err) {
-      console.warn(`[aiOrchestrator] Tier 2 (Gemini) failed: ${err.message}. Falling back to Tier 3 (Deterministic Fallback).`);
-    }
-  }
-
-  // ── Tier 3: Deterministic Fallback ─────────────────────────────────────────
+  // Fallback to local deterministic engine ($0.00 local compute)
   console.log(`[aiOrchestrator] Tier 3 (Deterministic Engine) executing for intent: ${detectedIntent}`);
   const fallbackText = generateDeterministicCopilotAnswer(
     detectedIntent,
@@ -344,11 +161,12 @@ export async function orchestrateCopilotChat({
   return {
     replyText: fallbackText,
     provider: "deterministic",
+    model: "local_heuristic_engine",
     tokensUsed: { prompt: null, completion: null, total: null },
   };
 }
 
-// ── 5. 3-Tier Project Analysis Orchestrator ──────────────────────────────────
+// ── 3. OmniRoute Project Analysis Orchestration ($0 Cost Policy) ─────────────
 export async function orchestrateProjectAnalysis({
   projectContext,
   systemPrompt,
@@ -356,58 +174,30 @@ export async function orchestrateProjectAnalysis({
 }) {
   const messages = [{ role: "user", content: userPrompt }];
 
-  // ── Tier 1: OpenAI ─────────────────────────────────────────────────────────
-  if (getOpenAIKey()) {
-    try {
-      const openAiResult = await callOpenAI({
-        systemPrompt,
-        messages,
-        responseFormat: "json_object",
-        temperature: 0.2,
-        maxTokens: 2500,
-        timeoutMs: 14000,
-      });
+  const omniResult = await omniRouteGenerate({
+    systemPrompt,
+    messages,
+    responseFormat: "json_object",
+    temperature: 0.2,
+    maxTokens: 2500,
+  });
 
-      if (openAiResult.content) {
-        const parsed = JSON.parse(openAiResult.content);
-        return {
-          data: parsed,
-          provider: "openai",
-          tokensUsed: openAiResult.tokensUsed,
-        };
-      }
-    } catch (err) {
-      console.warn(`[aiOrchestrator] Analysis Tier 1 (OpenAI) failed: ${err.message}. Trying Tier 2 (Gemini).`);
+  if (omniResult && omniResult.content) {
+    try {
+      let clean = omniResult.content.replace(/^```json\s*/i, "").replace(/\s*```$/i, "").trim();
+      const parsed = JSON.parse(clean);
+      return {
+        data: parsed,
+        provider: omniResult.provider,
+        model: omniResult.model,
+        tokensUsed: omniResult.tokensUsed,
+      };
+    } catch (parseErr) {
+      console.warn("[aiOrchestrator] Failed to parse JSON from OmniRoute response:", parseErr.message);
     }
   }
 
-  // ── Tier 2: Gemini ─────────────────────────────────────────────────────────
-  if (getGeminiKey()) {
-    try {
-      const geminiResult = await callGemini({
-        systemPrompt,
-        messages,
-        responseFormat: "json_object",
-        temperature: 0.2,
-        maxTokens: 2500,
-        timeoutMs: 14000,
-      });
-
-      if (geminiResult.content) {
-        // Strip markdown fences if present
-        let clean = geminiResult.content.replace(/^```json\s*/i, "").replace(/\s*```$/i, "").trim();
-        const parsed = JSON.parse(clean);
-        return {
-          data: parsed,
-          provider: "gemini",
-          tokensUsed: geminiResult.tokensUsed,
-        };
-      }
-    } catch (err) {
-      console.warn(`[aiOrchestrator] Analysis Tier 2 (Gemini) failed: ${err.message}. Trying Tier 3 (Heuristic).`);
-    }
-  }
-
-  // Tier 3: Heuristic will be invoked by projectIntelligence.js
+  // Tier 3: Deterministic heuristic engine in projectIntelligence.js will handle fallback
   return null;
 }
+

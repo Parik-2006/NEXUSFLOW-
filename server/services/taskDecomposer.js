@@ -49,8 +49,7 @@ import { buildProjectContext } from "./projectIntelligence.js";
 import { computePriorityScore } from "../algorithms/greedyScheduler.js";
 import { buildGraph, topologicalSort as topoSortGraph } from "../algorithms/graphTraversal.js";
 import { boyerMooreSearch } from "../algorithms/taskOptimiser.js";
-
-const OPENAI_KEY = process.env.OPENAI_API_KEY;
+import { omniRouteGenerate } from "./omniRoute.js";
 
 // ── 1. Build Task Generation Context ──────────────────────────────────────────
 export async function buildTaskGenerationContext(projectId, teamId, options = {}) {
@@ -541,34 +540,23 @@ CRITICAL RULES:
 
       const userMessage = `Generate ${mode} tasks for "${context.title}". ${prompt ? `User instruction: ${prompt}` : ""}`;
 
-      const res = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${OPENAI_KEY}`,
-        },
-        body: JSON.stringify({
-          model: "gpt-4o-mini",
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userMessage },
-          ],
-          temperature: 0.2,
-        }),
+      const omniResult = await omniRouteGenerate({
+        systemPrompt,
+        messages: [{ role: "user", content: userMessage }],
+        responseFormat: "json_object",
+        temperature: 0.2,
+        maxTokens: 2500,
       });
 
-      if (res.ok) {
-        const json = await res.json();
-        const content = json.choices?.[0]?.message?.content;
-        if (content) {
-          const parsed = JSON.parse(content);
-          rawTasks = validateDecomposedTasks(parsed);
-        }
+      if (omniResult && omniResult.content) {
+        let clean = omniResult.content.replace(/^```json\s*/i, "").replace(/\s*```$/i, "").trim();
+        const parsed = JSON.parse(clean);
+        rawTasks = validateDecomposedTasks(parsed);
       } else {
         rawTasks = generateHeuristicProjectTasks(context, { mode, phase, focusedTask });
       }
     } catch (err) {
+      console.warn("[taskDecomposer] OmniRoute generation failed, using heuristic fallback:", err.message);
       rawTasks = generateHeuristicProjectTasks(context, { mode, phase, focusedTask });
     }
   } else {

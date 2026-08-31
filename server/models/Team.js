@@ -2,12 +2,12 @@ import mongoose from "mongoose";
 
 const SkillProfileSchema = new mongoose.Schema(
   {
-    frontend: { type: Number, default: 5, min: 0, max: 10 },
-    backend:  { type: Number, default: 5, min: 0, max: 10 },
-    devops:   { type: Number, default: 5, min: 0, max: 10 },
-    design:   { type: Number, default: 5, min: 0, max: 10 },
-    ml:       { type: Number, default: 5, min: 0, max: 10 },
-    testing:  { type: Number, default: 5, min: 0, max: 10 },
+    frontend: { type: Number, default: 5, min: 1, max: 10 },
+    backend:  { type: Number, default: 5, min: 1, max: 10 },
+    devops:   { type: Number, default: 5, min: 1, max: 10 },
+    design:   { type: Number, default: 5, min: 1, max: 10 },
+    ml:       { type: Number, default: 5, min: 1, max: 10 },
+    testing:  { type: Number, default: 5, min: 1, max: 10 },
   },
   { _id: false }
 );
@@ -57,6 +57,7 @@ const TeamSettingsSchema = new mongoose.Schema(
 const TeamSchema = new mongoose.Schema(
   {
     name:      { type: String, required: true },
+    ownerId:   { type: mongoose.Schema.Types.ObjectId, ref: "User", index: true },
     logo:      { type: String, default: "" },        // base64 data URL team logo (fallback: initials badge)
     settings:  { type: TeamSettingsSchema, default: () => ({}) },
     projectTitle:       { type: String, default: "" },

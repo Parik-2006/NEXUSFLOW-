@@ -1,4 +1,4 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, Pressable, ScrollView } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -8,39 +8,54 @@ import { useToast } from "@/components/feedback";
 import { colors, spacing, radius, font, shadow, layout } from "@/theme";
 
 const HIGHLIGHTS = [
-  { icon: "sparkles-outline", text: "AI turns a project brief into a ready backlog" },
-  { icon: "git-network-outline", text: "Smart sprint, dependency & assignment planning" },
-  { icon: "people-outline", text: "Real-time collaboration for your whole team" },
+  { icon: "shield-checkmark-outline", text: "Production-grade authentication & strict team isolation" },
+  { icon: "sparkles-outline", text: "AI-driven project decomposition, guidance & copilot" },
+  { icon: "git-network-outline", text: "DAA algorithm-powered sprint & dependency planning" },
 ] as const;
 
-export default function Login() {
-  const { signIn } = useAuth();
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+export default function Signup() {
+  const { signUp } = useAuth();
   const router = useRouter();
   const toast = useToast();
+
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const onSubmit = async () => {
-    if (!email.trim()) {
-      setErrorMsg("Please enter your email address.");
-      toast("Enter your email to continue", "error");
+    if (!name.trim()) {
+      setErrorMsg("Please enter your full name.");
+      toast("Name is required", "error");
       return;
     }
-    if (!password) {
-      setErrorMsg("Please enter your password.");
-      toast("Enter your password to continue", "error");
+    if (!email.trim() || !EMAIL_REGEX.test(email.trim())) {
+      setErrorMsg("Please enter a valid email address.");
+      toast("Valid email is required", "error");
+      return;
+    }
+    if (!password || password.length < 6) {
+      setErrorMsg("Password must be at least 6 characters long.");
+      toast("Password too short (min 6 chars)", "error");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setErrorMsg("Passwords do not match.");
+      toast("Passwords do not match", "error");
       return;
     }
 
     setBusy(true);
     setErrorMsg(null);
     try {
-      await signIn(email.trim(), password);
-      toast("Welcome back!", "success");
+      await signUp(name.trim(), email.trim(), password, confirmPassword);
+      toast("Account created successfully! Welcome to NexusFlow.", "success");
     } catch (e: any) {
-      const msg = e.message ?? "Sign in failed";
+      const msg = e.message ?? "Registration failed";
       setErrorMsg(msg);
       toast(msg, "error");
     } finally {
@@ -59,10 +74,10 @@ export default function Login() {
                 <View style={s.logo}><Ionicons name="git-network" size={24} color="#fff" /></View>
                 <Text style={s.wordmark}>NexusFlow</Text>
               </View>
-              <Text style={s.heroTitle}>Plan less. Ship more.</Text>
+              <Text style={s.heroTitle}>Create your account.</Text>
               <Text style={s.heroSub}>
-                The AI project workspace that plans your sprints, untangles
-                dependencies and assigns work to the right people — automatically.
+                Join NEXUSFLOW to plan sprints with DAA algorithms, collaborate on
+                isolated team projects, and build with Project AI.
               </Text>
               <View style={{ gap: spacing.md, marginTop: spacing.lg }}>
                 {HIGHLIGHTS.map((h) => (
@@ -76,8 +91,8 @@ export default function Login() {
 
             {/* Auth card */}
             <View style={s.card}>
-              <Text style={font.h2}>Welcome back</Text>
-              <Text style={s.cardSub}>Sign in to your workspace</Text>
+              <Text style={font.h2}>Create your account</Text>
+              <Text style={s.cardSub}>Set up your personal workspace profile</Text>
 
               {errorMsg && (
                 <View style={s.errorBanner}>
@@ -87,6 +102,14 @@ export default function Login() {
               )}
 
               <View style={{ gap: spacing.md, marginTop: spacing.md }}>
+                <Field
+                  label="Full Name"
+                  icon="person-outline"
+                  placeholder="Alex Morgan"
+                  value={name}
+                  onChangeText={(v) => { setName(v); setErrorMsg(null); }}
+                  onSubmitEditing={onSubmit}
+                />
                 <Field
                   label="Email"
                   icon="mail-outline"
@@ -101,23 +124,32 @@ export default function Login() {
                 <Field
                   label="Password"
                   icon="lock-closed-outline"
-                  placeholder="••••••••"
+                  placeholder="At least 6 characters"
                   passwordToggle
                   value={password}
                   onChangeText={(v) => { setPassword(v); setErrorMsg(null); }}
                   onSubmitEditing={onSubmit}
                 />
+                <Field
+                  label="Confirm Password"
+                  icon="shield-checkmark-outline"
+                  placeholder="Repeat your password"
+                  passwordToggle
+                  value={confirmPassword}
+                  onChangeText={(v) => { setConfirmPassword(v); setErrorMsg(null); }}
+                  onSubmitEditing={onSubmit}
+                />
 
-                <Button title="Login" icon="arrow-forward" onPress={onSubmit} loading={busy} style={{ marginTop: 4 }} />
+                <Button title="Create Account" icon="arrow-forward" onPress={onSubmit} loading={busy} style={{ marginTop: 4 }} />
               </View>
 
-              <View style={s.divider}><View style={s.line} /><Text style={s.dividerTxt}>Don't have an account?</Text><View style={s.line} /></View>
+              <View style={s.divider}><View style={s.line} /><Text style={s.dividerTxt}>Already have an account?</Text><View style={s.line} /></View>
               <Pressable
-                style={s.createBtn}
-                onPress={() => router.push("/(auth)/signup" as any)}
+                style={s.loginBtn}
+                onPress={() => router.push("/(auth)/login" as any)}
                 hitSlop={8}
               >
-                <Text style={s.createBtnTxt}>Create Account</Text>
+                <Text style={s.loginBtnTxt}>Login</Text>
               </Pressable>
             </View>
           </View>
@@ -143,24 +175,19 @@ const s = StyleSheet.create({
   highlightTxt: { flex: 1, fontSize: 13.5, color: colors.text, fontWeight: "500" },
 
   card: {
-    width: "100%", maxWidth: 400, backgroundColor: colors.surface,
+    width: "100%", maxWidth: 420, backgroundColor: colors.surface,
     borderRadius: radius.xl, padding: spacing.xl, borderWidth: 1, borderColor: colors.border,
     ...(shadow.lg as object),
   },
   cardSub: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
 
-  rowBetween: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  remember: { flexDirection: "row", alignItems: "center", gap: 8 },
-  checkbox: { width: 20, height: 20, borderRadius: 6, borderWidth: 1.5, borderColor: colors.borderStrong, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface },
-  checkboxOn: { backgroundColor: colors.primary, borderColor: colors.primary },
-  rememberTxt: { fontSize: 13, color: colors.textMuted, fontWeight: "600" },
-  link: { fontSize: 13, color: colors.primary, fontWeight: "700" },
+  errorBanner: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.dangerSoft, padding: spacing.sm, borderRadius: radius.md, marginTop: spacing.sm, borderWidth: 1, borderColor: colors.danger + "33" },
+  errorTxt: { fontSize: 12.5, color: colors.danger, fontWeight: "600", flex: 1 },
 
   divider: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: spacing.lg },
   line: { flex: 1, height: 1, backgroundColor: colors.border },
   dividerTxt: { fontSize: 11, color: colors.textFaint, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.5 },
-  errorBanner: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.dangerSoft, padding: spacing.sm, borderRadius: radius.md, marginTop: spacing.sm, borderWidth: 1, borderColor: colors.danger + "33" },
-  errorTxt: { fontSize: 12.5, color: colors.danger, fontWeight: "600", flex: 1 },
-  createBtn: { alignItems: "center", justifyContent: "center", paddingVertical: 12, borderRadius: radius.md, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.border, marginTop: spacing.md },
-  createBtnTxt: { fontSize: 14, fontWeight: "700", color: colors.primary },
+
+  loginBtn: { alignItems: "center", justifyContent: "center", paddingVertical: 12, borderRadius: radius.md, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.border, marginTop: spacing.md },
+  loginBtnTxt: { fontSize: 14, fontWeight: "700", color: colors.primary },
 });

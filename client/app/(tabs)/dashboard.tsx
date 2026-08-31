@@ -40,12 +40,6 @@ export default function Dashboard() {
   const [showCreate, setShowCreate] = useState(false);
   const [showJoin, setShowJoin] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [myImage, setMyImage] = useState<string | null>(null);
-  useEffect(() => {
-    getItem(`nf_profile_${user?.email ?? "anon"}`).then((raw) => {
-      if (raw) try { setMyImage(JSON.parse(raw).image ?? null); } catch {}
-    });
-  }, [user?.email]);
 
   const stats = useMemo(() => {
     const totalTasks = teams.reduce((s, t) => s + (t.taskCount ?? 0), 0);
@@ -87,9 +81,29 @@ export default function Dashboard() {
               <Text style={s.greeting}>{greeting},</Text>
               <Text style={font.h1}>{user?.name ?? "there"}</Text>
             </View>
-            <Pressable onPress={() => router.push("/(tabs)/profile" as any)} hitSlop={8}>
-              <Avatar name={user?.name ?? "User"} size={46} image={myImage} />
-            </Pressable>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+              <Pressable
+                onPress={() => router.push("/docs" as any)}
+                hitSlop={8}
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 5,
+                  paddingHorizontal: 12,
+                  paddingVertical: 7,
+                  borderRadius: radius.pill,
+                  backgroundColor: colors.surface,
+                  borderWidth: 1,
+                  borderColor: colors.border,
+                }}
+              >
+                <Ionicons name="book-outline" size={15} color={colors.primary} />
+                <Text style={{ fontSize: 12.5, fontWeight: "700", color: colors.primary }}>Docs</Text>
+              </Pressable>
+              <Pressable onPress={() => router.push("/(tabs)/profile" as any)} hitSlop={8}>
+                <Avatar name={user?.name ?? "User"} size={46} image={user?.avatar || null} />
+              </Pressable>
+            </View>
           </View>
 
           {/* Command-center stats */}

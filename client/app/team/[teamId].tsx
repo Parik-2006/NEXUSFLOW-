@@ -4,6 +4,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTeam } from "@/hooks/useTeam";
+import { useAuth } from "@/context/AuthContext";
 import { Avatar, AvatarStack } from "@/components/ui";
 import NotificationCenter from "@/components/NotificationCenter";
 import FloatingBackground from "@/components/FloatingBackground";
@@ -32,27 +33,59 @@ export default function Workspace() {
   const { teamId, tab } = useLocalSearchParams<{ teamId: string; tab?: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { user } = useAuth();
   const { team } = useTeam(teamId);
   const [active, setActive] = useState<TabKey>((tab as TabKey) && TABS.some((t) => t.key === tab) ? (tab as TabKey) : "overview");
 
-  const names = (team?.members ?? []).map((m) => m.name || "Member");
-  const memberImages = (team?.members ?? []).map((m) => m.avatar || null);
+  const otherMembers = (team?.members ?? []).filter(
+    (m) => m.userId && user?.id && m.userId.toString() !== user.id.toString()
+  );
+  const otherNames = otherMembers.map((m) => m.name || "Member");
+  const otherImages = otherMembers.map((m) => m.avatar || null);
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <FloatingBackground />
       {/* Header */}
       <View style={[s.header, { paddingTop: insets.top + 8 }]}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={s.back}>
-          <Ionicons name="chevron-back" size={22} color={colors.text} />
-        </Pressable>
-        <Avatar name={team?.name ?? "Team"} size={36} image={team?.logo} />
-        <View style={{ flex: 1 }}>
-          <Text style={font.h3} numberOfLines={1}>{team?.name ?? "Workspace"}</Text>
-          <Text style={s.headerSub}>{team?.members?.length ?? 0} members · {team?.taskCount ?? 0} tasks</Text>
+        {/* Left region: Team & Project Info */}
+        <View style={s.headerLeft}>
+          <Pressable onPress={() => router.back()} hitSlop={10} style={s.back}>
+            <Ionicons name="chevron-back" size={22} color={colors.text} />
+          </Pressable>
+          <Avatar name={team?.name ?? "Team"} size={36} image={team?.logo} />
+          <View style={{ minWidth: 0, flexShrink: 1 }}>
+            <Text style={font.h3} numberOfLines={1}>{team?.name ?? "Workspace"}</Text>
+            {!!team?.projectTitle && (
+              <Text style={s.projectTitle} numberOfLines={1}>{team.projectTitle}</Text>
+            )}
+            <Text style={s.headerSub} numberOfLines={1}>
+              {(team?.members?.length ?? 0) === 1 ? "1 member" : `${team?.members?.length ?? 0} members`} · {(team?.taskCount ?? 0) === 1 ? "1 task" : `${team?.taskCount ?? 0} tasks`}
+            </Text>
+          </View>
         </View>
-        {names.length > 0 && <AvatarStack names={names} images={memberImages} max={3} />}
-        {teamId && <NotificationCenter teamId={teamId} />}
+
+        {/* Center region: NexusFlow Product Branding */}
+        <View style={s.headerCenter}>
+          <Text style={s.brandTitle} numberOfLines={1}>
+            NexusFlow - A Project Mgmt System
+          </Text>
+        </View>
+
+        {/* Right region: Notification & Profile */}
+        <View style={s.headerRight}>
+          {otherNames.length > 0 && <AvatarStack names={otherNames} images={otherImages} max={3} />}
+          {teamId && <NotificationCenter teamId={teamId} />}
+          <Pressable
+            onPress={() => router.push("/(tabs)/profile" as any)}
+            hitSlop={8}
+            style={s.profileBtn}
+            accessibilityRole="button"
+            accessibilityLabel="User Profile"
+          >
+            <Avatar name={user?.name ?? "User"} size={34} image={user?.avatar || null} />
+          </Pressable>
+        </View>
       </View>
 
       {/* Tab bar */}
@@ -85,11 +118,17 @@ export default function Workspace() {
 }
 
 const s = StyleSheet.create({
-  header: { flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingHorizontal: spacing.lg, paddingBottom: spacing.md, backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.border },
+  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.sm, paddingHorizontal: spacing.lg, paddingBottom: spacing.md, backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.border },
+  headerLeft: { flexDirection: "row", alignItems: "center", gap: spacing.sm, flex: 1, minWidth: 0 },
+  headerCenter: { alignItems: "center", justifyContent: "center", paddingHorizontal: spacing.sm, flexShrink: 0 },
+  brandTitle: { fontSize: 14, fontWeight: "700", color: colors.text, letterSpacing: -0.2, textAlign: "center" },
+  headerRight: { flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 8, flex: 1 },
   back: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: colors.surfaceAlt },
-  headerSub: { fontSize: 12, color: colors.textMuted, marginTop: 1 },
+  projectTitle: { fontSize: 13, fontWeight: "600", color: colors.primary, marginTop: 1 },
+  headerSub: { fontSize: 11, color: colors.textMuted, marginTop: 1 },
   tabBarWrap: { backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.border },
   tabBar: { gap: 8, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm },
   tab: { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 8, paddingHorizontal: 14, borderRadius: radius.pill, borderWidth: 1, borderColor: "transparent", backgroundColor: colors.surfaceAlt },
   tabLabel: { fontSize: 13, fontWeight: "700", color: colors.textFaint },
+  profileBtn: { borderRadius: 17, borderWidth: 1.5, borderColor: colors.border, overflow: "hidden" },
 });

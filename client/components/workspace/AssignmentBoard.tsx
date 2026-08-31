@@ -20,7 +20,7 @@ import { colors, spacing, radius, font, avatarColor } from "@/theme";
 const SKILLS = ["frontend", "backend", "devops", "design", "ml", "testing"];
 
 export default function AssignmentBoard({ teamId }: { teamId: string }) {
-  const { members, loading, addMember, deleteMember, updateMember, setMemberSkill, runAssignment } = useTeam(teamId);
+  const { members, loading, addMember, deleteMember, updateMember, setMemberSkill, updateMemberSkills, runAssignment, inviteMemberByEmail } = useTeam(teamId);
   const toast = useToast();
   const confirm = useConfirm();
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -34,6 +34,40 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
   const [editName, setEditName] = useState("");
   const [removingId, setRemovingId] = useState<string | null>(null);
   const [explain, setExplain] = useState<AlgoEntry[] | null>(null);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviting, setInviting] = useState(false);
+
+  // Skill Matrix Editing State (Fix 2)
+  const [editingSkillsMember, setEditingSkillsMember] = useState<TeamMember | null>(null);
+  const [skillDraft, setSkillDraft] = useState<Record<string, number>>({});
+  const [savingSkills, setSavingSkills] = useState(false);
+
+  const openSkillEdit = (m: TeamMember) => {
+    const currentSkills: Record<string, number> = {};
+    for (const k of SKILLS) {
+      currentSkills[k] = m.skills?.[k] ?? 5;
+    }
+    setSkillDraft(currentSkills);
+    setEditingSkillsMember(m);
+  };
+
+  const handleSaveSkills = async () => {
+    if (!editingSkillsMember) return;
+    const targetUserId = editingSkillsMember.userId || (editingSkillsMember as any)._id || "";
+    if (!targetUserId) {
+      toast("Unable to identify team member.", "error");
+      return;
+    }
+    setSavingSkills(true);
+    const { error } = await updateMemberSkills(targetUserId, skillDraft);
+    setSavingSkills(false);
+    if (error) {
+      toast(error, "error");
+      return;
+    }
+    toast(`Skill matrix updated for ${editingSkillsMember.name || "Member"}!`, "success");
+    setEditingSkillsMember(null);
+  };
 
   // Member lookup for assignment explanations (top skill / fit reasoning).
   const memberById = (id: string) => members.find((m) => m.userId === id);
@@ -58,14 +92,14 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
     if (!opts?.silent) toast("Assignment computed", "success");
   };
 
-  const onAddMember = async () => {
-    if (!name.trim()) { toast("Name required", "error"); return; }
-    const skills: Record<string, number> = {};
-    for (const k of SKILLS) skills[k] = k === primary ? 9 : 3;
-    const { error } = await addMember(name.trim(), skills);
+  const onSendInvite = async () => {
+    if (!inviteEmail.trim()) { toast("Email address is required", "error"); return; }
+    setInviting(true);
+    const { error, message } = await inviteMemberByEmail(inviteEmail.trim());
+    setInviting(false);
     if (error) { toast(error, "error"); return; }
-    toast("Member added", "success");
-    setName(""); setShowAdd(false);
+    toast(message || `Invitation sent to ${inviteEmail.trim()}`, "success");
+    setInviteEmail(""); setShowAdd(false);
   };
 
   // Delete flow: confirm → fade/collapse the card → DELETE member →
@@ -160,9 +194,23 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
       {/* Skill Matrix (Feature 5) — evidence for Branch & Bound */}
       {members.length > 0 && (
         <Card style={{ gap: spacing.sm }}>
-          <Text style={s.sectionLabel}>SKILL MATRIX</Text>
-          <Text style={s.hint}>Taller bars = stronger skill → lower skill-gap cost for tasks demanding that skill.</Text>
-          <SkillMatrix members={members} />
+          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+            <View style={{ flex: 1 }}>
+              <Text style={s.sectionLabel}>SKILL MATRIX (1–10 RATINGS)</Text>
+              <Text style={s.hint}>1 = Beginner · 10 = Expert. Minimizes skill-gap cost for tasks demanding that skill.</Text>
+            </View>
+            <Button
+              title="Edit Skill Matrix"
+              icon="create-outline"
+              variant="secondary"
+              small
+              onPress={() => openSkillEdit(members[0])}
+            />
+          </View>
+          <SkillMatrix
+            members={members}
+            onEditMember={(m) => openSkillEdit(m as TeamMember)}
+          />
         </Card>
       )}
 
@@ -195,44 +243,47 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
                     <Text style={s.memberName}>{m.name}</Text>
                     {top ? <Text style={s.memberSub}>Top skill: {top.k} ({top.v}/10)</Text> : null}
                   </View>
-                  <Badge label={`${m.tasks.length} task${m.tasks.length !== 1 ? "s" : ""}`} color={colors.primary} />
+                  <Badge label={`${m.tasks.length} task${m.tasks.length === 1 ? "" : "s"}`} color={colors.branch} />
                 </View>
-                {m.tasks.map((t, i) => (
-                  <View key={i} style={s.assignBlock}>
-                    <View style={s.assignRow}>
-                      <Ionicons name="arrow-forward" size={14} color={colors.textFaint} />
-                      <Text style={s.assignTitle}>{t.title}</Text>
-                      <Badge label={`gap ${t.cost}`} color={t.cost === 0 ? colors.success : colors.warning} />
+                {m.tasks.length === 0 ? (
+                  <Text style={s.hint}>No tasks assigned (surplus capacity).</Text>
+                ) : (
+                  m.tasks.map((t, idx) => (
+                    <View key={t.title + idx} style={s.assignBlock}>
+                      <View style={s.assignRow}>
+                        <Ionicons name="checkmark-circle" size={15} color={colors.success} />
+                        <Text style={s.assignTitle}>{t.title}</Text>
+                        <Badge label={t.cost === 0 ? "Perfect fit" : `Gap ${t.cost}`} color={t.cost === 0 ? colors.success : colors.warning} />
+                      </View>
+                      <Text style={s.assignReason}>Skill gap {t.cost} vs requirement demand</Text>
                     </View>
-                    <Text style={s.assignReason}>
-                      {t.cost === 0
-                        ? `Perfect fit — ${m.name}'s skills meet every demand (assignment cost 0).`
-                        : `Lowest skill gap available (cost ${t.cost})${top ? ` · strongest in ${top.k} (${top.v}/10)` : ""}.`}
-                    </Text>
-                  </View>
-                ))}
+                  ))
+                )}
               </Card>
             );
           })}
 
-          {/* Cost matrix */}
-          {result.costMatrix?.length > 0 && (
+          {/* Full cost matrix */}
+          {result.costMatrix && result.memberLabels && result.taskLabels && (
             <Card style={{ gap: spacing.sm, marginTop: spacing.md }}>
-              <Text style={s.sectionLabel}>COST MATRIX (member × task · {result.memberLabels.length} × {result.taskLabels.length})</Text>
+              <Text style={s.sectionLabel}>COST MATRIX (MEMBERS × TASKS)</Text>
+              <Text style={s.hint}>Rows = tasks · Cols = members. Cell = skill-gap penalty (0 = ideal).</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                 <View>
                   <View style={s.matrixRow}>
-                    <View style={[s.matrixCell, s.matrixHeadCell]} />
-                    {result.taskLabels.map((tl, j) => (
-                      <View key={j} style={[s.matrixCell, s.matrixHeadCell]}><Text style={s.matrixHeadTxt} numberOfLines={1}>{tl.slice(0, 8)}</Text></View>
+                    <View style={[s.matrixCell, s.matrixHeadCell, { width: 140 }]}><Text style={s.matrixHeadTxt}>Task \ Member</Text></View>
+                    {result.memberLabels.map((lbl, ci) => (
+                      <View key={lbl + ci} style={[s.matrixCell, s.matrixHeadCell]}><Text style={s.matrixHeadTxt} numberOfLines={1}>{lbl}</Text></View>
                     ))}
                   </View>
-                  {result.costMatrix.map((row, i) => (
-                    <View key={i} style={s.matrixRow}>
-                      <View style={[s.matrixCell, s.matrixHeadCell]}><Text style={s.matrixHeadTxt} numberOfLines={1}>{result.memberLabels[i]?.slice(0, 8)}</Text></View>
-                      {row.map((c, j) => (
-                        <View key={j} style={[s.matrixCell, { backgroundColor: c === 0 ? colors.successSoft : c <= 3 ? colors.warningSoft : colors.dangerSoft }]}>
-                          <Text style={s.matrixTxt}>{c}</Text>
+                  {result.taskLabels.map((tLbl, ri) => (
+                    <View key={tLbl + ri} style={s.matrixRow}>
+                      <View style={[s.matrixCell, { width: 140, alignItems: "flex-start", paddingLeft: 6 }]}>
+                        <Text style={s.matrixTxt} numberOfLines={1}>{tLbl}</Text>
+                      </View>
+                      {result.costMatrix[ri]?.map((c, ci) => (
+                        <View key={ci} style={[s.matrixCell, c === 0 && { backgroundColor: colors.successSoft }]}>
+                          <Text style={[s.matrixTxt, c === 0 && { color: colors.success }]}>{c}</Text>
                         </View>
                       ))}
                     </View>
@@ -244,17 +295,72 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
         </FadeIn>
       )}
 
-      <ModalSheet visible={showAdd} onClose={() => setShowAdd(false)} title="Add Member">
-        <Field label="Name" value={name} onChangeText={setName} placeholder="e.g. Dana" />
-        <Text style={s.skillPickLabel}>Primary skill</Text>
-        <View style={s.chipRow}>
-          {SKILLS.map((k) => (
-            <Pressable key={k} onPress={() => setPrimary(k)} style={[s.chip, primary === k && { backgroundColor: colors.primary, borderColor: colors.primary }]}>
-              <Text style={[s.chipTxt, primary === k && { color: "#fff" }]}>{k}</Text>
-            </Pressable>
-          ))}
+      {/* Edit Skills ModalSheet (Fix 2) */}
+      <ModalSheet
+        visible={!!editingSkillsMember}
+        onClose={() => setEditingSkillsMember(null)}
+        title={`Edit Skills — ${editingSkillsMember?.name || "Member"}`}
+      >
+        <Text style={s.hint}>
+          Adjust skill ratings from 1 (Beginner) to 10 (Expert). The Branch & Bound algorithm uses these ratings to calculate optimal task assignments.
+        </Text>
+
+        {members.length > 1 && (
+          <View style={s.memberSelectRow}>
+            <Text style={s.memberSelectLabel}>Teammate:</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+              {members.map((m) => {
+                const isSel = editingSkillsMember?.userId === m.userId;
+                return (
+                  <Pressable
+                    key={m.userId}
+                    style={[s.memberSelectChip, isSel && s.memberSelectChipActive]}
+                    onPress={() => openSkillEdit(m)}
+                  >
+                    <Avatar name={m.name || "Member"} size={18} image={m.avatar} />
+                    <Text style={[s.memberSelectChipText, isSel && { color: "#fff" }]}>
+                      {m.name || "Member"}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          </View>
+        )}
+
+        <View style={{ gap: spacing.md, marginVertical: spacing.md }}>
+          {SKILLS.map((k) => {
+            const val = skillDraft[k] ?? 5;
+            const label = k === "ml" ? "ML / AI" : k.charAt(0).toUpperCase() + k.slice(1);
+            return (
+              <View key={k} style={s.skillEditRow}>
+                <View style={{ width: 84 }}>
+                  <Text style={s.skillEditLabel}>{label}</Text>
+                  <Text style={s.skillRatingText}>{val}/10</Text>
+                </View>
+                <View style={s.skillBarTrack}>
+                  <View style={[s.skillBarFill, { width: `${val * 10}%`, backgroundColor: colors.branch }]} />
+                </View>
+                <Stepper
+                  value={val}
+                  min={1}
+                  max={10}
+                  onChange={(nv) => setSkillDraft((prev) => ({ ...prev, [k]: Math.max(1, Math.min(10, nv)) }))}
+                />
+              </View>
+            );
+          })}
         </View>
-        <Button title="Add member" icon="person-add" onPress={onAddMember} style={{ marginTop: spacing.sm }} />
+        <View style={{ flexDirection: "row", gap: spacing.sm, marginTop: spacing.sm }}>
+          <Button title="Cancel" variant="secondary" onPress={() => setEditingSkillsMember(null)} style={{ flex: 1 }} />
+          <Button title="Save Ratings" icon="checkmark" loading={savingSkills} onPress={handleSaveSkills} style={{ flex: 1 }} />
+        </View>
+      </ModalSheet>
+
+      <ModalSheet visible={showAdd} onClose={() => setShowAdd(false)} title="Invite Teammate by Email">
+        <Text style={s.hint}>Enter the email address of a registered NEXUSFLOW user. They will receive an invitation notification to join this workspace.</Text>
+        <Field label="Teammate Email Address" value={inviteEmail} onChangeText={setInviteEmail} placeholder="teammate@example.com" />
+        <Button title="Send Team Invitation" icon="mail-outline" loading={inviting} onPress={onSendInvite} style={{ marginTop: spacing.sm }} />
       </ModalSheet>
 
       <ModalSheet visible={!!editing} onClose={() => setEditing(null)} title="Edit Member">
@@ -381,4 +487,12 @@ const s = StyleSheet.create({
   chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
   chip: { paddingVertical: 7, paddingHorizontal: 14, borderRadius: 999, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
   chipTxt: { fontSize: 13, fontWeight: "700", color: colors.textMuted, textTransform: "capitalize" },
+  skillEditRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 4 },
+  skillEditLabel: { fontSize: 13, fontWeight: "700", color: colors.text, textTransform: "capitalize" },
+  skillRatingText: { fontSize: 11, fontWeight: "700", color: colors.branch },
+  memberSelectRow: { flexDirection: "row", alignItems: "center", gap: 8, marginVertical: 6 },
+  memberSelectLabel: { fontSize: 12, fontWeight: "700", color: colors.textMuted },
+  memberSelectChip: { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 5, paddingHorizontal: 10, borderRadius: radius.pill, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.border },
+  memberSelectChipActive: { backgroundColor: colors.branch, borderColor: colors.branch },
+  memberSelectChipText: { fontSize: 12, fontWeight: "600", color: colors.text },
 });

@@ -281,11 +281,27 @@ export function Field({
 export function Stepper({ value, onChange, min = 0, max = 999, step = 1, suffix }: {
   value: number; onChange: (n: number) => void; min?: number; max?: number; step?: number; suffix?: string;
 }) {
+  const atMin = value <= min;
+  const atMax = value >= max;
   return (
     <View style={s.stepper}>
-      <Pressable style={s.stepBtn} onPress={() => onChange(Math.max(min, value - step))}><Ionicons name="remove" size={18} color={colors.text} /></Pressable>
+      <Pressable
+        style={[s.stepBtn, atMin && { opacity: 0.35 }]}
+        disabled={atMin}
+        onPress={() => onChange(Math.max(min, value - step))}
+        accessibilityLabel="Decrease value"
+      >
+        <Ionicons name="remove" size={18} color={atMin ? colors.textFaint : colors.text} />
+      </Pressable>
       <Text style={s.stepVal}>{value}{suffix ? ` ${suffix}` : ""}</Text>
-      <Pressable style={s.stepBtn} onPress={() => onChange(Math.min(max, value + step))}><Ionicons name="add" size={18} color={colors.text} /></Pressable>
+      <Pressable
+        style={[s.stepBtn, atMax && { opacity: 0.35 }]}
+        disabled={atMax}
+        onPress={() => onChange(Math.min(max, value + step))}
+        accessibilityLabel="Increase value"
+      >
+        <Ionicons name="add" size={18} color={atMax ? colors.textFaint : colors.text} />
+      </Pressable>
     </View>
   );
 }

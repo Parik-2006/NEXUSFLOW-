@@ -1,7 +1,11 @@
 import { Router } from "express";
 import mongoose from "mongoose";
 import Team from "../models/Team.js";
+import Project from "../models/Project.js";
 import Task from "../models/Task.js";
+import User from "../models/User.js";
+import Invitation from "../models/Invitation.js";
+import Notification from "../models/Notification.js";
 import { requireAuth } from "../auth.js";
 import { greedySortTasks, computePriorityScore } from "../algorithms/greedyScheduler.js";
 import { assignTasksToMembers } from "../algorithms/branchAndBound.js";
@@ -23,10 +27,59 @@ const MAX_COMPARISON_SIZE = 500;
 // blow up memory. 200h → capacity 2000 columns, comfortably bounded.
 const MAX_SPRINT_HOURS = 200;
 
+// ── Security Helper: Verify user is owner or member of team ──────────────────
+export async function verifyTeamAccess(teamId, user) {
+  if (!mongoose.isValidObjectId(teamId)) return { error: "invalid_team_id", status: 400 };
+  const team = await Team.findById(teamId).lean();
+  if (!team) return { error: "team_not_found", status: 404 };
+
+  const userIdStr = (user?._id || user?.id)?.toString() || "";
+  const userEmail = (user?.email || "").toLowerCase().trim();
+  const userName = (user?.name || "").toLowerCase().trim();
+
+  const isOwner = team.ownerId && team.ownerId.toString() === userIdStr;
+  const isMember = Array.isArray(team.members) && team.members.some((m) => {
+    const mIdStr = (m.userId?._id || m.userId)?.toString() || "";
+    const mName = (m.name || "").toLowerCase().trim();
+    return (
+      (mIdStr && mIdStr === userIdStr) ||
+      (mName && userEmail && mName === userEmail) ||
+      (mName && userName && mName === userName)
+    );
+  });
+
+  // If team has no owner and no members (legacy data), allow access
+  const isLegacy = !team.ownerId && (!team.members || team.members.length === 0);
+
+  if (!isOwner && !isMember && !isLegacy) {
+    return { error: "Forbidden: You are not a member of this team.", status: 403 };
+  }
+
+  return { team };
+}
+
 // ── GET /api/teams ────────────────────────────────────────────────────────────
-router.get("/teams", requireAuth, async (_req, res) => {
+// STRICT USER ISOLATION: Return ONLY teams where the user is owner or a member
+router.get("/teams", requireAuth, async (req, res) => {
   try {
-    const teams = await Team.find().lean();
+    const userId = req.user?._id || req.user?.id;
+    const userEmail = req.user?.email?.toLowerCase()?.trim();
+    const userName = req.user?.name?.trim();
+
+    const conditions = [];
+    if (userId && mongoose.isValidObjectId(userId)) {
+      conditions.push({ ownerId: userId });
+      conditions.push({ "members.userId": userId });
+    }
+    if (userEmail) {
+      conditions.push({ "members.name": userEmail });
+    }
+    if (userName) {
+      conditions.push({ "members.name": userName });
+    }
+
+    const filter = conditions.length > 0 ? { $or: conditions } : { _id: null };
+    const teams = await Team.find(filter).sort({ updatedAt: -1 }).lean();
     res.json(teams);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -37,8 +90,19 @@ router.get("/teams", requireAuth, async (_req, res) => {
 // Single team (with members) for the workspace / assignment board.
 router.get("/teams/:teamId", requireAuth, async (req, res) => {
   try {
-    const team = await Team.findById(req.params.teamId).lean();
-    if (!team) return res.status(404).json({ error: "team_not_found" });
+    const authCheck = await verifyTeamAccess(req.params.teamId, req.user);
+    if (authCheck.error) return res.status(authCheck.status).json({ error: authCheck.error });
+    const team = { ...authCheck.team };
+
+    // Dynamically resolve projectTitle from linked active Project if not explicitly populated
+    if (!team.projectTitle && team.activeProjectId) {
+      const proj = await Project.findById(team.activeProjectId).select("title").lean();
+      if (proj?.title) team.projectTitle = proj.title;
+    } else if (!team.projectTitle) {
+      const proj = await Project.findOne({ teamId: team._id }).sort({ updatedAt: -1 }).select("title").lean();
+      if (proj?.title) team.projectTitle = proj.title;
+    }
+
     res.json(team);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -53,16 +117,26 @@ router.post("/teams", requireAuth, async (req, res) => {
     const { name, members = [], tasks = [], projectTitle = "", projectDescription = "", logo = "", creatorImage = "" } = req.body ?? {};
     if (!name || !name.trim()) return res.status(400).json({ error: "Team name is required." });
 
-    const oid = () => new mongoose.Types.ObjectId();
+    const creatorId = mongoose.isValidObjectId(req.user?.id)
+      ? new mongoose.Types.ObjectId(req.user.id)
+      : new mongoose.Types.ObjectId();
+
     const creator = {
-      userId: oid(),
+      userId: creatorId,
       name: req.user?.name || req.user?.email || "You",
-      avatar: typeof creatorImage === "string" ? creatorImage : "",
+      avatar: typeof creatorImage === "string" && creatorImage ? creatorImage : (req.user?.avatar || ""),
+      role: "leader",
       skills: normalizeSkills(req.body.creatorSkills),
     };
     const extraMembers = (Array.isArray(members) ? members : [])
       .filter((m) => m && (m.name?.trim()))
-      .map((m) => ({ userId: oid(), name: m.name.trim(), avatar: typeof m.avatar === "string" ? m.avatar : "", skills: normalizeSkills(m.skills) }));
+      .map((m) => ({
+        userId: mongoose.isValidObjectId(m.userId) ? new mongoose.Types.ObjectId(m.userId) : new mongoose.Types.ObjectId(),
+        name: m.name.trim(),
+        avatar: typeof m.avatar === "string" ? m.avatar : "",
+        role: m.role || "member",
+        skills: normalizeSkills(m.skills),
+      }));
 
     // Build the starter backlog. When a project description exists we DECOMPOSE
     // it into a grouped, professional backlog (Planning / Backend / Frontend / …)
@@ -87,6 +161,7 @@ router.post("/teams", requireAuth, async (req, res) => {
 
     const team = await Team.create({
       name: name.trim(),
+      ownerId: creatorId,
       logo: typeof logo === "string" ? logo : "",
       projectTitle: String(projectTitle).trim(),
       projectDescription: String(projectDescription).trim(),
@@ -111,12 +186,33 @@ router.post("/teams", requireAuth, async (req, res) => {
 // Add a member. Body: { name, skills? }
 router.post("/teams/:teamId/members", requireAuth, async (req, res) => {
   try {
-    const { name, skills, avatar = "" } = req.body ?? {};
+    const authCheck = await verifyTeamAccess(req.params.teamId, req.user);
+    if (authCheck.error) return res.status(authCheck.status).json({ error: authCheck.error });
+
+    let { name, skills, avatar = "", role = "member" } = req.body ?? {};
     if (!name || !name.trim()) return res.status(400).json({ error: "Member name is required." });
+
+    const trimmedName = name.trim();
+    let memberUserId = new mongoose.Types.ObjectId();
+
+    // Check if member corresponds to an existing registered user
+    const existingUser = await User.findOne({
+      $or: [
+        { email: trimmedName.toLowerCase() },
+        { name: trimmedName },
+      ],
+    }).lean();
+
+    if (existingUser) {
+      memberUserId = existingUser._id;
+      if (!avatar && existingUser.avatar) avatar = existingUser.avatar;
+    }
+
     const member = {
-      userId: new mongoose.Types.ObjectId(),
-      name: name.trim(),
+      userId: memberUserId,
+      name: trimmedName,
       avatar: typeof avatar === "string" ? avatar : "",
+      role: typeof role === "string" ? role : "member",
       skills: normalizeSkills(skills),
     };
     const team = await Team.findByIdAndUpdate(
@@ -131,11 +227,244 @@ router.post("/teams/:teamId/members", requireAuth, async (req, res) => {
   }
 });
 
+// ── POST /api/teams/:teamId/invitations ───────────────────────────────────────
+// GitHub-like Email Teammate Invitation Flow (Fix 4)
+router.post("/teams/:teamId/invitations", requireAuth, async (req, res) => {
+  try {
+    const authCheck = await verifyTeamAccess(req.params.teamId, req.user);
+    if (authCheck.error) return res.status(authCheck.status).json({ error: authCheck.error });
+
+    const team = authCheck.team;
+    const { email, role = "member" } = req.body ?? {};
+    if (!email || !String(email).trim()) {
+      return res.status(400).json({ error: "Email address is required to invite a teammate." });
+    }
+
+    const normalizedEmail = String(email).toLowerCase().trim();
+
+    // 1. Verify target user exists in NEXUSFLOW
+    const targetUser = await User.findOne({ email: normalizedEmail }).lean();
+    if (!targetUser) {
+      return res.status(404).json({
+        error: "User not registered. They need to create a NEXUSFLOW account before they can accept a team invitation.",
+      });
+    }
+
+    const targetUserIdStr = targetUser._id.toString();
+
+    // 2. Check if already an active member of this team
+    const alreadyMember =
+      (team.ownerId && team.ownerId.toString() === targetUserIdStr) ||
+      (Array.isArray(team.members) &&
+        team.members.some((m) => (m.userId?._id || m.userId)?.toString() === targetUserIdStr));
+
+    if (alreadyMember) {
+      return res.status(400).json({ error: "User is already a member of this team." });
+    }
+
+    // 3. Check for existing pending invitation
+    const existingInv = await Invitation.findOne({
+      teamId: team._id,
+      invitedUserId: targetUser._id,
+      status: "pending",
+    }).lean();
+
+    if (existingInv) {
+      return res.status(400).json({ error: "An invitation is already pending for this user." });
+    }
+
+    // 4. Create Invitation
+    const inviterId = req.user._id || req.user.id;
+    const inviterName = req.user.name || req.user.email || "Teammate";
+    const invitation = await Invitation.create({
+      teamId: team._id,
+      teamName: team.name,
+      inviterId,
+      inviterName,
+      inviterEmail: req.user.email || "",
+      invitedUserId: targetUser._id,
+      invitedEmail: targetUser.email,
+      role: typeof role === "string" ? role : "member",
+      status: "pending",
+    });
+
+    // 5. Create Notification for invited user
+    await Notification.create({
+      userId: targetUser._id,
+      type: "team_invitation",
+      title: "Team Collaboration Invitation",
+      message: `Team "${team.name}" invited you to collaborate.`,
+      data: {
+        teamId: team._id,
+        teamName: team.name,
+        invitationId: invitation._id,
+        inviterName,
+      },
+      status: "unread",
+    });
+
+    res.status(201).json({
+      success: true,
+      message: `Invitation sent to ${targetUser.email}`,
+      invitation,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /api/invitations ──────────────────────────────────────────────────────
+// Returns all pending invitations for the authenticated user.
+router.get("/invitations", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user._id || req.user.id;
+    const invitations = await Invitation.find({
+      invitedUserId: userId,
+      status: "pending",
+    }).sort({ createdAt: -1 }).lean();
+    res.json(invitations);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/invitations/:invitationId/accept ────────────────────────────────
+// Accepts team invitation and adds user to team members.
+router.post("/invitations/:invitationId/accept", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user._id || req.user.id;
+    const inv = await Invitation.findById(req.params.invitationId);
+    if (!inv) return res.status(404).json({ error: "Invitation not found." });
+
+    if (inv.invitedUserId.toString() !== userId.toString()) {
+      return res.status(403).json({ error: "Forbidden: You are not the recipient of this invitation." });
+    }
+
+    if (inv.status !== "pending") {
+      return res.status(400).json({ error: `Invitation is already ${inv.status}.` });
+    }
+
+    const team = await Team.findById(inv.teamId);
+    if (!team) return res.status(404).json({ error: "Team no longer exists." });
+
+    // Add user to team.members if not already present
+    const isMember = team.members.some((m) => (m.userId?._id || m.userId)?.toString() === userId.toString());
+    if (!isMember) {
+      team.members.push({
+        userId,
+        name: req.user.name || req.user.email,
+        avatar: req.user.avatar || "",
+        role: inv.role || "member",
+        skills: { frontend: 5, backend: 5, devops: 5, design: 5, ml: 5, testing: 5 },
+        capacity: 40,
+        assignedLoad: 0,
+      });
+      await team.save();
+    }
+
+    inv.status = "accepted";
+    await inv.save();
+
+    // Mark corresponding notification as read
+    await Notification.updateMany(
+      { userId, "data.invitationId": inv._id },
+      { $set: { read: true, status: "read" } }
+    );
+
+    // Notify inviter of acceptance
+    await Notification.create({
+      userId: inv.inviterId,
+      type: "invitation_accepted",
+      title: "Invitation Accepted",
+      message: `${req.user.name || req.user.email} accepted your invitation to join ${team.name}.`,
+      data: { teamId: team._id, teamName: team.name },
+      status: "unread",
+    });
+
+    res.json({
+      success: true,
+      message: `You have joined team "${team.name}".`,
+      teamId: team._id,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/invitations/:invitationId/reject ────────────────────────────────
+// Rejects team invitation.
+router.post("/invitations/:invitationId/reject", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user._id || req.user.id;
+    const inv = await Invitation.findById(req.params.invitationId);
+    if (!inv) return res.status(404).json({ error: "Invitation not found." });
+
+    if (inv.invitedUserId.toString() !== userId.toString()) {
+      return res.status(403).json({ error: "Forbidden: You are not the recipient of this invitation." });
+    }
+
+    if (inv.status !== "pending") {
+      return res.status(400).json({ error: `Invitation is already ${inv.status}.` });
+    }
+
+    inv.status = "rejected";
+    await inv.save();
+
+    // Mark corresponding notification as read
+    await Notification.updateMany(
+      { userId, "data.invitationId": inv._id },
+      { $set: { read: true, status: "read" } }
+    );
+
+    res.json({
+      success: true,
+      message: "Invitation rejected.",
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /api/notifications ────────────────────────────────────────────────────
+// Returns user's notifications.
+router.get("/notifications", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user._id || req.user.id;
+    const notifs = await Notification.find({ userId })
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .lean();
+    res.json(notifs);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── PATCH /api/notifications/:id/read ─────────────────────────────────────────
+// Marks a single notification as read.
+router.patch("/notifications/:id/read", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user._id || req.user.id;
+    const notif = await Notification.findOneAndUpdate(
+      { _id: req.params.id, userId },
+      { $set: { read: true, status: "read" } },
+      { new: true, lean: true }
+    );
+    if (!notif) return res.status(404).json({ error: "Notification not found." });
+    res.json(notif);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── PATCH /api/teams/:teamId ──────────────────────────────────────────────────
 // Update team name / logo / title / description / settings. Additive, no breaking
 // changes; persists instantly so all live views (which re-fetch the team) update.
 router.patch("/teams/:teamId", requireAuth, async (req, res) => {
   try {
+    const authCheck = await verifyTeamAccess(req.params.teamId, req.user);
+    if (authCheck.error) return res.status(authCheck.status).json({ error: authCheck.error });
+
     const update = {};
     const top = ["name", "logo", "projectTitle", "projectDescription"];
     for (const k of top) if (req.body[k] !== undefined) update[k] = req.body[k];
@@ -1617,25 +1946,133 @@ router.patch("/tasks/:taskId/priority", requireAuth, async (req, res) => {
 });
 
 // ── PATCH /api/teams/:teamId/members/:userId/skills ───────────────────────────
-// Branch & Bound: update a member's skill profile.
+// Branch & Bound: update a member's skill profile with 1–10 ratings.
 router.patch("/teams/:teamId/members/:userId/skills", requireAuth, async (req, res) => {
   try {
     const { teamId, userId } = req.params;
-    const VALID = ["frontend", "backend", "devops", "design", "ml", "testing"];
-    const setOps = {};
-    for (const key of VALID) {
-      if (req.body[key] !== undefined) {
-        const val = Number(req.body[key]);
-        if (val < 0 || val > 10) return res.status(400).json({ error: `${key} must be 0-10.` });
-        setOps[`members.$.skills.${key}`] = val;
-      }
+    if (!mongoose.isValidObjectId(teamId)) {
+      return res.status(400).json({ error: "Invalid team ID format." });
     }
-    if (!Object.keys(setOps).length) return res.status(400).json({ error: "No valid skill keys." });
-    const result = await Team.updateOne({ _id: teamId, "members.userId": userId }, { $set: setOps });
-    if (!result.matchedCount) return res.status(404).json({ error: "Team or member not found." });
-    res.json({ ok: true });
+
+    const team = await Team.findById(teamId);
+    if (!team) return res.status(404).json({ error: "Team not found." });
+
+    const userIdStr = (req.user?._id || req.user?.id)?.toString() || "";
+    const userEmail = (req.user?.email || "").toLowerCase().trim();
+    const userName = (req.user?.name || "").toLowerCase().trim();
+
+    const isOwner = team.ownerId && team.ownerId.toString() === userIdStr;
+    const isSelf = userId === userIdStr;
+
+    // Check if user is a leader/admin in this team
+    const isLeader = Array.isArray(team.members) && team.members.some((m) => {
+      const mId = (m.userId?._id || m.userId)?.toString();
+      const mName = (m.name || "").toLowerCase().trim();
+      const matchesUser = (mId && mId === userIdStr) || (userEmail && mName === userEmail) || (userName && mName === userName);
+      return matchesUser && (m.role === "leader" || m.role === "admin" || m.role === "owner");
+    });
+
+    const isMember = Array.isArray(team.members) && team.members.some((m) => {
+      const mId = (m.userId?._id || m.userId)?.toString();
+      const mName = (m.name || "").toLowerCase().trim();
+      return (mId && mId === userIdStr) || (userEmail && mName === userEmail) || (userName && mName === userName);
+    });
+
+    // Permission Policy: Team owners / leaders can edit any teammate's skills.
+    // Regular team members can edit their own skills.
+    // Legacy teams with no owner allow team members to edit.
+    const isLegacyNoOwner = !team.ownerId && isMember;
+    const canEdit = isOwner || isLeader || isSelf || isLegacyNoOwner;
+
+    if (!canEdit) {
+      if (isMember) {
+        return res.status(403).json({ error: "Only team owners or leaders can edit another teammate's skill ratings." });
+      }
+      return res.status(403).json({ error: "Forbidden: You are not a member of this team." });
+    }
+
+    // Find member in team.members
+    let member = (team.members || []).find((m) => {
+      const mId = (m.userId?._id || m.userId)?.toString();
+      const subId = m._id?.toString();
+      return (mId && mId === userId) || (subId && subId === userId);
+    });
+
+    if (!member) {
+      member = (team.members || []).find((m) => m.name && m.name.toLowerCase() === userId.toLowerCase());
+    }
+
+    if (!member) {
+      return res.status(404).json({ error: "Team member not found in this workspace." });
+    }
+
+    // Canonical skill map for robust parsing
+    const KEY_MAP = {
+      frontend: "frontend",
+      frontendskill: "frontend",
+      backend: "backend",
+      backendskill: "backend",
+      devops: "devops",
+      devopsskill: "devops",
+      design: "design",
+      ux: "design",
+      ui: "frontend",
+      ml: "ml",
+      ai: "ml",
+      "ml / ai": "ml",
+      "ai / ml": "ml",
+      testing: "testing",
+      qa: "testing",
+    };
+
+    // Support both nested { skills: { frontend: 8, ... } } and flat { frontend: 8, ... }
+    const rawPayload = req.body?.skills && typeof req.body.skills === "object" ? req.body.skills : (req.body || {});
+    const updatedSkills = {};
+
+    for (const [rawKey, rawVal] of Object.entries(rawPayload)) {
+      const normalizedKey = KEY_MAP[String(rawKey).toLowerCase().trim()];
+      if (!normalizedKey) continue;
+
+      const num = Number(rawVal);
+      if (!Number.isFinite(num) || num < 1 || num > 10) {
+        return res.status(400).json({ error: `Skill '${rawKey}' rating must be a number between 1 and 10.` });
+      }
+      updatedSkills[normalizedKey] = Math.round(num);
+    }
+
+    if (!Object.keys(updatedSkills).length) {
+      return res.status(400).json({ error: "No valid skill ratings provided (expected 1–10 for frontend, backend, devops, design, ml, testing)." });
+    }
+
+    // Ensure member.skills subdocument exists
+    if (!member.skills) {
+      member.skills = { frontend: 5, backend: 5, devops: 5, design: 5, ml: 5, testing: 5 };
+    }
+
+    // Apply updates
+    for (const [k, v] of Object.entries(updatedSkills)) {
+      member.skills[k] = v;
+    }
+
+    team.markModified("members");
+    await team.save();
+
+    const refreshedTeam = await Team.findById(teamId).lean();
+    const refreshedMember = (refreshedTeam.members || []).find((m) => {
+      const mId = (m.userId?._id || m.userId)?.toString();
+      const subId = m._id?.toString();
+      return (mId && mId === userId) || (subId && subId === userId) || (m.name === member.name);
+    });
+
+    res.json({
+      ok: true,
+      message: "Skill ratings updated successfully.",
+      member: refreshedMember,
+      team: refreshedTeam,
+    });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.error("[PATCH /teams/:teamId/members/:userId/skills] error:", e);
+    res.status(500).json({ error: e.message || "Failed to update member skills." });
   }
 });
 

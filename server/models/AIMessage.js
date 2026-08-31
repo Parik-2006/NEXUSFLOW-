@@ -100,7 +100,7 @@ const AIMessageSchema = new mongoose.Schema(
     // Which provider generated this response?
     provider: {
       type: String,
-      enum: ["openai", "gemini", "deterministic"],
+      enum: ["openai", "gemini", "openrouter", "deterministic"],
       default: "deterministic",
     },
 

@@ -37,8 +37,9 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/context/AuthContext";
 import { colors, spacing, radius, font } from "@/theme";
 import { useToast } from "@/components/feedback";
+import { API_BASE_URL } from "@/utils/api";
 
-const API = process.env.EXPO_PUBLIC_API_URL ?? "https://nexusflow-nxeg.onrender.com";
+const API = API_BASE_URL;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
