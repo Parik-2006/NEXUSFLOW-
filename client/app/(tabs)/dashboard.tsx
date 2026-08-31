@@ -5,6 +5,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTeams } from "@/hooks/useTeams";
 import { useAuth } from "@/context/AuthContext";
+import { useInvitations } from "@/hooks/useInvitations";
 import {
   Card, Button, StatCard, SkeletonCard, FAB, ProgressBar, AvatarStack, Badge, Avatar, EmptyState,
 } from "@/components/ui";
@@ -13,6 +14,7 @@ import CreateTeamModal from "@/components/CreateTeamModal";
 import JoinTeamModal from "@/components/JoinTeamModal";
 import TeamMenu from "@/components/TeamMenu";
 import FloatingBackground from "@/components/FloatingBackground";
+import NotificationCenter from "@/components/NotificationCenter";
 import { getItem } from "@/utils/storage";
 import { colors, radius, spacing, font, layout } from "@/theme";
 
@@ -31,7 +33,7 @@ const ONBOARD = [
 ] as const;
 
 export default function Dashboard() {
-  const { teams, loading, error, refetch, createTeam, deleteTeam, joinTeam, updateTeam, generateTasks, addMember, removeMember, updateMember } = useTeams();
+  const { teams, loading, error, refetch, createTeam, deleteTeam, updateTeam, generateTasks, addMember, removeMember, updateMember } = useTeams();
   const { user } = useAuth();
   const router = useRouter();
   const toast = useToast();
@@ -40,6 +42,11 @@ export default function Dashboard() {
   const [showCreate, setShowCreate] = useState(false);
   const [showJoin, setShowJoin] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+
+  // ── Shared invitation state ─────────────────────────────────────────────────
+  // Both the NotificationCenter bell and the JoinTeamModal read from this SAME
+  // hook instance. No duplicate invitation documents are created.
+  const { invitations, pendingCount, acceptInvitation, rejectInvitation, refresh: refreshInvitations } = useInvitations();
 
   const stats = useMemo(() => {
     const totalTasks = teams.reduce((s, t) => s + (t.taskCount ?? 0), 0);
@@ -50,7 +57,16 @@ export default function Dashboard() {
     return { totalTasks, totalDone, members, openTasks, completion };
   }, [teams]);
 
-  const onRefresh = async () => { setRefreshing(true); await refetch(); setRefreshing(false); };
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await Promise.all([refetch(), refreshInvitations()]);
+    setRefreshing(false);
+  };
+
+  // After accepting an invitation, refetch the team list so the new team appears
+  const handleTeamsRefetch = async () => {
+    await refetch();
+  };
 
   const open = (teamId: string, tab?: string) =>
     router.push(`/team/${teamId}${tab ? `?tab=${tab}` : ""}` as any);
@@ -100,6 +116,17 @@ export default function Dashboard() {
                 <Ionicons name="book-outline" size={15} color={colors.primary} />
                 <Text style={{ fontSize: 12.5, fontWeight: "700", color: colors.primary }}>Docs</Text>
               </Pressable>
+
+              {/* ── Global Notification Bell (Dashboard) ── */}
+              <NotificationCenter
+                teamId={undefined}
+                invitations={invitations}
+                pendingCount={pendingCount}
+                onAccept={acceptInvitation}
+                onReject={rejectInvitation}
+                onTeamsRefetch={handleTeamsRefetch}
+              />
+
               <Pressable onPress={() => router.push("/(tabs)/profile" as any)} hitSlop={8}>
                 <Avatar name={user?.name ?? "User"} size={46} image={user?.avatar || null} />
               </Pressable>
@@ -121,7 +148,14 @@ export default function Dashboard() {
           {/* Actions */}
           <View style={s.actions}>
             <Button title="New workspace" icon="add" onPress={() => setShowCreate(true)} style={{ flex: 1 }} />
-            <Button title="Join team" icon="enter-outline" variant="secondary" onPress={() => setShowJoin(true)} style={{ flex: 1 }} />
+            {/* Show invitation badge count on the Join Team button */}
+            <Button
+              title={pendingCount > 0 ? `Join team  (${pendingCount})` : "Join team"}
+              icon="enter-outline"
+              variant="secondary"
+              onPress={() => setShowJoin(true)}
+              style={{ flex: 1 }}
+            />
           </View>
 
           {/* Teams */}
@@ -209,7 +243,16 @@ export default function Dashboard() {
       <FAB icon="add" label="New" onPress={() => setShowCreate(true)} />
 
       <CreateTeamModal visible={showCreate} onClose={() => setShowCreate(false)} onCreate={createTeam} />
-      <JoinTeamModal visible={showJoin} onClose={() => setShowJoin(false)} teams={teams} defaultName={user?.name ?? ""} onJoin={joinTeam} />
+
+      {/* JoinTeamModal now shows pending invitations instead of a team picker */}
+      <JoinTeamModal
+        visible={showJoin}
+        onClose={() => setShowJoin(false)}
+        invitations={invitations}
+        onAccept={acceptInvitation}
+        onReject={rejectInvitation}
+        onTeamsRefetch={handleTeamsRefetch}
+      />
     </View>
   );
 }

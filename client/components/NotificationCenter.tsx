@@ -2,11 +2,14 @@
  * NotificationCenter.tsx — NEXUSFLOW Notification & Collaboration Hub.
  *
  * Surfaces:
- * 1. Live Team Invitations (GitHub-like Accept / Reject actions)
+ * 1. Live Team Invitations (Accept / Reject) — driven by useInvitations hook
+ *    passed from the parent screen (Dashboard or Workspace). This ensures both
+ *    the dashboard bell and the Join Team modal operate on the SAME invitation
+ *    documents without duplication.
  * 2. System Reminders & Deadlines (overdue tasks, approaching deadlines)
- * 3. Server Collaboration Notifications
+ * 3. Server Collaboration Notifications (activity log, acceptance feedback)
  */
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { View, Text, Pressable, StyleSheet, ActivityIndicator } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useReminders, type Severity } from "@/hooks/useReminders";
@@ -15,22 +18,13 @@ import { ModalSheet, useToast } from "@/components/feedback";
 import { EmptyState, Button } from "@/components/ui";
 import { colors, spacing, radius } from "@/theme";
 import { API_BASE_URL } from "@/utils/api";
+import type { PendingInvitation, UseInvitationsResult } from "@/hooks/useInvitations";
 
 const SEV_META: Record<Severity, { color: string; bg: string }> = {
   critical: { color: colors.danger, bg: colors.dangerSoft },
   warning:  { color: colors.warning, bg: colors.warningSoft },
   info:     { color: colors.info, bg: colors.infoSoft },
 };
-
-interface TeamInvitation {
-  _id: string;
-  teamId: string;
-  teamName: string;
-  inviterName: string;
-  invitedEmail: string;
-  status: "pending" | "accepted" | "rejected";
-  createdAt: string;
-}
 
 interface ServerNotification {
   _id: string;
@@ -41,43 +35,54 @@ interface ServerNotification {
   createdAt: string;
 }
 
-export default function NotificationCenter({ teamId }: { teamId?: string }) {
+interface NotificationCenterProps {
+  teamId?: string;
+  /** Shared invitation state from useInvitations hook — passed by the parent screen */
+  invitations: PendingInvitation[];
+  pendingCount: number;
+  onAccept: (invitationId: string) => Promise<{ success?: boolean; teamId?: string; message?: string; error?: string }>;
+  onReject: (invitationId: string) => Promise<{ success?: boolean; message?: string; error?: string }>;
+  /** Called after a successful accept so the team list refreshes */
+  onTeamsRefetch?: () => void;
+}
+
+export default function NotificationCenter({
+  teamId,
+  invitations,
+  pendingCount,
+  onAccept,
+  onReject,
+  onTeamsRefetch,
+}: NotificationCenterProps) {
   const { token, refreshProfile } = useAuth();
   const { reminders, counts } = useReminders(teamId || "");
   const [open, setOpen] = useState(false);
-  const [invitations, setInvitations] = useState<TeamInvitation[]>([]);
   const [serverNotifs, setServerNotifs] = useState<ServerNotification[]>([]);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const toast = useToast();
   const warned = useRef(false);
 
-  // Load server invitations & notifications
-  const loadNotifications = useCallback(async () => {
+  // Load server activity notifications (not invitations — those come from useInvitations)
+  const loadServerNotifs = useCallback(async () => {
     if (!token) return;
     try {
-      const [invRes, notifRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/invitations`, { headers: { Authorization: `Bearer ${token}` } }),
-        fetch(`${API_BASE_URL}/api/notifications`, { headers: { Authorization: `Bearer ${token}` } }),
-      ]);
-
-      if (invRes.ok) {
-        const invData = await invRes.json();
-        setInvitations(Array.isArray(invData) ? invData : []);
-      }
-      if (notifRes.ok) {
-        const notifData = await notifRes.json();
-        setServerNotifs(Array.isArray(notifData) ? notifData : []);
+      const res = await fetch(`${API_BASE_URL}/api/notifications`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setServerNotifs(Array.isArray(data) ? data : []);
       }
     } catch (err) {
-      console.warn("[NotificationCenter] Load error:", err);
+      console.warn("[NotificationCenter] Failed to load server notifications:", err);
     }
   }, [token]);
 
   useEffect(() => {
-    loadNotifications();
-    const interval = setInterval(loadNotifications, 15000);
+    loadServerNotifs();
+    const interval = setInterval(loadServerNotifs, 15000);
     return () => clearInterval(interval);
-  }, [loadNotifications]);
+  }, [loadServerNotifs]);
 
   // One-time toast when overdue work first appears
   useEffect(() => {
@@ -87,25 +92,16 @@ export default function NotificationCenter({ teamId }: { teamId?: string }) {
     }
   }, [counts.critical, toast]);
 
-  // Accept Invitation Action
+  // Accept Invitation
   const handleAccept = async (invId: string) => {
-    if (!token) return;
     setActionLoading(invId);
     try {
-      const res = await fetch(`${API_BASE_URL}/api/invitations/${invId}/accept`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to accept invitation");
-
-      toast(data.message || "Invitation accepted! Team added.", "success");
-      setInvitations((prev) => prev.filter((i) => i._id !== invId));
-      await loadNotifications();
+      const result = await onAccept(invId);
+      if (result.error) throw new Error(result.error);
+      toast(result.message || "Invitation accepted! You joined the team.", "success");
+      await loadServerNotifs();
       await refreshProfile();
-      if (typeof window !== "undefined") {
-        window.location.reload();
-      }
+      onTeamsRefetch?.();
     } catch (err: any) {
       toast(err.message || "Failed to accept invitation", "error");
     } finally {
@@ -113,21 +109,14 @@ export default function NotificationCenter({ teamId }: { teamId?: string }) {
     }
   };
 
-  // Reject Invitation Action
+  // Reject Invitation
   const handleReject = async (invId: string) => {
-    if (!token) return;
     setActionLoading(invId);
     try {
-      const res = await fetch(`${API_BASE_URL}/api/invitations/${invId}/reject`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to reject invitation");
-
+      const result = await onReject(invId);
+      if (result.error) throw new Error(result.error);
       toast("Invitation declined.", "info");
-      setInvitations((prev) => prev.filter((i) => i._id !== invId));
-      await loadNotifications();
+      await loadServerNotifs();
     } catch (err: any) {
       toast(err.message || "Failed to reject invitation", "error");
     } finally {
@@ -135,12 +124,12 @@ export default function NotificationCenter({ teamId }: { teamId?: string }) {
     }
   };
 
-  const totalBadges = counts.total + invitations.length;
-  const badgeColor = invitations.length > 0 ? colors.accent : counts.critical > 0 ? colors.danger : colors.warning;
+  const totalBadges = counts.total + pendingCount;
+  const badgeColor = pendingCount > 0 ? colors.accent : counts.critical > 0 ? colors.danger : colors.warning;
 
   return (
     <>
-      <Pressable onPress={() => setOpen(true)} hitSlop={8} style={s.bell}>
+      <Pressable onPress={() => setOpen(true)} hitSlop={8} style={s.bell} id="notification-bell">
         <Ionicons name="notifications-outline" size={20} color={colors.text} />
         {totalBadges > 0 && (
           <View style={[s.badge, { backgroundColor: badgeColor }]}>
@@ -163,7 +152,10 @@ export default function NotificationCenter({ teamId }: { teamId?: string }) {
                   <View style={{ flex: 1 }}>
                     <Text style={s.invTitle}>Team Invitation</Text>
                     <Text style={s.invMsg}>
-                      <Text style={{ fontWeight: "700", color: colors.text }}>{inv.inviterName || "A teammate"}</Text> invited you to join <Text style={{ fontWeight: "700", color: colors.accent }}>{inv.teamName}</Text>.
+                      <Text style={{ fontWeight: "700", color: colors.text }}>{inv.inviterName || "A teammate"}</Text>
+                      {" invited you to join "}
+                      <Text style={{ fontWeight: "700", color: colors.accent }}>{inv.teamName}</Text>
+                      .
                     </Text>
                   </View>
                 </View>
@@ -207,7 +199,7 @@ export default function NotificationCenter({ teamId }: { teamId?: string }) {
           </View>
         )}
 
-        {/* Section 3: Recent Activity & Notifications */}
+        {/* Section 3: Recent Activity Notifications */}
         {serverNotifs.length > 0 && (
           <View style={{ gap: spacing.sm }}>
             <Text style={s.sectionHeader}>ACTIVITY LOG</Text>

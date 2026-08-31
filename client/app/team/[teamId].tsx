@@ -4,6 +4,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTeam } from "@/hooks/useTeam";
+import { useInvitations } from "@/hooks/useInvitations";
 import { useAuth } from "@/context/AuthContext";
 import { Avatar, AvatarStack } from "@/components/ui";
 import NotificationCenter from "@/components/NotificationCenter";
@@ -34,8 +35,11 @@ export default function Workspace() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
-  const { team } = useTeam(teamId);
+  const { team, refetch: refetchTeam } = useTeam(teamId);
   const [active, setActive] = useState<TabKey>((tab as TabKey) && TABS.some((t) => t.key === tab) ? (tab as TabKey) : "overview");
+
+  // Shared invitation state — same hook as dashboard so bell is always in sync
+  const { invitations, pendingCount, acceptInvitation, rejectInvitation } = useInvitations();
 
   const otherMembers = (team?.members ?? []).filter(
     (m) => m.userId && user?.id && m.userId.toString() !== user.id.toString()
@@ -75,7 +79,16 @@ export default function Workspace() {
         {/* Right region: Notification & Profile */}
         <View style={s.headerRight}>
           {otherNames.length > 0 && <AvatarStack names={otherNames} images={otherImages} max={3} />}
-          {teamId && <NotificationCenter teamId={teamId} />}
+          {teamId && (
+            <NotificationCenter
+              teamId={teamId}
+              invitations={invitations}
+              pendingCount={pendingCount}
+              onAccept={acceptInvitation}
+              onReject={rejectInvitation}
+              onTeamsRefetch={refetchTeam}
+            />
+          )}
           <Pressable
             onPress={() => router.push("/(tabs)/profile" as any)}
             hitSlop={8}
