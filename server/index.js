@@ -201,6 +201,7 @@ app.use("/api", projectRoutes);   // NEXUSFLOW 2.0 — Phase 1 project routes
 
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: [FRONTEND_URL, "http://localhost:8081", "http://localhost:19006"] } });
+app.set("io", io);
 
 // Socket auth middleware: validate handshake token.
 io.use((socket, next) => {
@@ -211,6 +212,13 @@ io.use((socket, next) => {
 });
 
 io.on("connection", (socket) => {
+  const userId = socket.data.user?.id || socket.data.user?._id;
+  if (userId) {
+    socket.join(`user:${userId}`);
+  }
+  if (socket.data.user?.email) {
+    socket.join(`user:${socket.data.user.email.toLowerCase().trim()}`);
+  }
   registerTaskHandlers(io, socket);
   registerAiOrchestrator(io, socket);
 });

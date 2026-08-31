@@ -71,11 +71,19 @@ export default function Dashboard() {
   const open = (teamId: string, tab?: string) =>
     router.push(`/team/${teamId}${tab ? `?tab=${tab}` : ""}` as any);
 
+  const currentUserId = (user?._id || user?.id)?.toString();
+  const isTeamOwner = (t: any) => Boolean(t.ownerId && currentUserId && t.ownerId.toString() === currentUserId);
+
   const onDelete = async (id: string, name: string) => {
-    const ok = await confirm({ title: `Delete "${name}"?`, message: "This permanently removes the team and all its tasks.", confirmLabel: "Delete", destructive: true });
+    const ok = await confirm({
+      title: `Delete "${name}"?`,
+      message: "This permanently removes the workspace and all of its tasks. This action cannot be undone.",
+      confirmLabel: "Delete Workspace",
+      destructive: true,
+    });
     if (!ok) return;
     const { error } = await deleteTeam(id);
-    toast(error ?? "Team deleted", error ? "error" : "success");
+    toast(error ?? "Workspace deleted", error ? "error" : "success");
   };
 
   const greeting = (() => {
@@ -206,6 +214,7 @@ export default function Dashboard() {
                       {names.length > 0 && <AvatarStack names={names} images={memberImages} />}
                       <TeamMenu
                         team={team}
+                        isOwner={isTeamOwner(team)}
                         onUpdate={(patch) => updateTeam(team._id, patch)}
                         onGenerate={(prompt) => generateTasks(team._id, prompt)}
                         onAddMember={(name, skills) => addMember(team._id, name, skills)}
@@ -214,9 +223,11 @@ export default function Dashboard() {
                         onDelete={() => onDelete(team._id, team.name)}
                         onNavigate={(tab) => open(team._id, tab)}
                       />
-                      <Pressable onPress={() => onDelete(team._id, team.name)} hitSlop={8} style={s.trash}>
-                        <Ionicons name="trash-outline" size={18} color={colors.textFaint} />
-                      </Pressable>
+                      {isTeamOwner(team) && (
+                        <Pressable onPress={() => onDelete(team._id, team.name)} hitSlop={8} style={s.trash}>
+                          <Ionicons name="trash-outline" size={18} color={colors.textFaint} />
+                        </Pressable>
+                      )}
                     </Pressable>
 
                     <View style={{ gap: 5 }}>

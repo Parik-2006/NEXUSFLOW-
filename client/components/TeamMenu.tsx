@@ -26,9 +26,10 @@ const PRIORITIES = ["critical", "high", "medium", "low"];
 const GEN_PRESETS = ["Testing", "Frontend", "Backend", "AI/ML", "Deployment"];
 
 export default function TeamMenu({
-  team, onUpdate, onGenerate, onAddMember, onRemoveMember, onUpdateMember, onDelete, onNavigate,
+  team, isOwner = true, onUpdate, onGenerate, onAddMember, onRemoveMember, onUpdateMember, onDelete, onNavigate,
 }: {
   team: Team;
+  isOwner?: boolean;
   onUpdate: (patch: any) => Promise<{ error?: string }>;
   onGenerate: (prompt: string) => Promise<{ error?: string; added?: number }>;
   onAddMember: (name: string, skills?: Record<string, number>) => Promise<{ error?: string }>;
@@ -87,7 +88,7 @@ export default function TeamMenu({
     return o;
   };
 
-  const ACTIONS: { icon: keyof typeof Ionicons.glyphMap; label: string; onPress: () => void; danger?: boolean }[] = [
+  const ALL_ACTIONS: { icon: keyof typeof Ionicons.glyphMap; label: string; onPress: () => void; danger?: boolean; ownerOnly?: boolean }[] = [
     { icon: "create-outline", label: "Edit team name", onPress: () => open("name") },
     { icon: "document-text-outline", label: "Edit description", onPress: () => open("desc") },
     { icon: "image-outline", label: "Change team logo", onPress: () => open("logo") },
@@ -95,8 +96,10 @@ export default function TeamMenu({
     { icon: "add-circle-outline", label: "Add manual task", onPress: () => { setMode(null); onNavigate("tasks"); } },
     { icon: "people-outline", label: "Manage members", onPress: () => open("members") },
     { icon: "settings-outline", label: "Team settings", onPress: () => open("settings") },
-    { icon: "trash-outline", label: "Delete team", danger: true, onPress: () => { setMode(null); onDelete(); } },
+    { icon: "trash-outline", label: "Delete team", danger: true, ownerOnly: true, onPress: () => { setMode(null); onDelete(); } },
   ];
+
+  const ACTIONS = ALL_ACTIONS.filter((a) => !a.ownerOnly || isOwner);
 
   const title = mode === "menu" ? "Team actions"
     : mode === "name" ? "Edit team name"

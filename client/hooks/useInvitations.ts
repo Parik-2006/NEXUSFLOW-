@@ -15,6 +15,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { API_BASE_URL } from "@/utils/api";
 
+import { getSocket } from "@/services/socket";
+
 const API = API_BASE_URL;
 const POLL_INTERVAL_MS = 15_000;
 
@@ -73,12 +75,24 @@ export function useInvitations(): UseInvitationsResult {
     refresh();
   }, [token, refresh]);
 
-  // Polling every 15s
+  // Polling fallback every 15s + Real-time socket events
   useEffect(() => {
     if (!token) return;
     intervalRef.current = setInterval(refresh, POLL_INTERVAL_MS);
+
+    const socket = getSocket(token);
+    const onInvReceived = () => { refresh(); };
+    const onInvUpdated = () => { refresh(); };
+
+    socket.on("invitation:received", onInvReceived);
+    socket.on("invitation:updated", onInvUpdated);
+    socket.on("reconnect", refresh);
+
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
+      socket.off("invitation:received", onInvReceived);
+      socket.off("invitation:updated", onInvUpdated);
+      socket.off("reconnect", refresh);
     };
   }, [token, refresh]);
 

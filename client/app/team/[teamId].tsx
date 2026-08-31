@@ -41,9 +41,19 @@ export default function Workspace() {
   // Shared invitation state — same hook as dashboard so bell is always in sync
   const { invitations, pendingCount, acceptInvitation, rejectInvitation } = useInvitations();
 
-  const otherMembers = (team?.members ?? []).filter(
-    (m) => m.userId && user?.id && m.userId.toString() !== user.id.toString()
-  );
+  const currentUserId = (user?._id || user?.id)?.toString();
+  const currentUserEmail = (user?.email || "").toLowerCase().trim();
+  const currentUserName = (user?.name || "").toLowerCase().trim();
+
+  // STRICT (Fix 1): AvatarStack must NOT contain the currently authenticated user
+  const otherMembers = (team?.members ?? []).filter((m) => {
+    const mUserId = (typeof m.userId === "object" ? (m.userId as any)?._id : m.userId)?.toString();
+    const mName = (m.name || "").toLowerCase().trim();
+    if (mUserId && currentUserId && mUserId === currentUserId) return false;
+    if (currentUserEmail && mName === currentUserEmail) return false;
+    if (currentUserName && mName === currentUserName) return false;
+    return true;
+  });
   const otherNames = otherMembers.map((m) => m.name || "Member");
   const otherImages = otherMembers.map((m) => m.avatar || null);
 

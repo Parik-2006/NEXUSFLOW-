@@ -4,6 +4,8 @@ import Task from "../models/Task.js";
 import { computePriorityScore } from "../algorithms/greedyScheduler.js";
 import { buildGraph, topologicalSort as topoSortGraph } from "../algorithms/graphTraversal.js";
 
+import { verifyTeamAccess } from "../routes/teams.js";
+
 // createdBy is an ObjectId ref. Dev auth uses email as the user id, so only set
 // createdBy when it's actually a valid ObjectId — never crash Mongo validation.
 const validCreator = (v) => (mongoose.isValidObjectId(v) ? v : undefined);
@@ -31,8 +33,27 @@ export async function recomputeAndBroadcast(io, teamId) {
 }
 
 export function registerTaskHandlers(io, socket) {
-  socket.on("room:join",  ({ teamId }) => socket.join(`team:${teamId}`));
-  socket.on("room:leave", ({ teamId }) => socket.leave(`team:${teamId}`));
+  socket.on("room:join", async ({ teamId }, ack) => {
+    try {
+      if (!teamId) {
+        ack?.({ ok: false, error: "Team ID is required." });
+        return;
+      }
+      const access = await verifyTeamAccess(teamId, socket.data.user);
+      if (access.error) {
+        ack?.({ ok: false, error: access.error });
+        return;
+      }
+      socket.join(`team:${teamId}`);
+      ack?.({ ok: true });
+    } catch (e) {
+      ack?.({ ok: false, error: e.message });
+    }
+  });
+
+  socket.on("room:leave", ({ teamId }) => {
+    if (teamId) socket.leave(`team:${teamId}`);
+  });
 
   // ── task:create ────────────────────────────────────────────────────────────
   socket.on("task:create", async (payload, ack) => {

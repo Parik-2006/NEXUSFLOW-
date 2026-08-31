@@ -24,6 +24,7 @@ export type TeamSettings = {
 export type Team = {
   _id: string;
   name: string;
+  ownerId?: string;
   logo?: string;
   settings?: TeamSettings;
   projectTitle?: string;

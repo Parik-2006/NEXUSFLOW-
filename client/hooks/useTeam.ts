@@ -4,9 +4,13 @@
  *   • addMember, setMemberSkill          → enables Branch & Bound
  *   • runAssignment (Branch & Bound)      → POST /assign
  *   • sprintOptimize (0/1 Knapsack)       → POST /sprint-optimize
+ *   • leaveTeam (Member departure)        → POST /leave
+ *   • deleteTeam (Owner only)             → DELETE /teams/:teamId
+ *   • Real-time Socket.IO synchronization for team & member updates
  */
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
+import { getSocket } from "@/services/socket";
 import type { Team, TeamMember } from "@/hooks/useTeams";
 import { API_BASE_URL } from "@/utils/api";
 
@@ -47,13 +51,117 @@ export function useTeam(teamId: string | undefined) {
     if (!teamId) return;
     try {
       const res = await fetch(`${API}/api/teams/${teamId}`, { headers: { Authorization: `Bearer ${token}` } });
-      if (res.ok) setTeam(await res.json());
+      if (res.ok) {
+        setTeam(await res.json());
+      }
     } finally {
       setLoading(false);
     }
   }, [teamId, token]);
 
   useEffect(() => { hydrate(); }, [hydrate]);
+
+  // ── Real-time Socket.IO Subscriptions ──────────────────────────────────────
+  useEffect(() => {
+    if (!teamId || !token) return;
+    const socket = getSocket(token);
+    socket.emit("room:join", { teamId });
+
+    const onMemberAdded = (payload: { teamId: string; member: TeamMember; team?: Team }) => {
+      if (payload.teamId !== teamId) return;
+      if (payload.team) {
+        setTeam(payload.team);
+      } else if (payload.member) {
+        setTeam((prev) => {
+          if (!prev) return prev;
+          const members = prev.members || [];
+          const exists = members.some(
+            (m) =>
+              (m.userId && payload.member.userId && m.userId === payload.member.userId) ||
+              (m.name && payload.member.name && m.name.toLowerCase() === payload.member.name.toLowerCase())
+          );
+          if (exists) return prev;
+          return { ...prev, members: [...members, payload.member] };
+        });
+      }
+    };
+
+    const onMemberRemoved = (payload: { teamId: string; userId: string; team?: Team }) => {
+      if (payload.teamId !== teamId) return;
+      if (payload.team) {
+        setTeam(payload.team);
+      } else {
+        setTeam((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            members: (prev.members || []).filter(
+              (m) => (m.userId || (m as any)._id) !== payload.userId
+            ),
+          };
+        });
+      }
+    };
+
+    const onMemberUpdated = (payload: { teamId: string; userId: string; team?: Team }) => {
+      if (payload.teamId !== teamId) return;
+      if (payload.team) {
+        setTeam(payload.team);
+      } else {
+        hydrate();
+      }
+    };
+
+    const onSkillsUpdated = (payload: { teamId: string; userId: string; skills: Record<string, number>; member?: TeamMember; team?: Team }) => {
+      if (payload.teamId !== teamId) return;
+      if (payload.team) {
+        setTeam(payload.team);
+      } else {
+        setTeam((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            members: (prev.members || []).map((m) =>
+              (m.userId === payload.userId || (m as any)._id === payload.userId)
+                ? { ...m, skills: { ...m.skills, ...payload.skills } }
+                : m
+            ),
+          };
+        });
+      }
+    };
+
+    const onTeamUpdated = (payload: { teamId: string; team?: Team }) => {
+      if (payload.teamId !== teamId) return;
+      if (payload.team) setTeam(payload.team);
+      else hydrate();
+    };
+
+    const onTeamDeleted = (payload: { teamId: string }) => {
+      if (payload.teamId === teamId) {
+        setTeam(null);
+      }
+    };
+
+    socket.on("member:added", onMemberAdded);
+    socket.on("member:removed", onMemberRemoved);
+    socket.on("member:updated", onMemberUpdated);
+    socket.on("member:skills_updated", onSkillsUpdated);
+    socket.on("team:updated", onTeamUpdated);
+    socket.on("team:deleted", onTeamDeleted);
+    socket.on("reconnect", hydrate);
+
+    return () => {
+      socket.emit("room:leave", { teamId });
+      socket.off("member:added", onMemberAdded);
+      socket.off("member:removed", onMemberRemoved);
+      socket.off("member:updated", onMemberUpdated);
+      socket.off("member:skills_updated", onSkillsUpdated);
+      socket.off("team:updated", onTeamUpdated);
+      socket.off("team:deleted", onTeamDeleted);
+      socket.off("reconnect", hydrate);
+    };
+  }, [teamId, token, hydrate]);
 
   const members: TeamMember[] = team?.members ?? [];
 
@@ -85,8 +193,7 @@ export function useTeam(teamId: string | undefined) {
     }
   }, [teamId, token]);
 
-  // Remove a member; server unassigns their tasks. Caller re-runs Branch &
-  // Bound afterwards so the cost matrix / assignments recompute automatically.
+  // Remove a member; server unassigns their tasks.
   const deleteMember = useCallback(async (userId: string): Promise<{ error?: string }> => {
     const res = await fetch(`${API}/api/teams/${teamId}/members/${userId}`, {
       method: "DELETE",
@@ -94,8 +201,43 @@ export function useTeam(teamId: string | undefined) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) return { error: data.error ?? "Failed to delete member" };
-    setTeam(data); // route returns the updated team (member row removed)
+    setTeam(data);
     return {};
+  }, [teamId, token]);
+
+  // Leave Team (for normal members)
+  const leaveTeam = useCallback(async (reason: string, explanation?: string): Promise<{ error?: string }> => {
+    if (!token || !teamId) return { error: "Unauthorized or invalid team" };
+    try {
+      const res = await fetch(`${API}/api/teams/${teamId}/leave`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ reason, explanation }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return { error: data.error || "Failed to leave team" };
+      setTeam(null);
+      return {};
+    } catch (e: any) {
+      return { error: e.message || "Failed to leave team" };
+    }
+  }, [teamId, token]);
+
+  // Delete Team (owner only)
+  const deleteTeam = useCallback(async (): Promise<{ error?: string }> => {
+    if (!token || !teamId) return { error: "Unauthorized or invalid team" };
+    try {
+      const res = await fetch(`${API}/api/teams/${teamId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return { error: data.error || "Failed to delete team" };
+      setTeam(null);
+      return {};
+    } catch (e: any) {
+      return { error: e.message || "Failed to delete team" };
+    }
   }, [teamId, token]);
 
   // Update member name / role (PATCH /members/:userId).
@@ -107,7 +249,7 @@ export function useTeam(teamId: string | undefined) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) return { error: data.error ?? "Failed to update member" };
-    setTeam(data); // route returns the updated team
+    setTeam(data);
     return {};
   }, [teamId, token]);
 
@@ -171,5 +313,20 @@ export function useTeam(teamId: string | undefined) {
     return { result: data };
   }, [teamId, token]);
 
-  return { team, members, loading, refetch: hydrate, addMember, inviteMemberByEmail, deleteMember, updateMember, setMemberSkill, updateMemberSkills, runAssignment, sprintOptimize };
+  return {
+    team,
+    members,
+    loading,
+    refetch: hydrate,
+    addMember,
+    inviteMemberByEmail,
+    deleteMember,
+    leaveTeam,
+    deleteTeam,
+    updateMember,
+    setMemberSkill,
+    updateMemberSkills,
+    runAssignment,
+    sprintOptimize,
+  };
 }

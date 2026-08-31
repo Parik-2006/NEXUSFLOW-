@@ -1,35 +1,54 @@
 /**
  * AssignmentBoard — Branch & Bound optimal task→member assignment.
  *   • Member roster with editable skill profiles (required for a meaningful cost matrix)
- *   • Add / edit / delete members — deletion animates out, then automatically
- *     re-runs Branch & Bound so the cost matrix, assignments and pruning stats
- *     recompute live (demonstrates B&B adapting to resource constraints).
+ *   • Add / edit / delete members
  *   • Run B&B → member-to-task mapping cards + cost matrix + pruning stats
+ *   • FIX 2: Strict skill ownership (edit only own skills) + Teammate Profile view
+ *   • FIX 3: Leave Team (normal members) + Delete Team with exact-name confirmation (owner only)
  */
-import React, { useEffect, useRef, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, Animated } from "react-native";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { View, Text, StyleSheet, ScrollView, Pressable, Animated, TextInput } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 import { useTeam, type AssignResult } from "@/hooks/useTeam";
+import { useAuth } from "@/context/AuthContext";
 import type { TeamMember } from "@/hooks/useTeams";
 import { Card, Button, Badge, Avatar, EmptyState, Field, Stepper } from "@/components/ui";
 import { ModalSheet, useToast, useConfirm } from "@/components/feedback";
-import SkillMatrix from "@/components/workspace/SkillMatrix";
+import SkillMatrix, { type SkillMatrixMember } from "@/components/workspace/SkillMatrix";
 import { WhyButton, AlgoExplainSheet, type AlgoEntry } from "@/components/AlgoExplain";
 import { colors, spacing, radius, font, avatarColor } from "@/theme";
 
-const SKILLS = ["frontend", "backend", "devops", "design", "ml", "testing"];
+const SKILLS = ["frontend", "backend", "devops", "design", "ml", "testing"] as const;
+const SHORT: Record<string, string> = { frontend: "FE", backend: "BE", devops: "Ops", design: "UX", ml: "ML", testing: "QA" };
+
+const LEAVE_REASONS = [
+  { id: "project_completed", label: "Project completed" },
+  { id: "no_longer_working", label: "No longer working on this project" },
+  { id: "team_changed",      label: "Team/project changed" },
+  { id: "not_needed",        label: "Don't need access anymore" },
+  { id: "technical_issues",  label: "Technical issues" },
+  { id: "other",             label: "Other" },
+];
 
 export default function AssignmentBoard({ teamId }: { teamId: string }) {
-  const { members, loading, addMember, deleteMember, updateMember, setMemberSkill, updateMemberSkills, runAssignment, inviteMemberByEmail } = useTeam(teamId);
+  const router = useRouter();
+  const { user } = useAuth();
+  const {
+    team, members, loading,
+    addMember, deleteMember, updateMember,
+    updateMemberSkills, runAssignment, inviteMemberByEmail,
+    leaveTeam, deleteTeam,
+  } = useTeam(teamId);
+
   const toast = useToast();
   const confirm = useConfirm();
+
   const [expanded, setExpanded] = useState<string | null>(null);
   const [result, setResult] = useState<AssignResult | null>(null);
-  const [resultVersion, setResultVersion] = useState(0); // keys the fade-in of fresh results
+  const [resultVersion, setResultVersion] = useState(0);
   const [running, setRunning] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
-  const [name, setName] = useState("");
-  const [primary, setPrimary] = useState("frontend");
   const [editing, setEditing] = useState<TeamMember | null>(null);
   const [editName, setEditName] = useState("");
   const [removingId, setRemovingId] = useState<string | null>(null);
@@ -37,10 +56,46 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviting, setInviting] = useState(false);
 
-  // Skill Matrix Editing State (Fix 2)
+  // Skill Matrix Editing State (Fix 2: Current user's own skills only)
   const [editingSkillsMember, setEditingSkillsMember] = useState<TeamMember | null>(null);
   const [skillDraft, setSkillDraft] = useState<Record<string, number>>({});
   const [savingSkills, setSavingSkills] = useState(false);
+
+  // Teammate Profile View State (Fix 2)
+  const [viewingProfileMember, setViewingProfileMember] = useState<TeamMember | null>(null);
+
+  // Leave Team State (Fix 3)
+  const [showLeaveModal, setShowLeaveModal] = useState(false);
+  const [leaveReason, setLeaveReason] = useState("project_completed");
+  const [leaveExplanation, setLeaveExplanation] = useState("");
+  const [leaving, setLeaving] = useState(false);
+
+  // Delete Team State (Fix 3: Owner only)
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleteConfirmInput, setDeleteConfirmInput] = useState("");
+  const [deleting, setDeleting] = useState(false);
+
+  const currentUserId = (user?._id || user?.id)?.toString();
+  const currentUserName = (user?.name || "").toLowerCase().trim();
+  const currentUserEmail = (user?.email || "").toLowerCase().trim();
+
+  // Find authenticated user's member object
+  const myMember = useMemo(() => {
+    return members.find((m) => {
+      const mId = (m.userId || (m as any)._id)?.toString();
+      const mName = (m.name || "").toLowerCase().trim();
+      return (
+        (mId && currentUserId && mId === currentUserId) ||
+        (currentUserEmail && mName === currentUserEmail) ||
+        (currentUserName && mName === currentUserName)
+      );
+    });
+  }, [members, currentUserId, currentUserEmail, currentUserName]);
+
+  // Is current user the workspace owner?
+  const isOwner = Boolean(
+    team?.ownerId && currentUserId && team.ownerId.toString() === currentUserId
+  );
 
   const openSkillEdit = (m: TeamMember) => {
     const currentSkills: Record<string, number> = {};
@@ -51,6 +106,8 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
     setEditingSkillsMember(m);
   };
 
+  // FIX 2E: Save Ratings ONLY saves skill ratings to MongoDB.
+  // It does NOT automatically trigger Branch & Bound / Run Assignment.
   const handleSaveSkills = async () => {
     if (!editingSkillsMember) return;
     const targetUserId = editingSkillsMember.userId || (editingSkillsMember as any)._id || "";
@@ -65,12 +122,42 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
       toast(error, "error");
       return;
     }
-    toast(`Skill matrix updated for ${editingSkillsMember.name || "Member"}!`, "success");
+    toast(`Your skill ratings have been saved!`, "success");
     setEditingSkillsMember(null);
   };
 
-  // Member lookup for assignment explanations (top skill / fit reasoning).
-  const memberById = (id: string) => members.find((m) => m.userId === id);
+  const handleLeaveTeam = async () => {
+    setLeaving(true);
+    const selectedReasonLabel = LEAVE_REASONS.find((r) => r.id === leaveReason)?.label || leaveReason;
+    const { error } = await leaveTeam(selectedReasonLabel, leaveExplanation.trim());
+    setLeaving(false);
+    if (error) {
+      toast(error, "error");
+      return;
+    }
+    toast("You have left the workspace.", "info");
+    setShowLeaveModal(false);
+    router.replace("/(tabs)/dashboard" as any);
+  };
+
+  const handleDeleteTeam = async () => {
+    if (deleteConfirmInput.trim() !== team?.name.trim()) {
+      toast("Please enter the exact team name to confirm deletion.", "error");
+      return;
+    }
+    setDeleting(true);
+    const { error } = await deleteTeam();
+    setDeleting(false);
+    if (error) {
+      toast(error, "error");
+      return;
+    }
+    toast("Workspace permanently deleted.", "success");
+    setShowDeleteModal(false);
+    router.replace("/(tabs)/dashboard" as any);
+  };
+
+  const memberById = (id: string) => members.find((m) => m.userId === id || (m as any)._id === id);
   const topSkillOf = (id: string) => {
     const m = memberById(id);
     if (!m) return null;
@@ -82,14 +169,13 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
     const { result: r, error } = await runAssignment();
     setRunning(false);
     if (error) {
-      // A failed recompute means the old result (matrix, stats) is stale — drop it.
       setResult(null);
       toast(error, opts?.silent ? "info" : "error");
       return;
     }
     setResult(r!);
     setResultVersion((v) => v + 1);
-    if (!opts?.silent) toast("Assignment computed", "success");
+    if (!opts?.silent) toast("Optimal task assignment computed via Branch & Bound!", "success");
   };
 
   const onSendInvite = async () => {
@@ -102,32 +188,22 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
     setInviteEmail(""); setShowAdd(false);
   };
 
-  // Delete flow: confirm → fade/collapse the card → DELETE member →
-  // automatically re-run Branch & Bound (no "Run Assignment" click needed).
   const onDeleteMember = async (m: TeamMember) => {
     const ok = await confirm({
-      title: "Delete Member?",
-      message: "Deleting this member will remove them from the assignment engine.\nAll assignments and the cost matrix will be recalculated.",
-      confirmLabel: "Delete",
+      title: "Remove Member?",
+      message: `Are you sure you want to remove ${m.name || "this member"} from the workspace?`,
+      confirmLabel: "Remove",
       destructive: true,
     });
     if (!ok) return;
 
-    setRemovingId(m.userId);                       // triggers exit animation
-    await new Promise((r) => setTimeout(r, 280));  // let the fade/collapse play
+    setRemovingId(m.userId);
+    await new Promise((r) => setTimeout(r, 280));
     const { error } = await deleteMember(m.userId);
     setRemovingId(null);
     if (error) { toast(error, "error"); return; }
     if (expanded === m.userId) setExpanded(null);
-
-    const remaining = members.length - 1;
-    if (remaining === 0) {
-      setResult(null); // hide assignment panel entirely
-      toast("Member deleted — no team members available.", "info");
-      return;
-    }
-    toast(`${m.name || "Member"} deleted — recomputing optimal assignment…`, "info");
-    await run({ silent: true }); // B&B recomputes: matrix rows, stats, gaps all update live
+    toast(`${m.name || "Member"} removed from workspace`, "info");
   };
 
   const onSaveEdit = async () => {
@@ -139,7 +215,7 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
     setEditing(null);
   };
 
-  // group assignments by member
+  // Group assignments by member
   const byMember = new Map<string, { name: string; tasks: { title: string; cost: number }[] }>();
   for (const a of result?.assignments ?? []) {
     if (!byMember.has(a.memberId)) byMember.set(a.memberId, { name: a.memberName, tasks: [] });
@@ -150,6 +226,7 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
 
   return (
     <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.md, paddingBottom: 80 }}>
+      {/* Header Banner */}
       <Card style={{ gap: spacing.sm }}>
         <View style={s.head}>
           <View style={[s.icon, { backgroundColor: colors.branch + "1a" }]}><Ionicons name="people" size={20} color={colors.branch} /></View>
@@ -161,12 +238,12 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
         </View>
         <Text style={s.hint}>Give members differentiated skills so the cost matrix is meaningful, then run the engine.</Text>
         <View style={{ flexDirection: "row", gap: spacing.sm }}>
-          <Button title="Add member" icon="person-add" variant="secondary" onPress={() => setShowAdd(true)} style={{ flex: 1 }} small />
+          <Button title="Invite Teammate" icon="person-add" variant="secondary" onPress={() => setShowAdd(true)} style={{ flex: 1 }} small />
           <Button title="Run Assignment" icon="git-branch" onPress={() => run()} loading={running} style={{ flex: 1 }} small disabled={members.length === 0} />
         </View>
       </Card>
 
-      {/* Low-resource warnings for the B&B demo */}
+      {/* Low-resource warnings */}
       {members.length === 1 && (
         <View style={s.warnBar}>
           <Ionicons name="warning-outline" size={15} color={colors.warning} />
@@ -177,21 +254,41 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
       {/* Roster with editable skills */}
       <Text style={s.sectionLabel}>ROSTER ({members.length})</Text>
       {members.length === 0 ? (
-        <EmptyState icon="person-add-outline" title="No team members available." message="Add members with distinct skills before running Branch & Bound." actionLabel="Add member" actionIcon="person-add" onAction={() => setShowAdd(true)} />
-      ) : members.map((m) => (
-        <RosterCard
-          key={m.userId}
-          member={m}
-          open={expanded === m.userId}
-          removing={removingId === m.userId}
-          onToggle={() => setExpanded(expanded === m.userId ? null : m.userId)}
-          onEdit={() => { setEditing(m); setEditName(m.name ?? ""); }}
-          onDelete={() => onDeleteMember(m)}
-          onSkill={(k, v) => setMemberSkill(m.userId, k, v)}
+        <EmptyState
+          icon="person-add-outline"
+          title="No team members available."
+          message="Invite teammates with distinct skills before running Branch & Bound."
+          actionLabel="Invite Teammate"
+          actionIcon="person-add"
+          onAction={() => setShowAdd(true)}
         />
-      ))}
+      ) : (
+        members.map((m) => {
+          const mUserId = (m.userId || (m as any)._id)?.toString();
+          const mName = (m.name || "").toLowerCase().trim();
+          const isSelf = Boolean(
+            (mUserId && currentUserId && mUserId === currentUserId) ||
+            (currentUserEmail && mName === currentUserEmail) ||
+            (currentUserName && mName === currentUserName)
+          );
 
-      {/* Skill Matrix (Feature 5) — evidence for Branch & Bound */}
+          return (
+            <RosterCard
+              key={m.userId || (m as any)._id}
+              member={m}
+              isSelf={isSelf}
+              open={expanded === (m.userId || (m as any)._id)}
+              removing={removingId === (m.userId || (m as any)._id)}
+              onToggle={() => setExpanded(expanded === (m.userId || (m as any)._id) ? null : (m.userId || (m as any)._id))}
+              onViewProfile={() => setViewingProfileMember(m)}
+              onEdit={() => { setEditing(m); setEditName(m.name ?? ""); }}
+              onDelete={() => onDeleteMember(m)}
+            />
+          );
+        })
+      )}
+
+      {/* Skill Matrix (Feature 5 + Fix 2) */}
       {members.length > 0 && (
         <Card style={{ gap: spacing.sm }}>
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
@@ -199,22 +296,28 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
               <Text style={s.sectionLabel}>SKILL MATRIX (1–10 RATINGS)</Text>
               <Text style={s.hint}>1 = Beginner · 10 = Expert. Minimizes skill-gap cost for tasks demanding that skill.</Text>
             </View>
-            <Button
-              title="Edit Skill Matrix"
-              icon="create-outline"
-              variant="secondary"
-              small
-              onPress={() => openSkillEdit(members[0])}
-            />
+            {myMember && (
+              <Button
+                title="Edit My Skills"
+                icon="create-outline"
+                variant="secondary"
+                small
+                onPress={() => openSkillEdit(myMember)}
+              />
+            )}
           </View>
+
           <SkillMatrix
-            members={members}
+            members={members as SkillMatrixMember[]}
+            currentUserId={currentUserId}
+            currentUserName={currentUserName}
             onEditMember={(m) => openSkillEdit(m as TeamMember)}
+            onViewMemberProfile={(m) => setViewingProfileMember(m as TeamMember)}
           />
         </Card>
       )}
 
-      {/* Assignment result — hidden entirely when no members exist */}
+      {/* Assignment result */}
       {result && members.length > 0 && (
         <FadeIn key={resultVersion}>
           <View style={s.resultHead}>
@@ -295,46 +398,64 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
         </FadeIn>
       )}
 
-      {/* Edit Skills ModalSheet (Fix 2) */}
+      {/* FIX 3: Workspace Membership Management (Leave Team / Delete Team) */}
+      <Card style={{ gap: spacing.sm, marginTop: spacing.lg, borderColor: colors.border }}>
+        <Text style={s.sectionLabel}>WORKSPACE MEMBERSHIP</Text>
+        {isOwner ? (
+          <View style={{ gap: spacing.sm }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <Ionicons name="shield-checkmark" size={18} color={colors.primary} />
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 13, fontWeight: "700", color: colors.text }}>Team Leader</Text>
+                <Text style={{ fontSize: 12, color: colors.textMuted }}>You own this workspace.</Text>
+              </View>
+            </View>
+            <Button
+              title="Delete Workspace"
+              icon="trash-outline"
+              variant="secondary"
+              onPress={() => {
+                setDeleteConfirmInput("");
+                setShowDeleteModal(true);
+              }}
+              style={{ borderColor: colors.danger + "44", marginTop: 4 }}
+            />
+          </View>
+        ) : (
+          <View style={{ gap: spacing.sm }}>
+            <Text style={s.hint}>You are a member of this workspace. If you leave, you will lose access to all tasks and project information.</Text>
+            <Button
+              title="Leave Team"
+              icon="exit-outline"
+              variant="secondary"
+              onPress={() => {
+                setLeaveReason("project_completed");
+                setLeaveExplanation("");
+                setShowLeaveModal(true);
+              }}
+              style={{ borderColor: colors.danger + "44" }}
+            />
+          </View>
+        )}
+      </Card>
+
+      {/* Edit My Skills ModalSheet (Fix 2: Self-only, no teammate switcher) */}
       <ModalSheet
         visible={!!editingSkillsMember}
         onClose={() => setEditingSkillsMember(null)}
-        title={`Edit Skills — ${editingSkillsMember?.name || "Member"}`}
+        title="Edit My Skill Ratings"
       >
         <Text style={s.hint}>
-          Adjust skill ratings from 1 (Beginner) to 10 (Expert). The Branch & Bound algorithm uses these ratings to calculate optimal task assignments.
+          Adjust your personal skill ratings from 1 (Beginner) to 10 (Expert). The Branch & Bound algorithm uses these ratings to calculate optimal task assignments.
         </Text>
-
-        {members.length > 1 && (
-          <View style={s.memberSelectRow}>
-            <Text style={s.memberSelectLabel}>Teammate:</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
-              {members.map((m) => {
-                const isSel = editingSkillsMember?.userId === m.userId;
-                return (
-                  <Pressable
-                    key={m.userId}
-                    style={[s.memberSelectChip, isSel && s.memberSelectChipActive]}
-                    onPress={() => openSkillEdit(m)}
-                  >
-                    <Avatar name={m.name || "Member"} size={18} image={m.avatar} />
-                    <Text style={[s.memberSelectChipText, isSel && { color: "#fff" }]}>
-                      {m.name || "Member"}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-          </View>
-        )}
 
         <View style={{ gap: spacing.md, marginVertical: spacing.md }}>
           {SKILLS.map((k) => {
             const val = skillDraft[k] ?? 5;
-            const label = k === "ml" ? "ML / AI" : k.charAt(0).toUpperCase() + k.slice(1);
+            const label = k === "ml" ? "ML / AI" : k === "devops" ? "DevOps / Ops" : k === "design" ? "Design / UX" : k.charAt(0).toUpperCase() + k.slice(1);
             return (
               <View key={k} style={s.skillEditRow}>
-                <View style={{ width: 84 }}>
+                <View style={{ width: 100 }}>
                   <Text style={s.skillEditLabel}>{label}</Text>
                   <Text style={s.skillRatingText}>{val}/10</Text>
                 </View>
@@ -351,18 +472,155 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
             );
           })}
         </View>
+
         <View style={{ flexDirection: "row", gap: spacing.sm, marginTop: spacing.sm }}>
           <Button title="Cancel" variant="secondary" onPress={() => setEditingSkillsMember(null)} style={{ flex: 1 }} />
           <Button title="Save Ratings" icon="checkmark" loading={savingSkills} onPress={handleSaveSkills} style={{ flex: 1 }} />
         </View>
       </ModalSheet>
 
+      {/* Teammate Profile View ModalSheet (Fix 2: Read-Only) */}
+      <ModalSheet
+        visible={!!viewingProfileMember}
+        onClose={() => setViewingProfileMember(null)}
+        title={viewingProfileMember?.name || "Teammate Profile"}
+      >
+        {viewingProfileMember && (
+          <View style={{ gap: spacing.md }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+              <Avatar name={viewingProfileMember.name || "Member"} size={48} image={viewingProfileMember.avatar} />
+              <View style={{ flex: 1 }}>
+                <Text style={font.h3}>{viewingProfileMember.name || "Member"}</Text>
+                <Text style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>
+                  Role: {viewingProfileMember.role || "Team Member"}
+                </Text>
+              </View>
+            </View>
+
+            <Text style={s.sectionLabel}>SKILL RATINGS (READ-ONLY)</Text>
+            <View style={{ gap: 8 }}>
+              {SKILLS.map((k) => {
+                const val = viewingProfileMember.skills?.[k] ?? 5;
+                const label = k === "ml" ? "ML / AI" : k === "devops" ? "DevOps / Ops" : k === "design" ? "Design / UX" : k.charAt(0).toUpperCase() + k.slice(1);
+                return (
+                  <View key={k} style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+                    <Text style={{ width: 90, fontSize: 12, fontWeight: "600", color: colors.textMuted }}>{label}</Text>
+                    <View style={s.skillBarTrack}>
+                      <View style={[s.skillBarFill, { width: `${val * 10}%`, backgroundColor: colors.branch }]} />
+                    </View>
+                    <Text style={{ width: 36, fontSize: 12, fontWeight: "700", color: colors.text, textAlign: "right" }}>{val}/10</Text>
+                  </View>
+                );
+              })}
+            </View>
+
+            <Button title="Close" variant="secondary" onPress={() => setViewingProfileMember(null)} style={{ marginTop: spacing.sm }} />
+          </View>
+        )}
+      </ModalSheet>
+
+      {/* FIX 3: Leave Team ModalSheet */}
+      <ModalSheet
+        visible={showLeaveModal}
+        onClose={() => setShowLeaveModal(false)}
+        title="Leave Workspace"
+      >
+        <View style={{ gap: spacing.md }}>
+          <Text style={{ fontSize: 13, color: colors.textMuted, lineHeight: 18 }}>
+            Are you sure you want to leave <Text style={{ fontWeight: "700", color: colors.text }}>{team?.name}</Text>?
+            {"\n"}You will lose access to all tasks, sprints, graph analytics, and project info.
+          </Text>
+
+          <Text style={s.sectionLabel}>WHY ARE YOU LEAVING?</Text>
+          <View style={{ gap: 6 }}>
+            {LEAVE_REASONS.map((r) => {
+              const isSelected = leaveReason === r.id;
+              return (
+                <Pressable
+                  key={r.id}
+                  style={[s.reasonOption, isSelected && s.reasonOptionSelected]}
+                  onPress={() => setLeaveReason(r.id)}
+                >
+                  <Ionicons
+                    name={isSelected ? "radio-button-on" : "radio-button-off"}
+                    size={16}
+                    color={isSelected ? colors.primary : colors.textMuted}
+                  />
+                  <Text style={[s.reasonText, isSelected && { color: colors.text, fontWeight: "700" }]}>
+                    {r.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          <Field
+            label="Optional Explanation"
+            value={leaveExplanation}
+            onChangeText={setLeaveExplanation}
+            placeholder="Add any additional context..."
+          />
+
+          <View style={{ flexDirection: "row", gap: spacing.sm, marginTop: spacing.sm }}>
+            <Button title="Cancel" variant="secondary" onPress={() => setShowLeaveModal(false)} style={{ flex: 1 }} />
+            <Button
+              title="Leave Team"
+              icon="exit-outline"
+              loading={leaving}
+              onPress={handleLeaveTeam}
+              style={{ flex: 1, backgroundColor: colors.danger }}
+            />
+          </View>
+        </View>
+      </ModalSheet>
+
+      {/* FIX 3: Delete Team ModalSheet (Owner Only + Exact Name Confirmation) */}
+      <ModalSheet
+        visible={showDeleteModal}
+        onClose={() => setShowDeleteModal(false)}
+        title="Delete Workspace"
+      >
+        <View style={{ gap: spacing.md }}>
+          <Text style={{ fontSize: 13, color: colors.danger, fontWeight: "700", lineHeight: 18 }}>
+            ⚠️ This permanently deletes this workspace and all associated tasks, sprints, and project data. This action cannot be undone.
+          </Text>
+
+          <Text style={{ fontSize: 13, color: colors.textMuted }}>
+            Type the exact team name <Text style={{ fontWeight: "800", color: colors.text }}>{team?.name}</Text> to confirm:
+          </Text>
+
+          <Field
+            label="Team Name Confirmation"
+            value={deleteConfirmInput}
+            onChangeText={setDeleteConfirmInput}
+            placeholder={team?.name || "Team name"}
+          />
+
+          <View style={{ flexDirection: "row", gap: spacing.sm, marginTop: spacing.sm }}>
+            <Button title="Cancel" variant="secondary" onPress={() => setShowDeleteModal(false)} style={{ flex: 1 }} />
+            <Button
+              title="Delete Team"
+              icon="trash"
+              loading={deleting}
+              disabled={deleteConfirmInput.trim() !== team?.name.trim()}
+              onPress={handleDeleteTeam}
+              style={{
+                flex: 1,
+                backgroundColor: deleteConfirmInput.trim() === team?.name.trim() ? colors.danger : colors.dangerSoft,
+              }}
+            />
+          </View>
+        </View>
+      </ModalSheet>
+
+      {/* Invite Member Sheet */}
       <ModalSheet visible={showAdd} onClose={() => setShowAdd(false)} title="Invite Teammate by Email">
         <Text style={s.hint}>Enter the email address of a registered NEXUSFLOW user. They will receive an invitation notification to join this workspace.</Text>
         <Field label="Teammate Email Address" value={inviteEmail} onChangeText={setInviteEmail} placeholder="teammate@example.com" />
         <Button title="Send Team Invitation" icon="mail-outline" loading={inviting} onPress={onSendInvite} style={{ marginTop: spacing.sm }} />
       </ModalSheet>
 
+      {/* Edit Member Sheet */}
       <ModalSheet visible={!!editing} onClose={() => setEditing(null)} title="Edit Member">
         <Field label="Name" value={editName} onChangeText={setEditName} placeholder="Member name" />
         <Button title="Save changes" icon="checkmark" onPress={onSaveEdit} style={{ marginTop: spacing.sm }} />
@@ -373,15 +631,28 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
   );
 }
 
-// ── Roster card with edit / delete actions and exit animation ─────────────────
-function RosterCard({ member: m, open, removing, onToggle, onEdit, onDelete, onSkill }: {
-  member: TeamMember; open: boolean; removing: boolean;
-  onToggle: () => void; onEdit: () => void; onDelete: () => void;
-  onSkill: (skill: string, value: number) => void;
+// ── Roster card with view profile and edit / delete actions ─────────────────
+function RosterCard({
+  member: m,
+  isSelf,
+  open,
+  removing,
+  onToggle,
+  onViewProfile,
+  onEdit,
+  onDelete,
+}: {
+  member: TeamMember;
+  isSelf: boolean;
+  open: boolean;
+  removing: boolean;
+  onToggle: () => void;
+  onViewProfile: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
 }) {
   const anim = useRef(new Animated.Value(1)).current;
   useEffect(() => {
-    // Fade out + collapse when this member is being deleted.
     if (removing) Animated.timing(anim, { toValue: 0, duration: 260, useNativeDriver: false }).start();
   }, [removing, anim]);
   const top = SKILLS.map((k) => ({ k, v: m.skills?.[k] ?? 5 })).sort((a, b) => b.v - a.v)[0];
@@ -390,23 +661,31 @@ function RosterCard({ member: m, open, removing, onToggle, onEdit, onDelete, onS
     <Animated.View style={{ opacity: anim, transform: [{ scaleY: anim }] }}>
       <Card style={{ gap: open ? spacing.sm : 0 }}>
         <View style={s.memberHead}>
-          <Pressable style={[s.memberHead, { flex: 1 }]} onPress={onToggle}>
+          <Pressable style={[s.memberHead, { flex: 1 }]} onPress={onViewProfile}>
             <Avatar name={m.name || "Member"} size={36} image={m.avatar} />
             <View style={{ flex: 1 }}>
-              <Text style={s.memberName}>{m.name || "Member"}</Text>
+              <Text style={s.memberName}>
+                {m.name || "Member"} {isSelf && <Text style={s.selfBadge}>(You)</Text>}
+              </Text>
               <Text style={s.memberSub}>Top skill: {top.k} ({top.v}/10)</Text>
             </View>
           </Pressable>
+
           <Pressable onPress={onEdit} hitSlop={6} style={({ hovered, pressed }: any) => [s.iconBtn, (hovered || pressed) && { backgroundColor: colors.primarySoft }]}>
             {({ hovered, pressed }: any) => <Ionicons name="pencil-outline" size={15} color={hovered || pressed ? colors.primary : colors.textFaint} />}
           </Pressable>
-          <Pressable onPress={onDelete} hitSlop={6} style={({ hovered, pressed }: any) => [s.iconBtn, (hovered || pressed) && { backgroundColor: colors.dangerSoft }]}>
-            {({ hovered, pressed }: any) => <Ionicons name="trash-outline" size={15} color={hovered || pressed ? colors.danger : colors.textFaint} />}
-          </Pressable>
+
+          {!isSelf && (
+            <Pressable onPress={onDelete} hitSlop={6} style={({ hovered, pressed }: any) => [s.iconBtn, (hovered || pressed) && { backgroundColor: colors.dangerSoft }]}>
+              {({ hovered, pressed }: any) => <Ionicons name="trash-outline" size={15} color={hovered || pressed ? colors.danger : colors.textFaint} />}
+            </Pressable>
+          )}
+
           <Pressable onPress={onToggle} hitSlop={6} style={s.iconBtn}>
             <Ionicons name={open ? "chevron-up" : "chevron-down"} size={18} color={colors.textFaint} />
           </Pressable>
         </View>
+
         {open && (
           <View style={{ gap: 8, marginTop: 4 }}>
             {SKILLS.map((k) => {
@@ -417,7 +696,7 @@ function RosterCard({ member: m, open, removing, onToggle, onEdit, onDelete, onS
                   <View style={s.skillBarTrack}>
                     <View style={[s.skillBarFill, { width: `${v * 10}%`, backgroundColor: avatarColor(m.name || k) }]} />
                   </View>
-                  <Stepper value={v} onChange={(nv) => onSkill(k, nv)} min={0} max={10} />
+                  <Text style={{ fontSize: 11, fontWeight: "700", color: colors.textMuted, width: 36, textAlign: "right" }}>{v}/10</Text>
                 </View>
               );
             })}
@@ -428,7 +707,6 @@ function RosterCard({ member: m, open, removing, onToggle, onEdit, onDelete, onS
   );
 }
 
-// ── Gentle entrance for freshly recomputed results ────────────────────────────
 function FadeIn({ children }: { children: React.ReactNode }) {
   const anim = useRef(new Animated.Value(0)).current;
   useEffect(() => {
@@ -464,6 +742,7 @@ const s = StyleSheet.create({
   warnTxt: { flex: 1, fontSize: 12, fontWeight: "600", color: colors.warning, lineHeight: 16 },
   memberHead: { flexDirection: "row", alignItems: "center", gap: 10 },
   memberName: { fontSize: 15, fontWeight: "700", color: colors.text },
+  selfBadge: { fontSize: 12, fontWeight: "600", color: colors.primary },
   memberSub: { fontSize: 12, color: colors.textMuted },
   iconBtn: { width: 30, height: 30, borderRadius: 8, alignItems: "center", justifyContent: "center" },
   skillRow: { flexDirection: "row", alignItems: "center", gap: 10 },
@@ -483,16 +762,10 @@ const s = StyleSheet.create({
   matrixHeadCell: { backgroundColor: colors.surfaceAlt },
   matrixHeadTxt: { fontSize: 10, fontWeight: "700", color: colors.textMuted },
   matrixTxt: { fontSize: 12, fontWeight: "700", color: colors.text },
-  skillPickLabel: { fontSize: 13, fontWeight: "700", color: colors.text },
-  chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
-  chip: { paddingVertical: 7, paddingHorizontal: 14, borderRadius: 999, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
-  chipTxt: { fontSize: 13, fontWeight: "700", color: colors.textMuted, textTransform: "capitalize" },
   skillEditRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 4 },
   skillEditLabel: { fontSize: 13, fontWeight: "700", color: colors.text, textTransform: "capitalize" },
   skillRatingText: { fontSize: 11, fontWeight: "700", color: colors.branch },
-  memberSelectRow: { flexDirection: "row", alignItems: "center", gap: 8, marginVertical: 6 },
-  memberSelectLabel: { fontSize: 12, fontWeight: "700", color: colors.textMuted },
-  memberSelectChip: { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 5, paddingHorizontal: 10, borderRadius: radius.pill, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.border },
-  memberSelectChipActive: { backgroundColor: colors.branch, borderColor: colors.branch },
-  memberSelectChipText: { fontSize: 12, fontWeight: "600", color: colors.text },
+  reasonOption: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8, paddingHorizontal: 12, borderRadius: radius.md, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.border },
+  reasonOptionSelected: { backgroundColor: colors.primarySoft, borderColor: colors.primary },
+  reasonText: { fontSize: 13, color: colors.textMuted },
 });
