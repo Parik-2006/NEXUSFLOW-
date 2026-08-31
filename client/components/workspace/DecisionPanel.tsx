@@ -632,9 +632,9 @@ export default function DecisionPanel({ teamId }: { teamId: string }) {
               {result.risks?.length > 0 ? (
                 result.risks.map((r, idx) => <RiskCard key={idx} risk={r} />)
               ) : (
-                <View style={s.noRiskBox}>
+                <View style={sSub.noRiskBox}>
                   <Ionicons name="checkmark-circle-outline" size={20} color={colors.success} />
-                  <Text style={s.noRiskTxt}>No significant risks detected based on project context.</Text>
+                  <Text style={sSub.noRiskTxt}>No significant risks detected based on project context.</Text>
                 </View>
               )}
             </View>

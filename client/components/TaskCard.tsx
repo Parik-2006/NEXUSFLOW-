@@ -184,7 +184,7 @@ function Meta({ icon, text, color }: { icon: any; text: string; color?: string }
   return (
     <View style={styles.meta}>
       <Ionicons name={icon} size={12} color={color ?? colors.textFaint} />
-      <Text style={[styles.metaTxt, color && { color }]}>{text}</Text>
+      <Text style={[styles.metaTxt, color ? { color } : undefined]}>{text}</Text>
     </View>
   );
 }

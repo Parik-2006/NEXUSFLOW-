@@ -167,6 +167,7 @@ export const font = {
   h3: { fontSize: 16, fontWeight: "700" as const, letterSpacing: -0.2, color: colors.text },
   body: { fontSize: 14, fontWeight: "500" as const, color: colors.text },
   small: { fontSize: 12, fontWeight: "500" as const, color: colors.textMuted },
+  caption: { fontSize: 12, fontWeight: "500" as const, color: colors.textMuted },
   tiny: { fontSize: 11, fontWeight: "600" as const, color: colors.textFaint },
 };
 

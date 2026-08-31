@@ -276,7 +276,7 @@ function Row({ label, value, color }: { label: string; value: string; color?: st
   return (
     <View style={s.kvRow}>
       <Text style={s.kvLabel}>{label}</Text>
-      <Text style={[s.kvValue, color && { color, fontWeight: "800" }]}>{value}</Text>
+      <Text style={[s.kvValue, color ? { color, fontWeight: "800" as const } : undefined]}>{value}</Text>
     </View>
   );
 }

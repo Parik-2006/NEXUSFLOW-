@@ -424,7 +424,7 @@ function DlStat({ label, value, color }: { label: string; value: string; color?:
   return (
     <View style={s.dlStat}>
       <Text style={s.dlStatLabel}>{label}</Text>
-      <Text style={[s.dlStatValue, color && { color }]}>{value}</Text>
+      <Text style={[s.dlStatValue, color ? { color } : undefined]}>{value}</Text>
     </View>
   );
 }

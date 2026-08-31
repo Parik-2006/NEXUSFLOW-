@@ -1,18 +1,16 @@
-/**
- * SprintPanel — 0/1 Knapsack Sprint Optimizer.
- * Capacity stepper → DP optimizer → selected task cards + utilization bar.
- */
 import React, { useState } from "react";
-import { View, Text, StyleSheet, ScrollView } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTeam, type SprintResult, type SprintTaskRow } from "@/hooks/useTeam";
 import { Card, Button, Stepper, Badge, ProgressBar, EmptyState } from "@/components/ui";
 import { useToast } from "@/components/feedback";
+import RecommendationPanel from "@/components/RecommendationPanel";
 import { colors, spacing, radius, font } from "@/theme";
 
 export default function SprintPanel({ teamId }: { teamId: string }) {
   const { sprintOptimize } = useTeam(teamId);
   const toast = useToast();
+  const [sprintView, setSprintView] = useState<"knapsack" | "daa">("knapsack");
   const [hours, setHours] = useState(40);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<SprintResult | null>(null);
@@ -26,11 +24,49 @@ export default function SprintPanel({ teamId }: { teamId: string }) {
     if (r?.warning) toast(r.warning, "info");
   };
 
+  const isDaa = sprintView === "daa";
+  const isKnapsack = sprintView === "knapsack";
+
+  const renderSwitcher = () => (
+    <View style={s.modeSwitcher}>
+      <Pressable
+        style={[s.modeBtn, isKnapsack && s.modeBtnActive]}
+        onPress={() => setSprintView("knapsack")}
+      >
+        <Ionicons name="rocket" size={14} color={isKnapsack ? colors.knapsack : colors.textMuted} />
+        <Text style={[s.modeBtnText, isKnapsack && { color: colors.knapsack, fontWeight: "700" }]}>
+          Knapsack Optimizer
+        </Text>
+      </Pressable>
+      <Pressable
+        style={[s.modeBtn, isDaa && s.modeBtnActive]}
+        onPress={() => setSprintView("daa")}
+      >
+        <Ionicons name="flash" size={14} color={isDaa ? colors.warning : colors.textMuted} />
+        <Text style={[s.modeBtnText, isDaa && { color: colors.warning, fontWeight: "700" }]}>
+          Full DAA Recommender
+        </Text>
+      </Pressable>
+    </View>
+  );
+
+  if (isDaa) {
+    return (
+      <View style={{ flex: 1 }}>
+        <View style={s.modeSwitcherWrap}>
+          {renderSwitcher()}
+        </View>
+        <RecommendationPanel teamId={teamId} />
+      </View>
+    );
+  }
+
   const util = result?.utilizationPct ?? 0;
   const utilColor = util > 95 ? colors.danger : util > 80 ? colors.warning : colors.success;
 
   return (
     <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.md, paddingBottom: 60 }}>
+      {renderSwitcher()}
       <Card style={{ gap: spacing.md }}>
         <View style={s.head}>
           <View style={[s.icon, { backgroundColor: colors.knapsack + "1a" }]}><Ionicons name="rocket" size={20} color={colors.knapsack} /></View>
@@ -159,4 +195,41 @@ const s = StyleSheet.create({
   taskMeta: { fontSize: 12, color: colors.textMuted },
   reasonRow: { flexDirection: "row", alignItems: "flex-start", gap: 8, paddingVertical: 8, borderTopWidth: 1, borderTopColor: colors.border },
   reasonTxt: { fontSize: 11, color: colors.textMuted, marginTop: 2, lineHeight: 15 },
+  modeSwitcherWrap: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+    backgroundColor: colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  modeSwitcher: {
+    flexDirection: "row",
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: radius.pill,
+    padding: 4,
+    gap: 4,
+    marginBottom: spacing.xs,
+  },
+  modeBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 8,
+    borderRadius: radius.pill,
+  },
+  modeBtnActive: {
+    backgroundColor: colors.surface,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  modeBtnText: {
+    fontSize: 12,
+    color: colors.textMuted,
+    fontWeight: "600",
+  },
 });

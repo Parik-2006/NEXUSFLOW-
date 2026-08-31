@@ -766,3 +766,19 @@ export function generateProjectGuidance({
     ],
   };
 }
+
+export {
+  detectProjectDomain,
+  detectHardware,
+  evaluateAiMlNeed,
+  detectExternalApis,
+  buildRecommendedStack,
+  buildPhasedRoadmap,
+  buildLearningRoadmap,
+  buildResearchTopics,
+  sliceHackathonRoadmap,
+  evaluateComplexityAndRisks,
+  analyzeSkillGaps,
+  calculateReadinessScore,
+  determineNextAction,
+};

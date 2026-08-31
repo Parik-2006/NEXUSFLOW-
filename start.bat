@@ -21,6 +21,12 @@ for /f "tokens=5" %%P in ('netstat -ano ^| findstr /r /c:":4000 .*LISTENING"') d
     taskkill /f /pid %%P >nul 2>&1
 )
 
+REM Free port 8081 if a previous run left an Expo/Metro bundler squatting on it.
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr /r /c:":8081 .*LISTENING"') do (
+    echo Stopping leftover process on port 8081, PID %%P ...
+    taskkill /f /pid %%P >nul 2>&1
+)
+
 REM --- Backend (server) ---
 if not exist "%ROOT%server\node_modules" (
     echo Installing server dependencies...
@@ -38,7 +44,7 @@ if not exist "%ROOT%client\node_modules" (
     popd
 )
 REM --web launches the browser automatically and prints a clickable web URL.
-start "NexusFlow Client" /D "%ROOT%client" cmd /k "npx expo start --web"
+start "NexusFlow Client" /D "%ROOT%client" cmd /k "echo Starting NexusFlow Frontend at http://localhost:8081 ... && echo. && npx expo start --web"
 
 echo.
 echo ============================================

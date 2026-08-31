@@ -1014,6 +1014,38 @@ router.get("/projects/:projectId/intelligence", requireAuth, async (req, res) =>
   }
 });
 
+// ── GET /api/projects/:projectId/ai/conversation ────────────────────────────
+// Fetches the user's active private Copilot conversation and message history.
+router.get("/projects/:projectId/ai/conversation", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const userId = mongoose.isValidObjectId(req.user?.id) ? req.user.id : null;
+    const query = { projectId: req.params.projectId, status: "active" };
+    if (userId) query.startedBy = userId;
+
+    let conversation = await AIConversation.findOne(query).sort({ updatedAt: -1 }).lean();
+    if (!conversation) {
+      return res.json({ conversation: null, messages: [] });
+    }
+
+    const messages = await AIMessage.find({ conversationId: conversation._id })
+      .sort({ createdAt: 1 })
+      .limit(100)
+      .lean();
+
+    res.json({
+      success: true,
+      conversation,
+      messages,
+    });
+  } catch (e) {
+    console.error("[GET /projects/:id/ai/conversation] error:", e.message);
+    res.status(500).json({ error: e.message || "Failed to load conversation" });
+  }
+});
+
 // ── POST /api/projects/:projectId/ai/chat ────────────────────────────────────
 // Project-aware AI chat conversation endpoint.
 // Injects project context, decisions, architecture, and recent conversation turns.
@@ -1041,6 +1073,45 @@ router.post("/projects/:projectId/ai/chat", requireAuth, async (req, res) => {
   } catch (e) {
     console.error("[POST /projects/:id/ai/chat] error:", e.message);
     res.status(500).json({ error: e.message || "Project chat advisory failed" });
+  }
+});
+
+// ── POST /api/projects/:projectId/ai/messages/:messageId/feedback ────────────
+// Records helpful/unhelpful rating on an assistant message.
+router.post("/projects/:projectId/ai/messages/:messageId/feedback", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const { rating, comment = "" } = req.body ?? {};
+    if (!["helpful", "unhelpful", null].includes(rating)) {
+      return res.status(400).json({ error: "Rating must be 'helpful', 'unhelpful', or null." });
+    }
+
+    const msg = await AIMessage.findOne({
+      _id: req.params.messageId,
+      projectId: req.params.projectId,
+    });
+
+    if (!msg) {
+      return res.status(404).json({ error: "Message not found." });
+    }
+
+    msg.feedback = {
+      rating,
+      comment: String(comment).trim(),
+      feedbackAt: new Date(),
+    };
+    await msg.save();
+
+    res.json({
+      success: true,
+      messageId: msg._id,
+      feedback: msg.feedback,
+    });
+  } catch (e) {
+    console.error("[POST /projects/:id/ai/messages/:msgId/feedback] error:", e.message);
+    res.status(500).json({ error: e.message || "Failed to record feedback" });
   }
 });
 

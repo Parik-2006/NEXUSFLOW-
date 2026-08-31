@@ -215,6 +215,19 @@ const ProjectSchema = new mongoose.Schema(
     // Used by Phase 2+ Sprint Optimizer to tune capacity assumptions
     sprintWeeks: { type: Number, default: null, min: 1 },
 
+    // ── Copilot Learned Memory ──────────────────────────────────────────────
+    // Project-level learned decisions, selected technologies, preferences, and constraints
+    copilotMemory: [
+      {
+        key:        { type: String, required: true },
+        value:      { type: String, required: true },
+        category:   { type: String, default: "general" },
+        source:     { type: String, default: "conversation" },
+        confidence: { type: Number, default: 1.0 },
+        createdAt:  { type: Date, default: Date.now },
+      },
+    ],
+
     // ── Denormalized Counters (for dashboard, performance) ──────────────────
     // Mirrors the team-level taskCount but scoped to this project.
     // Incremented/decremented when tasks are created/deleted with this projectId.

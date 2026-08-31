@@ -96,6 +96,22 @@ const AIMessageSchema = new mongoose.Schema(
       total:      { type: Number, default: null },
     },
 
+    // ── AI Provider Tracking ──────────────────────────────────────────────────
+    // Which provider generated this response?
+    provider: {
+      type: String,
+      enum: ["openai", "gemini", "deterministic"],
+      default: "deterministic",
+    },
+
+    // ── User Feedback ─────────────────────────────────────────────────────────
+    // Direct feedback (helpful / unhelpful) from user to adjust context memory
+    feedback: {
+      rating:     { type: String, enum: ["helpful", "unhelpful", null], default: null },
+      comment:    { type: String, default: "" },
+      feedbackAt: { type: Date, default: null },
+    },
+
     // ── Authorship ────────────────────────────────────────────────────────────
     // For "user" role messages — which user sent this?
     sentBy: {

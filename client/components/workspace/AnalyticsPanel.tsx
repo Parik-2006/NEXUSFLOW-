@@ -306,7 +306,7 @@ function SortTable({ rows }: { rows: { key: string; name: string; complexity: st
       {rows.map((r, i) => (
         <View key={r.key} style={[s.trow, i % 2 === 1 && { backgroundColor: colors.surfaceAlt }]}>
           <Text style={[s.tcell, s.trank]}>{MEDAL[i] ?? i + 1}</Text>
-          <View style={[s.tcell, s.tname]}>
+          <View style={s.tname}>
             <View style={[s.dot, { backgroundColor: SORT_COLORS[r.key] ?? colors.primary }]} />
             <Text style={s.tnameTxt} numberOfLines={1}>{r.name}</Text>
             <Text style={s.tcomplexity}>{r.complexity}</Text>

@@ -29,12 +29,12 @@ const gradeColor = (g: string) => g === "A+" || g === "A" ? colors.success : g =
 type Nav = (tab: string) => void;
 
 const JUMPS: { tab: string; icon: keyof typeof Ionicons.glyphMap; label: string; desc: string; color: string }[] = [
+  { tab: "advisor", icon: "sparkles", label: "Project AI", desc: "AI Hub & Copilot", color: colors.accent },
   { tab: "tasks", icon: "list", label: "Tasks", desc: "Prioritised backlog", color: colors.greedy },
   { tab: "sprint", icon: "rocket", label: "Sprint planning", desc: "Optimise capacity", color: colors.knapsack },
   { tab: "graph", icon: "git-network", label: "Dependency graph", desc: "Execution order", color: colors.topo },
   { tab: "members", icon: "people", label: "Team members", desc: "Roster & assignment", color: colors.branch },
   { tab: "analytics", icon: "stats-chart", label: "Analytics", desc: "Sort performance", color: colors.merge },
-  { tab: "chat", icon: "chatbubbles", label: "Chat & AI", desc: "Plan with AI", color: colors.primary },
 ];
 
 export default function OverviewPanel({ teamId, onNavigate }: { teamId: string; onNavigate: Nav }) {
