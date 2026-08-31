@@ -27,7 +27,36 @@ const MAX_COMPARISON_SIZE = 500;
 // blow up memory. 200h → capacity 2000 columns, comfortably bounded.
 const MAX_SPRINT_HOURS = 200;
 
-// ── Security Helper: Verify user is owner or member of team ──────────────────
+/**
+ * resolveAuthUser — Safely resolve the authenticated request user to their
+ * real MongoDB _id (ObjectId).
+ *
+ * JWT payload stores { id, email, name } where `id` is the MongoDB _id string.
+ * However, legacy tokens may have stored an email as `id`. This helper:
+ *   1. Returns the parsed ObjectId if req.user.id is a valid ObjectId string.
+ *   2. Falls back to a User.findOne({ email }) lookup for legacy email-id tokens.
+ *   3. Returns null if the user cannot be resolved.
+ *
+ * Use this in any route that writes ObjectId references to Invitation/Notification
+ * to prevent "Cast to ObjectId failed" 500 errors.
+ */
+async function resolveAuthUser(reqUser) {
+  if (!reqUser) return null;
+  const rawId = reqUser._id || reqUser.id;
+  // Happy path: JWT id is already a valid ObjectId string
+  if (rawId && mongoose.isValidObjectId(rawId)) {
+    // Verify the user actually exists (prevent stale/spoofed JWTs)
+    const user = await User.findById(rawId).select("_id name email avatar").lean();
+    return user || null;
+  }
+  // Fallback: JWT id was an email (legacy). Resolve by email.
+  const email = (reqUser.email || "").toLowerCase().trim();
+  if (!email) return null;
+  const user = await User.findOne({ email }).select("_id name email avatar").lean();
+  return user || null;
+}
+
+
 export async function verifyTeamAccess(teamId, user) {
   if (!mongoose.isValidObjectId(teamId)) return { error: "invalid_team_id", status: 400 };
   const team = await Team.findById(teamId).lean();
@@ -228,9 +257,15 @@ router.post("/teams/:teamId/members", requireAuth, async (req, res) => {
 });
 
 // ── POST /api/teams/:teamId/invitations ───────────────────────────────────────
-// GitHub-like Email Teammate Invitation Flow (Fix 4)
+// GitHub-like Email Teammate Invitation Flow — hardened against email/ObjectId confusion
 router.post("/teams/:teamId/invitations", requireAuth, async (req, res) => {
   try {
+    // 0. Resolve the authenticated inviter to their real MongoDB ObjectId
+    const inviter = await resolveAuthUser(req.user);
+    if (!inviter) {
+      return res.status(401).json({ error: "Unauthorized: Could not resolve your account. Please log in again." });
+    }
+
     const authCheck = await verifyTeamAccess(req.params.teamId, req.user);
     if (authCheck.error) return res.status(authCheck.status).json({ error: authCheck.error });
 
@@ -242,62 +277,66 @@ router.post("/teams/:teamId/invitations", requireAuth, async (req, res) => {
 
     const normalizedEmail = String(email).toLowerCase().trim();
 
-    // 1. Verify target user exists in NEXUSFLOW
-    const targetUser = await User.findOne({ email: normalizedEmail }).lean();
+    // 1. Self-invite check
+    if (normalizedEmail === (inviter.email || "").toLowerCase().trim()) {
+      return res.status(400).json({ error: "You cannot invite yourself." });
+    }
+
+    // 2. Verify target user exists in NEXUSFLOW (email → ObjectId lookup)
+    const targetUser = await User.findOne({ email: normalizedEmail }).select("_id name email avatar").lean();
     if (!targetUser) {
       return res.status(404).json({
-        error: "User not registered. They need to create a NEXUSFLOW account before they can accept a team invitation.",
+        error: "User is not registered on NEXUSFLOW. They need to create an account before they can accept a team invitation.",
       });
     }
 
     const targetUserIdStr = targetUser._id.toString();
 
-    // 2. Check if already an active member of this team
+    // 3. Check if already an active member of this team
     const alreadyMember =
       (team.ownerId && team.ownerId.toString() === targetUserIdStr) ||
       (Array.isArray(team.members) &&
         team.members.some((m) => (m.userId?._id || m.userId)?.toString() === targetUserIdStr));
 
     if (alreadyMember) {
-      return res.status(400).json({ error: "User is already a member of this team." });
+      return res.status(409).json({ error: "User is already a member of this team." });
     }
 
-    // 3. Check for existing pending invitation
+    // 4. Check for existing pending invitation — prevent duplicates
     const existingInv = await Invitation.findOne({
       teamId: team._id,
-      invitedUserId: targetUser._id,
+      invitedUserId: targetUser._id,   // ← ObjectId, never email
       status: "pending",
     }).lean();
 
     if (existingInv) {
-      return res.status(400).json({ error: "An invitation is already pending for this user." });
+      return res.status(409).json({ error: "Invitation already pending for this user." });
     }
 
-    // 4. Create Invitation
-    const inviterId = req.user._id || req.user.id;
-    const inviterName = req.user.name || req.user.email || "Teammate";
+    // 5. Create Invitation with proper ObjectId references
+    const inviterName = inviter.name || inviter.email || "Teammate";
     const invitation = await Invitation.create({
-      teamId: team._id,
+      teamId: team._id,            // ObjectId
       teamName: team.name,
-      inviterId,
+      inviterId: inviter._id,      // ObjectId — resolved from JWT, never raw email
       inviterName,
-      inviterEmail: req.user.email || "",
-      invitedUserId: targetUser._id,
+      inviterEmail: inviter.email || "",
+      invitedUserId: targetUser._id,  // ObjectId — resolved from email lookup
       invitedEmail: targetUser.email,
       role: typeof role === "string" ? role : "member",
       status: "pending",
     });
 
-    // 5. Create Notification for invited user
+    // 6. Create Notification for invited user with proper ObjectId references
     await Notification.create({
-      userId: targetUser._id,
+      userId: targetUser._id,          // ObjectId
       type: "team_invitation",
       title: "Team Collaboration Invitation",
-      message: `Team "${team.name}" invited you to collaborate.`,
+      message: `${inviterName} invited you to join team "${team.name}".`,
       data: {
-        teamId: team._id,
+        teamId: team._id,              // ObjectId
         teamName: team.name,
-        invitationId: invitation._id,
+        invitationId: invitation._id,  // ObjectId
         inviterName,
       },
       status: "unread",
@@ -309,6 +348,7 @@ router.post("/teams/:teamId/invitations", requireAuth, async (req, res) => {
       invitation,
     });
   } catch (e) {
+    console.error("[POST /invitations] Error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
@@ -317,13 +357,20 @@ router.post("/teams/:teamId/invitations", requireAuth, async (req, res) => {
 // Returns all pending invitations for the authenticated user.
 router.get("/invitations", requireAuth, async (req, res) => {
   try {
-    const userId = req.user._id || req.user.id;
+    // Resolve authenticated user to real ObjectId to prevent Cast errors
+    const authUser = await resolveAuthUser(req.user);
+    if (!authUser) {
+      return res.status(401).json({ error: "Unauthorized: Could not resolve your account." });
+    }
+
     const invitations = await Invitation.find({
-      invitedUserId: userId,
+      invitedUserId: authUser._id,  // ObjectId — never email
       status: "pending",
     }).sort({ createdAt: -1 }).lean();
+
     res.json(invitations);
   } catch (e) {
+    console.error("[GET /invitations] Error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
@@ -332,11 +379,22 @@ router.get("/invitations", requireAuth, async (req, res) => {
 // Accepts team invitation and adds user to team members.
 router.post("/invitations/:invitationId/accept", requireAuth, async (req, res) => {
   try {
-    const userId = req.user._id || req.user.id;
+    // Guard: invitationId param must be a valid ObjectId
+    if (!mongoose.isValidObjectId(req.params.invitationId)) {
+      return res.status(400).json({ error: "Invalid invitation ID." });
+    }
+
+    // Resolve authenticated user to real ObjectId
+    const authUser = await resolveAuthUser(req.user);
+    if (!authUser) {
+      return res.status(401).json({ error: "Unauthorized: Could not resolve your account." });
+    }
+
     const inv = await Invitation.findById(req.params.invitationId);
     if (!inv) return res.status(404).json({ error: "Invitation not found." });
 
-    if (inv.invitedUserId.toString() !== userId.toString()) {
+    // Authorization: only the invited user may accept
+    if (inv.invitedUserId.toString() !== authUser._id.toString()) {
       return res.status(403).json({ error: "Forbidden: You are not the recipient of this invitation." });
     }
 
@@ -348,12 +406,14 @@ router.post("/invitations/:invitationId/accept", requireAuth, async (req, res) =
     if (!team) return res.status(404).json({ error: "Team no longer exists." });
 
     // Add user to team.members if not already present
-    const isMember = team.members.some((m) => (m.userId?._id || m.userId)?.toString() === userId.toString());
+    const isMember = team.members.some((m) =>
+      (m.userId?._id || m.userId)?.toString() === authUser._id.toString()
+    );
     if (!isMember) {
       team.members.push({
-        userId,
-        name: req.user.name || req.user.email,
-        avatar: req.user.avatar || "",
+        userId: authUser._id,        // ObjectId
+        name: authUser.name || authUser.email,
+        avatar: authUser.avatar || "",
         role: inv.role || "member",
         skills: { frontend: 5, backend: 5, devops: 5, design: 5, ml: 5, testing: 5 },
         capacity: 40,
@@ -367,16 +427,16 @@ router.post("/invitations/:invitationId/accept", requireAuth, async (req, res) =
 
     // Mark corresponding notification as read
     await Notification.updateMany(
-      { userId, "data.invitationId": inv._id },
+      { userId: authUser._id, "data.invitationId": inv._id },
       { $set: { read: true, status: "read" } }
     );
 
     // Notify inviter of acceptance
     await Notification.create({
-      userId: inv.inviterId,
+      userId: inv.inviterId,          // ObjectId — stored when invitation was created
       type: "invitation_accepted",
       title: "Invitation Accepted",
-      message: `${req.user.name || req.user.email} accepted your invitation to join ${team.name}.`,
+      message: `${authUser.name || authUser.email} accepted your invitation to join ${team.name}.`,
       data: { teamId: team._id, teamName: team.name },
       status: "unread",
     });
@@ -387,6 +447,7 @@ router.post("/invitations/:invitationId/accept", requireAuth, async (req, res) =
       teamId: team._id,
     });
   } catch (e) {
+    console.error("[POST /invitations/accept] Error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
@@ -395,11 +456,22 @@ router.post("/invitations/:invitationId/accept", requireAuth, async (req, res) =
 // Rejects team invitation.
 router.post("/invitations/:invitationId/reject", requireAuth, async (req, res) => {
   try {
-    const userId = req.user._id || req.user.id;
+    // Guard: invitationId param must be a valid ObjectId
+    if (!mongoose.isValidObjectId(req.params.invitationId)) {
+      return res.status(400).json({ error: "Invalid invitation ID." });
+    }
+
+    // Resolve authenticated user to real ObjectId
+    const authUser = await resolveAuthUser(req.user);
+    if (!authUser) {
+      return res.status(401).json({ error: "Unauthorized: Could not resolve your account." });
+    }
+
     const inv = await Invitation.findById(req.params.invitationId);
     if (!inv) return res.status(404).json({ error: "Invitation not found." });
 
-    if (inv.invitedUserId.toString() !== userId.toString()) {
+    // Authorization: only the invited user may reject
+    if (inv.invitedUserId.toString() !== authUser._id.toString()) {
       return res.status(403).json({ error: "Forbidden: You are not the recipient of this invitation." });
     }
 
@@ -412,7 +484,7 @@ router.post("/invitations/:invitationId/reject", requireAuth, async (req, res) =
 
     // Mark corresponding notification as read
     await Notification.updateMany(
-      { userId, "data.invitationId": inv._id },
+      { userId: authUser._id, "data.invitationId": inv._id },
       { $set: { read: true, status: "read" } }
     );
 
@@ -421,6 +493,7 @@ router.post("/invitations/:invitationId/reject", requireAuth, async (req, res) =
       message: "Invitation rejected.",
     });
   } catch (e) {
+    console.error("[POST /invitations/reject] Error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
@@ -429,13 +502,19 @@ router.post("/invitations/:invitationId/reject", requireAuth, async (req, res) =
 // Returns user's notifications.
 router.get("/notifications", requireAuth, async (req, res) => {
   try {
-    const userId = req.user._id || req.user.id;
-    const notifs = await Notification.find({ userId })
+    // Resolve authenticated user to real ObjectId to prevent Cast errors
+    const authUser = await resolveAuthUser(req.user);
+    if (!authUser) {
+      return res.status(401).json({ error: "Unauthorized: Could not resolve your account." });
+    }
+
+    const notifs = await Notification.find({ userId: authUser._id })  // ObjectId — never email
       .sort({ createdAt: -1 })
       .limit(50)
       .lean();
     res.json(notifs);
   } catch (e) {
+    console.error("[GET /notifications] Error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
@@ -444,15 +523,25 @@ router.get("/notifications", requireAuth, async (req, res) => {
 // Marks a single notification as read.
 router.patch("/notifications/:id/read", requireAuth, async (req, res) => {
   try {
-    const userId = req.user._id || req.user.id;
+    // Guard: notification id must be a valid ObjectId
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ error: "Invalid notification ID." });
+    }
+
+    const authUser = await resolveAuthUser(req.user);
+    if (!authUser) {
+      return res.status(401).json({ error: "Unauthorized: Could not resolve your account." });
+    }
+
     const notif = await Notification.findOneAndUpdate(
-      { _id: req.params.id, userId },
+      { _id: req.params.id, userId: authUser._id },  // ObjectId scoping — prevents cross-user access
       { $set: { read: true, status: "read" } },
       { new: true, lean: true }
     );
     if (!notif) return res.status(404).json({ error: "Notification not found." });
     res.json(notif);
   } catch (e) {
+    console.error("[PATCH /notifications/read] Error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
