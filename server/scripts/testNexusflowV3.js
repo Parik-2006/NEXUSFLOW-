@@ -18,7 +18,7 @@ import { sign, verify, requireAuth, formatUser } from "../auth.js";
 const MONGO_URI = process.env.MONGO_URI || "mongodb://localhost:27017/nexusflow";
 const JWT_SECRET = process.env.JWT_SECRET || "nexusflow-production-jwt-secret-key-2026";
 
-let userA, userB, userC, teamA, tokenA, tokenB;
+let userA, userB, userC, teamA, tokenA, tokenB, tokenC;
 let mongoConnected = false;
 
 async function connect() {
@@ -79,6 +79,9 @@ async function runTests() {
     }
   };
 
+  // Clean up any leftover test data
+  await cleanup();
+
   try {
     console.log("============================================================");
     console.log("NEXUSFLOW 3.0 — PHASE 1-9 TEST SUITE");
@@ -103,8 +106,9 @@ async function runTests() {
       if (!userC._id) throw new Error("No _id");
     });
 
-    tokenA = sign(userA);
-    tokenB = sign(userB);
+  tokenA = sign(userA);
+  tokenB = sign(userB);
+  tokenC = sign(userC);
 
     await test("JWT contains correct user id", async () => {
       const payload = verify(tokenA);

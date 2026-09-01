@@ -1639,6 +1639,11 @@ router.post("/teams/:teamId/leave", requireAuth, async (req, res) => {
     const leavingMember = team.members[memberIndex];
     const memberUserId = leavingMember.userId || authUser?._id;
 
+    // Capture remaining members BEFORE removing the leaving member
+    const remainingMembers = team.members.filter(
+      (m) => (m.userId?.toString?.() || m.userId?.toString?.()) !== (memberUserId || authUser?._id)?.toString?.()
+    );
+
     // Remove member from team
     team.members.splice(memberIndex, 1);
     team.markModified("members");
@@ -1663,6 +1668,43 @@ router.post("/teams/:teamId/leave", requireAuth, async (req, res) => {
       });
     } catch (depErr) {
       console.warn("[Team Departure] Could not record departure:", depErr.message);
+    }
+
+    // Notify remaining teammates
+    if (remainingMembers.length > 0) {
+      try {
+        const notificationPromises = remainingMembers.map((m) => {
+          const mUserId = m.userId?.toString?.() || m.userId?.toString?.();
+          return Notification.create({
+            userId: mUserId,
+            type: "team_invitation",
+            title: "Team Member Left",
+            message: `${leavingMember.name || "A member"} left the team. Reason: ${String(reason || "other").trim()}`,
+            data: {
+              teamId,
+              teamName: team.name,
+            },
+            status: "unread",
+          });
+        });
+        await Promise.all(notificationPromises);
+        console.log(`[Leave Team] Notifications created for ${remainingMembers.length} remaining members`);
+      } catch (notifErr) {
+        console.warn("[Leave Team] Could not create notifications:", notifErr.message);
+      }
+
+      const io = req.app.get("io");
+      if (io) {
+        for (const m of remainingMembers) {
+          const mUserId = m.userId?.toString?.() || m.userId?.toString?.();
+          io.to(`user:${mUserId}`).emit("team:member_left", {
+            teamId,
+            userId: memberUserId ? memberUserId.toString() : userIdStr,
+            name: leavingMember.name,
+            reason: String(reason || "other").trim(),
+          });
+        }
+      }
     }
 
     // Emit real-time member:removed to team room
