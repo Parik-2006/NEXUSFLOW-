@@ -50,9 +50,11 @@ async function createUser(name, email, password) {
   return user;
 }
 
+const BASE_URL = "http://localhost:5000";
+
 async function call(method, path, token, body) {
   const headers = { "Content-Type": "application/json", ...(token ? authHeader(token) : {}) };
-  const res = await fetch(`http://localhost:4000${path}`, {
+  const res = await fetch(`${BASE_URL}${path}`, {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
@@ -232,7 +234,7 @@ async function runTests() {
 
     await test("Socket.IO room strategy documented", async () => {
       const fs = await import("fs");
-      const contract = fs.readFileSync("NEXUSFLOW_V3_SHARED_CONTRACT.md", "utf8");
+      const contract = fs.readFileSync("../NEXUSFLOW_V3_SHARED_CONTRACT.md", "utf8");
       if (!contract.includes("user:{userId}")) throw new Error("User room missing");
       if (!contract.includes("team:{teamId}")) throw new Error("Team room missing");
       if (!contract.includes("project:{projectId}")) throw new Error("Project room missing");
@@ -240,7 +242,7 @@ async function runTests() {
 
     await test("Chat socket handlers registered", async () => {
       const fs = await import("fs");
-      const index = fs.readFileSync("server/index.js", "utf8");
+      const index = fs.readFileSync("../server/index.js", "utf8");
       if (!index.includes("registerChatHandlers")) throw new Error("Chat handlers not registered");
     });
 
