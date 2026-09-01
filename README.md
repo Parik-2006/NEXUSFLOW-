@@ -16,7 +16,7 @@ Managing software projects manually becomes difficult as project size grows. Tra
 # 🏗️ System Workflow
 
 <p align="center">
-<img src="images/workflow.png" width="100%">
+<img src="images/workflow-version2.0.png" width="100%">
 </p>
 
 The workflow begins with project creation, where AI analyzes the project description and automatically decomposes it into meaningful tasks. These tasks are prioritized using Greedy Scheduling, optimized into sprints using 0/1 Knapsack, organized through Topological Sorting, assigned using Branch & Bound, and continuously managed through AI recommendations.
@@ -26,7 +26,7 @@ The workflow begins with project creation, where AI analyzes the project descrip
 # 🏛️ System Architecture
 
 <p align="center">
-<img src="images/architecture.png" width="100%">
+<img src="images/architecture-version2.0.png" width="100%">
 </p>
 
 The architecture follows a layered design consisting of a React Native frontend, Node.js + Express backend, MongoDB database, Socket.IO real-time communication, Gemini AI integration, and multiple DAA algorithm modules working together to automate project management.
@@ -43,8 +43,6 @@ The architecture follows a layered design consisting of a React Native frontend,
 | 🟣 Branch & Bound | Assigns the best team member based on skill-gap cost |
 | 🟡 Merge Sort | Sorts tasks by priority, deadline and status |
 | 🔍 Boyer–Moore Search | Fast task searching within large backlogs |
-| 🌳 BFS | Finds dependency-free (ready) tasks |
-| 🌲 DFS | Detects cycles in task dependency graphs |
 
 ---
 
@@ -61,94 +59,6 @@ The architecture follows a layered design consisting of a React Native frontend,
 - 🔔 Smart Notifications & Reminders
 - 💬 Team Collaboration
 - 📱 Responsive Modern UI
-
----
-
-# 🛠️ Technology Stack
-
-### Frontend
-- React Native (Expo)
-- TypeScript
-- Tailwind CSS
-- Socket.IO Client
-
-Deployed frontend: https://nexusflow-eta.vercel.app/
-
-### Backend
-- Node.js
-- Express.js
-- MongoDB
-- Socket.IO
-
-Deployed backend: https://nexusflow-nxeg.onrender.com/
-
-### Artificial Intelligence
-- Google Gemini API
-
-### Algorithms
-- Greedy Algorithm
-- 0/1 Knapsack
-- Topological Sort
-- Branch & Bound
-- Merge Sort
-- Boyer–Moore Search
-- BFS
-- DFS
-
----
-
-# 🚀 How to Run
-
-## Clone Repository
-
-```bash
-git clone https://github.com/yourusername/NexusFlow.git
-cd NexusFlow
-```
-
-## Install Dependencies
-
-### Client
-
-```bash
-cd client
-npm install
-```
-
-### Server
-
-```bash
-cd ../server
-npm install
-```
-
----
-
-## Configure Environment
-
-Create a `.env` file inside the server folder.
-
-```env
-MONGODB_URI=YOUR_MONGODB_URI
-JWT_SECRET=YOUR_SECRET
-GEMINI_API_KEY=YOUR_GEMINI_API_KEY
-```
-
----
-
-## Start Server
-
-```bash
-npm run dev
-```
-
----
-
-## Start Client
-
-```bash
-npm start
-```
 
 ---
 
@@ -169,16 +79,6 @@ Project documentation is available inside the **documents/** folder.
 
 - 📘 DAA Project Report
 - 📑 DAA Project Poster
-
----
-
-# 👨‍💻 Team Members
-
-| Name | USN |
-|------|------|
-| **Parikshith B** | **1RV25CS416** |
-| **Pranav T M** | **1RV24CS197** |
-| **Prajwal** | **1RV24CS190** |
 
 ---
 
