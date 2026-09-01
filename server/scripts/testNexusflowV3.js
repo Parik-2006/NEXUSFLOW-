@@ -2,6 +2,7 @@
  * NEXUSFLOW 3.0 — Phase 1-9 Test Suite
  * Tests new features built on top of NexusFlow 2.0 baseline.
  */
+import "dotenv/config";
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
