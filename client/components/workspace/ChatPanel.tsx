@@ -1,124 +1,95 @@
 /**
- * ChatPanel — team chat + AI project planning.
- * Type "@ai <project description>" to auto-generate tasks (saved to MongoDB
- * and auto-assigned via Branch & Bound). "@ai plan sprint <hours>" runs Knapsack.
+ * ChatPanel.tsx — Team chat panel for workspace.
  */
-import React, { useEffect, useRef, useState } from "react";
-import {
-  View, Text, TextInput, FlatList, Pressable, StyleSheet,
-  KeyboardAvoidingView, Platform,
-} from "react-native";
+import React, { useState, useRef, useEffect } from "react";
+import { View, Text, StyleSheet, ScrollView, TextInput, Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { getSocket } from "@/services/socket";
-import { useAuth } from "@/context/AuthContext";
-import { Avatar } from "@/components/ui";
+import { useChat, type ChatMessage } from "@/hooks/useChat";
 import { colors, spacing, radius, font } from "@/theme";
+import { useAuth } from "@/context/AuthContext";
 
-type Msg = { _id: string; text: string; name: string; userId: string; createdAt: string };
-
-const SUGGESTIONS = [
-  "@ai Build a checkout flow with cart, payment, and confirmation",
-  "@ai plan sprint 40",
-];
-
-export default function ChatPanel({ teamId, initialText }: { teamId: string; initialText?: string }) {
-  const { token, user } = useAuth();
-  const [messages, setMessages] = useState<Msg[]>([]);
-  const [input, setInput] = useState(initialText ?? "");
-  const listRef = useRef<FlatList>(null);
+export default function ChatPanel({ teamId }: { teamId: string }) {
+  const { user } = useAuth();
+  const { messages, loading, sendMessage } = useChat(teamId);
+  const [text, setText] = useState("");
+  const scrollRef = useRef<ScrollView>(null);
 
   useEffect(() => {
-    const socket = getSocket(token);
-    const onMessage = (m: Msg) => {
-      setMessages((p) => [...p, m]);
-      setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 50);
-    };
-    const onStream = ({ id, text }: { id: string; text: string }) => {
-      setMessages((p) => {
-        const ex = p.find((m) => m._id === id);
-        if (ex) return p.map((m) => (m._id === id ? { ...m, text: m.text + text } : m));
-        return [...p, { _id: id, text, name: "AI", userId: "ai", createdAt: new Date().toISOString() }];
-      });
-      setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 50);
-    };
-    socket.on("chat:message", onMessage);
-    socket.on("chat:stream", onStream);
-    return () => { socket.off("chat:message", onMessage); socket.off("chat:stream", onStream); };
-  }, [token]);
+    if (messages.length > 0) {
+      scrollRef.current?.scrollToEnd({ animated: true });
+    }
+  }, [messages.length]);
 
-  const send = (text?: string) => {
-    const msg = (text ?? input).trim();
-    if (!msg) return;
-    getSocket(token).emit("chat:message", { teamId, text: msg });
-    setInput("");
+  const handleSend = async () => {
+    if (!text.trim()) return;
+    await sendMessage(text.trim(), teamId);
+    setText("");
   };
 
-  return (
-    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      {messages.length === 0 && (
-        <View style={s.intro}>
-          <View style={s.aiIcon}><Ionicons name="sparkles" size={26} color={colors.topo} /></View>
-          <Text style={font.h3}>AI Project Planning</Text>
-          <Text style={s.introSub}>Describe your project and AI breaks it into tasks — saved and prioritised automatically.</Text>
-          <View style={{ gap: 8, width: "100%", marginTop: spacing.md }}>
-            {SUGGESTIONS.map((sug) => (
-              <Pressable key={sug} style={s.sug} onPress={() => send(sug)}>
-                <Ionicons name="flash" size={14} color={colors.topo} />
-                <Text style={s.sugTxt} numberOfLines={1}>{sug}</Text>
-              </Pressable>
-            ))}
-          </View>
-        </View>
-      )}
+  const currentUserId = (user?._id || user?.id)?.toString();
 
-      <FlatList
-        ref={listRef}
-        data={messages}
-        keyExtractor={(m) => m._id}
-        contentContainerStyle={{ padding: spacing.lg, gap: spacing.sm }}
-        renderItem={({ item }) => {
-          const mine = item.userId === (user as any)?.id;
-          const ai = item.userId === "ai";
+  return (
+    <View style={s.wrap}>
+      <ScrollView
+        ref={scrollRef}
+        contentContainerStyle={s.scrollContent}
+        style={s.scroll}
+        keyboardShouldPersistTaps="handled"
+      >
+        {loading && messages.length === 0 && (
+          <Text style={s.loading}>Loading messages...</Text>
+        )}
+        {messages.map((m: ChatMessage) => {
+          const isMe = m.senderId === currentUserId;
           return (
-            <View style={[s.msgRow, mine && { flexDirection: "row-reverse" }]}>
-              {!mine && <Avatar name={ai ? "AI" : item.name} size={28} />}
-              <View style={[s.bubble, mine ? s.mine : ai ? s.aiBubble : s.theirs]}>
-                {!mine && <Text style={[s.sender, ai && { color: colors.topo }]}>{item.name}</Text>}
-                <Text style={[s.msgTxt, mine && { color: "#fff" }]}>{item.text}</Text>
+            <View key={m._id} style={[s.row, isMe ? s.rowMe : s.rowOther]}>
+              <View style={[s.bubble, isMe ? s.bubbleMe : s.bubbleOther]}>
+                {!isMe && <Text style={s.sender}>{m.senderName || "Member"}</Text>}
+                <Text style={[s.text, isMe && s.textMe]}>{m.message}</Text>
+                <Text style={s.time}>
+                  {new Date(m.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                  {m.editedAt && " (edited)"}
+                </Text>
               </View>
             </View>
           );
-        }}
-      />
+        })}
+      </ScrollView>
 
-      <View style={s.inputBar}>
+      <View style={s.inputRow}>
         <TextInput
-          style={s.input} value={input} onChangeText={setInput}
-          placeholder="Message or @ai <project>…" placeholderTextColor={colors.textFaint}
-          onSubmitEditing={() => send()} returnKeyType="send" multiline
+          style={s.input}
+          value={text}
+          onChangeText={setText}
+          placeholder="Type a message..."
+          placeholderTextColor={colors.textFaint}
+          onSubmitEditing={handleSend}
         />
-        <Pressable style={s.sendBtn} onPress={() => send()}>
+        <Pressable onPress={handleSend} style={[s.sendBtn, !text.trim() && s.sendBtnDisabled]}>
           <Ionicons name="send" size={18} color="#fff" />
         </Pressable>
       </View>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
 const s = StyleSheet.create({
-  intro: { position: "absolute", top: 0, left: 0, right: 0, alignItems: "center", padding: spacing.xl, gap: 6, zIndex: 1 },
-  aiIcon: { width: 56, height: 56, borderRadius: 18, backgroundColor: colors.topo + "1a", alignItems: "center", justifyContent: "center", marginBottom: 4 },
-  introSub: { fontSize: 13, color: colors.textMuted, textAlign: "center", lineHeight: 19, maxWidth: 300 },
-  sug: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, padding: 12 },
-  sugTxt: { flex: 1, fontSize: 13, color: colors.text, fontWeight: "600" },
-  msgRow: { flexDirection: "row", alignItems: "flex-end", gap: 8 },
-  bubble: { maxWidth: "78%", paddingVertical: 9, paddingHorizontal: 12, borderRadius: radius.lg },
-  mine: { backgroundColor: colors.primary, borderBottomRightRadius: 4 },
-  theirs: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderBottomLeftRadius: 4 },
-  aiBubble: { backgroundColor: colors.topo + "12", borderWidth: 1, borderColor: colors.topo + "33", borderBottomLeftRadius: 4 },
-  sender: { fontSize: 11, color: colors.textMuted, marginBottom: 2, fontWeight: "700" },
-  msgTxt: { fontSize: 14, color: colors.text, lineHeight: 19 },
-  inputBar: { flexDirection: "row", alignItems: "flex-end", gap: 8, padding: spacing.md, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.border },
-  input: { flex: 1, maxHeight: 100, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, color: colors.text, backgroundColor: colors.surfaceAlt },
-  sendBtn: { width: 42, height: 42, borderRadius: 21, backgroundColor: colors.primary, alignItems: "center", justifyContent: "center" },
+  wrap: { flex: 1, backgroundColor: colors.bg },
+  scroll: { flex: 1 },
+  scrollContent: { padding: spacing.md, gap: spacing.sm, paddingBottom: 80 },
+  loading: { textAlign: "center", color: colors.textMuted, marginTop: spacing.lg },
+  row: { flexDirection: "row", marginVertical: 2 },
+  rowMe: { justifyContent: "flex-end" },
+  rowOther: { justifyContent: "flex-start" },
+  bubble: { maxWidth: "75%", paddingVertical: 8, paddingHorizontal: 12, borderRadius: radius.lg },
+  bubbleMe: { backgroundColor: colors.primary, borderBottomRightRadius: 4 },
+  bubbleOther: { backgroundColor: colors.surfaceAlt, borderBottomLeftRadius: 4, borderWidth: 1, borderColor: colors.border },
+  sender: { fontSize: 11, fontWeight: "700", color: colors.accentDark, marginBottom: 2 },
+  text: { fontSize: 14, color: colors.text, lineHeight: 20 },
+  textMe: { color: "#fff" },
+  time: { fontSize: 10, color: colors.textFaint, marginTop: 4, textAlign: "right" },
+  inputRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, padding: spacing.md, borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: colors.surface },
+  input: { flex: 1, borderWidth: 1, borderColor: colors.border, borderRadius: radius.pill, paddingHorizontal: 16, paddingVertical: 10, fontSize: 14, color: colors.text, backgroundColor: colors.surfaceAlt },
+  sendBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.primary, alignItems: "center", justifyContent: "center" },
+  sendBtnDisabled: { backgroundColor: colors.textFaint },
 });

@@ -16,9 +16,10 @@ import AssignmentBoard from "@/components/workspace/AssignmentBoard";
 import GraphPanel from "@/components/workspace/GraphPanel";
 import AnalyticsPanel from "@/components/workspace/AnalyticsPanel";
 import ProjectAdvisorPanel from "@/components/workspace/ProjectAdvisorPanel";
+import ChatPanel from "@/components/workspace/ChatPanel";
 import { colors, spacing, radius, font } from "@/theme";
 
-type TabKey = "overview" | "advisor" | "tasks" | "sprint" | "graph" | "members" | "analytics";
+type TabKey = "overview" | "advisor" | "tasks" | "sprint" | "graph" | "members" | "analytics" | "chat";
 
 const TABS: { key: TabKey; label: string; icon: keyof typeof Ionicons.glyphMap; color: string }[] = [
   { key: "overview",  label: "Overview",   icon: "grid",                color: colors.primary },
@@ -28,6 +29,7 @@ const TABS: { key: TabKey; label: string; icon: keyof typeof Ionicons.glyphMap; 
   { key: "graph",     label: "Graph",      icon: "git-network",         color: colors.topo },
   { key: "members",   label: "Members",    icon: "people",              color: colors.branch },
   { key: "analytics", label: "Analytics",  icon: "stats-chart",         color: colors.merge },
+  { key: "chat",      label: "Chat",       icon: "chatbubbles",         color: colors.info },
 ];
 
 export default function Workspace() {
@@ -135,6 +137,7 @@ export default function Workspace() {
         {teamId && active === "members" && <AssignmentBoard teamId={teamId} />}
         {teamId && active === "graph" && <GraphPanel teamId={teamId} />}
         {teamId && active === "analytics" && <AnalyticsPanel teamId={teamId} />}
+        {teamId && active === "chat" && <ChatPanel teamId={teamId} />}
       </View>
     </View>
   );

@@ -194,6 +194,24 @@ export default function Profile() {
           </Card>
 
           {/* Documentation & Insights Links */}
+          <Pressable style={s.linkRow} onPress={() => router.push("/skill-verification" as any)}>
+            <View style={[s.linkIcon, { backgroundColor: colors.successSoft }]}><Ionicons name="school-outline" size={18} color={colors.success} /></View>
+            <View style={{ flex: 1 }}>
+              <Text style={s.linkTitle}>Skill Verification</Text>
+              <Text style={s.linkSub}>Verify your skills with AI-generated quizzes</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.textFaint} />
+          </Pressable>
+
+          <Pressable style={s.linkRow} onPress={() => router.push("/global-chat" as any)}>
+            <View style={[s.linkIcon, { backgroundColor: colors.infoSoft }]}><Ionicons name="chatbubbles-outline" size={18} color={colors.info} /></View>
+            <View style={{ flex: 1 }}>
+              <Text style={s.linkTitle}>Global Chat</Text>
+              <Text style={s.linkSub}>Chat with all NEXUSFLOW users</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.textFaint} />
+          </Pressable>
+
           <Pressable style={s.linkRow} onPress={() => router.push("/docs" as any)}>
             <View style={[s.linkIcon, { backgroundColor: colors.accentSoft }]}><Ionicons name="book-outline" size={18} color={colors.accentDark} /></View>
             <View style={{ flex: 1 }}>

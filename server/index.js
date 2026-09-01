@@ -5,13 +5,22 @@ import http from "http";
 import mongoose from "mongoose";
 import { Server } from "socket.io";
 
-import teamRoutes    from "./routes/teams.js";
+import authRoutes    from "./routes/auth.js";         // NEXUSFLOW 3.0 — Google OAuth + forgot password
+import chatRoutes   from "./routes/chat.js";           // NEXUSFLOW 3.0 — Chat system
+import skillsRoutes from "./routes/skills.js";         // NEXUSFLOW 3.0 — Skill verification + graph
+import aiRoutes     from "./routes/ai.js";             // NEXUSFLOW 3.0 — AI quiz generation
+import teamRoutes   from "./routes/teams.js";
 import projectRoutes from "./routes/projects.js";   // NEXUSFLOW 2.0 — Phase 1
+import githubRoutes  from "./routes/github.js";      // NEXUSFLOW 3.0 — Phase 11
 import { registerTaskHandlers } from "./socket/taskHandlers.js";
 import { registerAiOrchestrator } from "./socket/aiOrchestrator.js";
+import { registerProjectSyncHandlers } from "./socket/projectSyncHandlers.js"; // NEXUSFLOW 3.0 — Phase 10
+import { registerChatHandlers } from "./socket/chatHandlers.js";               // NEXUSFLOW 3.0 — Chat
 import User from "./models/User.js";
 import Team from "./models/Team.js";
 import { sign, verify, requireAuth, formatUser } from "./auth.js";
+import { logger } from "./utils/logger.js";            // NEXUSFLOW 3.0 — Phase 19
+import { createRateLimiter } from "./utils/rateLimiter.js"; // NEXUSFLOW 3.0 — Phase 19
 
 const PORT = process.env.PORT ?? 4000;
 const MONGO_URI = process.env.MONGO_URI ?? "mongodb://localhost:27017/nexusflow";
@@ -196,8 +205,13 @@ app.patch("/api/me", requireAuth, handleUpdateProfile);
 app.patch("/api/users/profile", requireAuth, handleUpdateProfile);
 app.patch("/api/user/profile", requireAuth, handleUpdateProfile);
 
+app.use("/api", authRoutes);       // NEXUSFLOW 3.0 — Google OAuth + forgot password
+app.use("/api", chatRoutes);       // NEXUSFLOW 3.0 — Chat system
+app.use("/api", skillsRoutes);     // NEXUSFLOW 3.0 — Skills
+app.use("/api", aiRoutes);         // NEXUSFLOW 3.0 — AI quiz
 app.use("/api", teamRoutes);
 app.use("/api", projectRoutes);   // NEXUSFLOW 2.0 — Phase 1 project routes
+app.use("/api", githubRoutes);    // NEXUSFLOW 3.0 — Phase 11 GitHub integration
 
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: [FRONTEND_URL, "http://localhost:8081", "http://localhost:19006"] } });
@@ -221,7 +235,12 @@ io.on("connection", (socket) => {
   }
   registerTaskHandlers(io, socket);
   registerAiOrchestrator(io, socket);
+  registerProjectSyncHandlers(io, socket); // NEXUSFLOW 3.0 — Phase 10 project sync
+  registerChatHandlers(io, socket);        // NEXUSFLOW 3.0 — Chat system
 });
+
+// Log server startup info (no sensitive data)
+logger.info("NexusFlow 3.0 server initializing", { phase: "startup" });
 
 mongoose
   .connect(MONGO_URI)

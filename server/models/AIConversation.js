@@ -100,6 +100,16 @@ const AIConversationSchema = new mongoose.Schema(
       ref:     "User",
       default: null,
     },
+
+    // ── Phase 10: Per-User Privacy Scoping ───────────────────────────────────
+    // Copilot conversations are PRIVATE per user. Indexed for efficient
+    // per-user queries so that User B never sees User A's chat history.
+    userId: {
+      type:  mongoose.Schema.Types.ObjectId,
+      ref:   "User",
+      index: true,
+      default: null,
+    },
   },
   { timestamps: true }
 );
@@ -110,5 +120,9 @@ AIConversationSchema.index({ projectId: 1, createdAt: -1 });
 
 // Only active conversations for a project
 AIConversationSchema.index({ projectId: 1, status: 1 });
+
+// Phase 10: Per-user private Copilot query index
+// Allows efficient: AIConversation.find({ projectId, userId }) — O(log n)
+AIConversationSchema.index({ projectId: 1, userId: 1, createdAt: -1 });
 
 export default mongoose.model("AIConversation", AIConversationSchema);

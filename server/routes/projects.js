@@ -89,6 +89,19 @@ import {
 import { discoverAcademicPapers } from "../services/academicResearchService.js";
 import { getProjectToolRecommendations } from "../services/projectToolsService.js";
 
+// NEXUSFLOW 3.0 — Phase 12-17 imports
+import TeamHealth        from "../models/TeamHealth.js";
+import Risk              from "../models/Risk.js";
+import Opinion          from "../models/Opinion.js";
+import Retrospective    from "../models/Retrospective.js";
+import LearningInsight  from "../models/LearningInsight.js";
+import { computeTeamHealth }      from "../services/teamHealth.js";
+import { scanProjectRisks }       from "../services/riskEngine.js";
+import { generateRetrospective }  from "../services/retrospectiveService.js";
+import { generateInsights }       from "../services/learningService.js";
+import { buildProjectBrainContext, serializeBrainForPrompt } from "../services/projectBrain.js";
+import { broadcastDecisionUpdate, broadcastResearchUpdate, broadcastArchitectureUpdate, broadcastGuidanceUpdate, broadcastRiskUpdate, broadcastHealthUpdate, broadcastRetrospectiveUpdate, broadcastOpinionUpdate } from "../socket/projectSyncHandlers.js";
+
 const router = Router();
 
 // ── Helper: verify project exists, check authorization, and return it ────────
@@ -1324,5 +1337,322 @@ router.post("/projects/:projectId/tasks/ai-suggest", requireAuth, async (req, re
 });
 
 export default router;
+
+// =============================================================================
+// NEXUSFLOW 3.0 — PHASE 12: TEAM HEALTH ENGINE
+// =============================================================================
+
+// GET /api/projects/:projectId/team-health
+router.get("/projects/:projectId/team-health", requireAuth, async (req, res) => {
+  const { projectId } = req.params;
+  if (!mongoose.isValidObjectId(projectId)) return res.status(400).json({ error: "invalid_project_id" });
+  try {
+    const existing = await TeamHealth.findOne({ projectId }).sort({ createdAt: -1 }).lean();
+    if (existing) return res.json({ health: existing });
+    const health = await computeTeamHealth(projectId);
+    res.json({ health });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/projects/:projectId/team-health/refresh
+router.post("/projects/:projectId/team-health/refresh", requireAuth, async (req, res) => {
+  const { projectId } = req.params;
+  if (!mongoose.isValidObjectId(projectId)) return res.status(400).json({ error: "invalid_project_id" });
+  try {
+    const health = await computeTeamHealth(projectId);
+    const io = req.app.get("io");
+    if (io) broadcastHealthUpdate(io, projectId, { health });
+    res.json({ health });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// =============================================================================
+// NEXUSFLOW 3.0 — PHASE 13: RISK INTELLIGENCE ENGINE
+// =============================================================================
+
+// GET /api/projects/:projectId/risks
+router.get("/projects/:projectId/risks", requireAuth, async (req, res) => {
+  const { projectId } = req.params;
+  const { status = "open" } = req.query;
+  if (!mongoose.isValidObjectId(projectId)) return res.status(400).json({ error: "invalid_project_id" });
+  try {
+    const filter = { projectId };
+    if (status !== "all") filter.status = status;
+    const risks = await Risk.find(filter).sort({ severity: 1, createdAt: -1 }).lean();
+    res.json({ risks });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/projects/:projectId/risks/scan
+router.post("/projects/:projectId/risks/scan", requireAuth, async (req, res) => {
+  const { projectId } = req.params;
+  if (!mongoose.isValidObjectId(projectId)) return res.status(400).json({ error: "invalid_project_id" });
+  try {
+    const risks = await scanProjectRisks(projectId);
+    const io = req.app.get("io");
+    if (io) broadcastRiskUpdate(io, projectId, { action: "scan", risks });
+    res.json({ risks, count: risks.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PATCH /api/projects/:projectId/risks/:riskId
+router.patch("/projects/:projectId/risks/:riskId", requireAuth, async (req, res) => {
+  const { projectId, riskId } = req.params;
+  const { status } = req.body;
+  if (!mongoose.isValidObjectId(projectId) || !mongoose.isValidObjectId(riskId)) {
+    return res.status(400).json({ error: "invalid_id" });
+  }
+  if (!["acknowledged", "resolved"].includes(status)) {
+    return res.status(400).json({ error: "status must be acknowledged or resolved" });
+  }
+  try {
+    const updates = { status };
+    if (status === "resolved") {
+      updates.resolvedBy = req.user.id;
+      updates.resolvedAt = new Date();
+    }
+    const risk = await Risk.findOneAndUpdate({ _id: riskId, projectId }, { $set: updates }, { new: true });
+    if (!risk) return res.status(404).json({ error: "risk_not_found" });
+    const io = req.app.get("io");
+    if (io) broadcastRiskUpdate(io, projectId, { risk });
+    res.json({ risk });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// =============================================================================
+// NEXUSFLOW 3.0 — PHASE 14: OPINION + DECISION SYSTEM
+// =============================================================================
+
+// GET /api/projects/:projectId/opinions
+router.get("/projects/:projectId/opinions", requireAuth, async (req, res) => {
+  const { projectId } = req.params;
+  if (!mongoose.isValidObjectId(projectId)) return res.status(400).json({ error: "invalid_project_id" });
+  try {
+    const opinions = await Opinion.find({ projectId }).sort({ createdAt: -1 }).lean();
+    res.json({ opinions });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/projects/:projectId/opinions
+router.post("/projects/:projectId/opinions", requireAuth, async (req, res) => {
+  const { projectId } = req.params;
+  const { question, options, deadline } = req.body;
+  if (!mongoose.isValidObjectId(projectId)) return res.status(400).json({ error: "invalid_project_id" });
+  if (!question || !Array.isArray(options) || options.length < 2) {
+    return res.status(400).json({ error: "question and at least 2 options required" });
+  }
+  try {
+    const project = await Project.findById(projectId).lean();
+    if (!project) return res.status(404).json({ error: "project_not_found" });
+    const opinion = await Opinion.create({
+      projectId,
+      teamId: project.teamId,
+      createdBy: req.user.id,
+      question,
+      options,
+      deadline: deadline || null,
+    });
+    const io = req.app.get("io");
+    if (io) broadcastOpinionUpdate(io, projectId, { action: "create", opinion });
+    res.status(201).json({ opinion });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/projects/:projectId/opinions/:opinionId/respond
+router.post("/projects/:projectId/opinions/:opinionId/respond", requireAuth, async (req, res) => {
+  const { projectId, opinionId } = req.params;
+  const { option, reasoning } = req.body;
+  if (!mongoose.isValidObjectId(projectId) || !mongoose.isValidObjectId(opinionId)) {
+    return res.status(400).json({ error: "invalid_id" });
+  }
+  if (!option) return res.status(400).json({ error: "option is required" });
+  try {
+    const opinion = await Opinion.findOneAndUpdate(
+      { _id: opinionId, projectId, status: "open" },
+      {
+        $push: {
+          responses: {
+            userId: req.user.id,
+            userName: req.user.name || "Team Member",
+            option,
+            reasoning: reasoning || "",
+          },
+        },
+      },
+      { new: true }
+    );
+    if (!opinion) return res.status(404).json({ error: "opinion_not_found_or_closed" });
+    const io = req.app.get("io");
+    if (io) broadcastOpinionUpdate(io, projectId, { action: "response", opinionId });
+    res.json({ opinion });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/projects/:projectId/opinions/:opinionId/decide
+router.post("/projects/:projectId/opinions/:opinionId/decide", requireAuth, async (req, res) => {
+  const { projectId, opinionId } = req.params;
+  const { selectedOption, reasoning } = req.body;
+  if (!mongoose.isValidObjectId(projectId) || !mongoose.isValidObjectId(opinionId)) {
+    return res.status(400).json({ error: "invalid_id" });
+  }
+  if (!selectedOption) return res.status(400).json({ error: "selectedOption required" });
+  try {
+    const opinion = await Opinion.findOne({ _id: opinionId, projectId });
+    if (!opinion) return res.status(404).json({ error: "opinion_not_found" });
+
+    const decision = await Decision.create({
+      projectId,
+      title: `Team consensus: ${opinion.question.slice(0, 80)}`,
+      decision: selectedOption,
+      selectedOption,
+      reasoning: reasoning || opinion.aiAnalysis?.reasoning || "",
+      status: "accepted",
+      category: "process",
+    });
+
+    opinion.status = "decided";
+    opinion.finalDecisionId = decision._id;
+    await opinion.save();
+
+    const io = req.app.get("io");
+    if (io) broadcastOpinionUpdate(io, projectId, { action: "decided", opinionId, opinion });
+    if (io) broadcastDecisionUpdate(io, projectId, { action: "create", decision });
+    res.status(201).json({ decision, opinion });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// =============================================================================
+// NEXUSFLOW 3.0 — PHASE 15: AI SPRINT RETROSPECTIVE
+// =============================================================================
+
+// POST /api/projects/:projectId/retrospectives
+router.post("/projects/:projectId/retrospectives", requireAuth, async (req, res) => {
+  const { projectId } = req.params;
+  const { sprintName, period } = req.body;
+  if (!mongoose.isValidObjectId(projectId)) return res.status(400).json({ error: "invalid_project_id" });
+  if (!sprintName) return res.status(400).json({ error: "sprintName is required" });
+  try {
+    const project = await Project.findById(projectId).lean();
+    if (!project) return res.status(404).json({ error: "project_not_found" });
+    const retro = await generateRetrospective({ projectId, teamId: project.teamId, sprintName, period });
+    const io = req.app.get("io");
+    if (io) broadcastRetrospectiveUpdate(io, projectId, { action: "create", retrospective: retro });
+    res.status(201).json({ retrospective: retro });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/projects/:projectId/retrospectives
+router.get("/projects/:projectId/retrospectives", requireAuth, async (req, res) => {
+  const { projectId } = req.params;
+  if (!mongoose.isValidObjectId(projectId)) return res.status(400).json({ error: "invalid_project_id" });
+  try {
+    const retros = await Retrospective.find({ projectId }).sort({ createdAt: -1 }).lean();
+    res.json({ retrospectives: retros });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/projects/:projectId/retrospectives/:retroId
+router.get("/projects/:projectId/retrospectives/:retroId", requireAuth, async (req, res) => {
+  const { projectId, retroId } = req.params;
+  if (!mongoose.isValidObjectId(projectId) || !mongoose.isValidObjectId(retroId)) {
+    return res.status(400).json({ error: "invalid_id" });
+  }
+  try {
+    const retro = await Retrospective.findOne({ _id: retroId, projectId }).lean();
+    if (!retro) return res.status(404).json({ error: "retrospective_not_found" });
+    res.json({ retrospective: retro });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PATCH /api/projects/:projectId/retrospectives/:retroId/acknowledge
+router.patch("/projects/:projectId/retrospectives/:retroId/acknowledge", requireAuth, async (req, res) => {
+  const { projectId, retroId } = req.params;
+  if (!mongoose.isValidObjectId(projectId) || !mongoose.isValidObjectId(retroId)) {
+    return res.status(400).json({ error: "invalid_id" });
+  }
+  try {
+    const retro = await Retrospective.findOneAndUpdate(
+      { _id: retroId, projectId },
+      { $addToSet: { acknowledgedBy: req.user.id } },
+      { new: true }
+    );
+    if (!retro) return res.status(404).json({ error: "retrospective_not_found" });
+    res.json({ retrospective: retro });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// =============================================================================
+// NEXUSFLOW 3.0 — PHASE 16: LEARNING LOOP
+// =============================================================================
+
+// GET /api/projects/:projectId/insights
+router.get("/projects/:projectId/insights", requireAuth, async (req, res) => {
+  const { projectId } = req.params;
+  if (!mongoose.isValidObjectId(projectId)) return res.status(400).json({ error: "invalid_project_id" });
+  try {
+    const insights = await LearningInsight.find({ projectId, isStale: false }).sort({ confidence: -1 }).lean();
+    res.json({ insights });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/projects/:projectId/insights/generate
+router.post("/projects/:projectId/insights/generate", requireAuth, async (req, res) => {
+  const { projectId } = req.params;
+  if (!mongoose.isValidObjectId(projectId)) return res.status(400).json({ error: "invalid_project_id" });
+  try {
+    const project = await Project.findById(projectId).lean();
+    if (!project) return res.status(404).json({ error: "project_not_found" });
+    const insights = await generateInsights(projectId, project.teamId);
+    res.json({ insights });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// =============================================================================
+// NEXUSFLOW 3.0 — PHASE 17: PROJECT BRAIN RAG CONTEXT
+// =============================================================================
+
+// GET /api/projects/:projectId/brain
+router.get("/projects/:projectId/brain", requireAuth, async (req, res) => {
+  const { projectId } = req.params;
+  if (!mongoose.isValidObjectId(projectId)) return res.status(400).json({ error: "invalid_project_id" });
+  try {
+    const brain = await buildProjectBrainContext(projectId, req.user.id);
+    if (!brain) return res.status(404).json({ error: "project_not_found" });
+    const serialized = serializeBrainForPrompt(brain);
+    res.json({ brain, serialized });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 
