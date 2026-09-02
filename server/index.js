@@ -1,4 +1,5 @@
-import "dotenv/config";
+import dotenv from "dotenv";
+dotenv.config({ override: true });
 import express from "express";
 import cors from "cors";
 import http from "http";
@@ -24,11 +25,25 @@ import { createRateLimiter } from "./utils/rateLimiter.js"; // NEXUSFLOW 3.0 —
 
 const PORT = process.env.PORT ?? 4000;
 const MONGO_URI = process.env.MONGO_URI ?? "mongodb://localhost:27017/nexusflow";
-const FRONTEND_URL = process.env.FRONTEND_URL ?? "https://nexusflow-eta.vercel.app";
+export const getFrontendUrl = () => {
+  const url = process.env.FRONTEND_URL || "";
+  if (!url || url.includes("your-frontend") || url.includes("example.com")) {
+    return "http://localhost:8081";
+  }
+  return url.replace(/\/+$/, "");
+};
+const FRONTEND_URL = getFrontendUrl();
 
 const app = express();
 app.use(cors({ origin: [FRONTEND_URL, "http://localhost:8081", "http://localhost:19006", "http://localhost:8082", "http://localhost:3000"], credentials: true }));
 app.use(express.json({ limit: "15mb" })); // Support avatar uploads
+
+// Forward root requests to the Frontend application (handles OAuth redirects & direct visits)
+app.get("/", (req, res) => {
+  const target = getFrontendUrl();
+  const query = req.url.includes("?") ? req.url.substring(req.url.indexOf("?")) : "";
+  res.redirect(`${target}/${query}`);
+});
 
 // ── AUTHENTICATION ROUTES ────────────────────────────────────────────────────
 

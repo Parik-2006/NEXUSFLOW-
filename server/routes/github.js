@@ -53,8 +53,12 @@ router.get("/github/auth/callback", async (req, res) => {
       { upsert: true, new: true }
     );
 
-    const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:8081";
-    res.redirect(`${FRONTEND_URL}/github/connected?success=true`);
+    const frontendUrl = (() => {
+      const url = process.env.FRONTEND_URL || "";
+      if (!url || url.includes("your-frontend") || url.includes("example.com")) return "http://localhost:8081";
+      return url.replace(/\/+$/, "");
+    })();
+    res.redirect(`${frontendUrl}/github/connected?success=true`);
   } catch (err) {
     logger.error("GitHub OAuth callback failed", { error: err.message });
     res.status(500).json({ error: err.message });

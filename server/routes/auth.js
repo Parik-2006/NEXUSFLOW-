@@ -9,8 +9,13 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const GOOGLE_CLIENT_ID = () => process.env.GOOGLE_CLIENT_ID || "";
 const GOOGLE_CLIENT_SECRET = () => process.env.GOOGLE_CLIENT_SECRET || "";
-const GOOGLE_REDIRECT_URI = () => process.env.GOOGLE_REDIRECT_URI || "";
-const getFrontendUrl = () => (process.env.FRONTEND_URL || "http://localhost:8081").replace(/\/+$/, "");
+const getFrontendUrl = () => {
+  const url = process.env.FRONTEND_URL || "";
+  if (!url || url.includes("your-frontend") || url.includes("example.com")) {
+    return "http://localhost:8081";
+  }
+  return url.replace(/\/+$/, "");
+};
 
 // Simple in-memory store for OAuth state tokens (CSRF protection)
 const oauthStateStore = new Map();
