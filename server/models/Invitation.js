@@ -31,11 +31,16 @@ const InvitationSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["pending", "accepted", "rejected", "canceled"],
+      enum: ["pending", "accepted", "rejected", "expired", "canceled"],
       default: "pending",
       index: true,
     },
     role: { type: String, default: "member" },
+    expiresAt: {
+      type: Date,
+      default: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      index: { expireAfterSeconds: 0, background: true },
+    },
   },
   { timestamps: true }
 );

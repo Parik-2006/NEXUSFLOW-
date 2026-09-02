@@ -29,6 +29,7 @@ export type Team = {
   settings?: TeamSettings;
   projectTitle?: string;
   projectDescription?: string;
+  activeProjectId?: string;
   taskCount: number;
   doneCount: number;
   members?: TeamMember[];

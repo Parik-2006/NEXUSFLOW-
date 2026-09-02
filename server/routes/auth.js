@@ -11,12 +11,45 @@ const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
 const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || "";
 
+// Simple in-memory store for OAuth state tokens (CSRF protection)
+const oauthStateStore = new Map();
+const OAUTH_STATE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function generateOAuthState() {
+  const state = cryptoRandomToken(32);
+  oauthStateStore.set(state, Date.now());
+  return state;
+}
+
+function validateOAuthState(state) {
+  if (!state) return false;
+  const timestamp = oauthStateStore.get(state);
+  if (!timestamp) return false;
+  if (Date.now() - timestamp > OAUTH_STATE_TTL_MS) {
+    oauthStateStore.delete(state);
+    return false;
+  }
+  oauthStateStore.delete(state);
+  return true;
+}
+
+// Clean up expired states periodically
+setInterval(() => {
+  const now = Date.now();
+  for (const [state, timestamp] of oauthStateStore.entries()) {
+    if (now - timestamp > OAUTH_STATE_TTL_MS) {
+      oauthStateStore.delete(state);
+    }
+  }
+}, 60_000);
+
 // ── GOOGLE OAUTH ────────────────────────────────────────────────────────────────
 
 router.get("/auth/google", (req, res) => {
   if (!GOOGLE_CLIENT_ID || !GOOGLE_REDIRECT_URI) {
     return res.status(500).json({ error: "Google OAuth is not configured on the server." });
   }
+  const state = generateOAuthState();
   const params = new URLSearchParams({
     client_id: GOOGLE_CLIENT_ID,
     redirect_uri: GOOGLE_REDIRECT_URI,
@@ -24,6 +57,7 @@ router.get("/auth/google", (req, res) => {
     scope: "openid email profile",
     access_type: "offline",
     prompt: "consent",
+    state,
   });
   res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
 });
@@ -31,7 +65,12 @@ router.get("/auth/google", (req, res) => {
 router.get("/auth/google/callback", async (req, res) => {
   try {
     const code = String(req.query.code || "").trim();
+    const state = String(req.query.state || "").trim();
+    
     if (!code) return res.redirect(`/?error=missing_code`);
+    if (!validateOAuthState(state)) {
+      return res.redirect(`/?error=invalid_state`);
+    }
 
     const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
@@ -87,7 +126,14 @@ router.get("/auth/google/callback", async (req, res) => {
     }
 
     const jwtToken = sign(user);
-    res.redirect(`/?token=${encodeURIComponent(jwtToken)}&google=1`);
+    res.cookie("nf_jwt", jwtToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+      path: "/",
+    });
+    res.redirect(`/?google=1`);
   } catch (err) {
     console.error("[Google OAuth] Callback error:", err.message);
     res.redirect(`/?error=server_error`);
@@ -96,7 +142,7 @@ router.get("/auth/google/callback", async (req, res) => {
 
 // ── FORGOT PASSWORD ─────────────────────────────────────────────────────────────
 
-router.post("/auth/forgot-password", requireAuth, async (req, res) => {
+router.post("/auth/forgot-password", async (req, res) => {
   try {
     const { email } = req.body ?? {};
     const normalizedEmail = String(email || "").toLowerCase().trim();
@@ -126,9 +172,6 @@ router.post("/auth/forgot-password", requireAuth, async (req, res) => {
       { $set: { used: true } }
     );
 
-    console.log(`[Password Reset] Token for ${normalizedEmail}: ${rawToken}`);
-    console.log(`[Password Reset] Reset link: /reset-password?token=${rawToken}`);
-
     res.json({ success: true, message: "If an account with that email exists, a reset link has been sent." });
   } catch (err) {
     console.error("[Forgot Password] Error:", err.message);
@@ -151,20 +194,13 @@ router.post("/auth/reset-password", async (req, res) => {
       return res.status(400).json({ error: "Passwords do not match." });
     }
 
-    const reset = await PasswordReset.findOne({ used: false, expiresAt: { $gt: new Date() } })
-      .sort({ createdAt: -1 })
-      .lean();
+    const matchedReset = await findValidResetToken(rawToken);
 
-    if (!reset) {
+    if (!matchedReset) {
       return res.status(400).json({ error: "Invalid or expired reset token." });
     }
 
-    const isValid = await bcryptCompare(rawToken, reset.tokenHash);
-    if (!isValid) {
-      return res.status(400).json({ error: "Invalid or expired reset token." });
-    }
-
-    const user = await User.findById(reset.userId);
+    const user = await User.findById(matchedReset.userId);
     if (!user) {
       return res.status(404).json({ error: "User not found." });
     }
@@ -172,7 +208,11 @@ router.post("/auth/reset-password", async (req, res) => {
     user.password = String(password);
     await user.save();
 
-    await PasswordReset.findByIdAndUpdate(reset._id, { $set: { used: true } });
+    await PasswordReset.findByIdAndUpdate(matchedReset._id, { $set: { used: true } });
+    await PasswordReset.updateMany(
+      { userId: matchedReset.userId, _id: { $ne: matchedReset._id }, used: false },
+      { $set: { used: true } }
+    );
 
     const jwtToken = sign(user);
     res.json({ success: true, token: jwtToken, user: formatUser(user) });
@@ -189,22 +229,29 @@ router.get("/auth/reset-password/validate", async (req, res) => {
       return res.status(400).json({ valid: false, error: "Token is required." });
     }
 
-    const reset = await PasswordReset.findOne({ used: false, expiresAt: { $gt: new Date() } })
-      .sort({ createdAt: -1 })
-      .lean();
+    const matchedReset = await findValidResetToken(rawToken);
 
-    if (!reset) {
-      return res.json({ valid: false, error: "Invalid or expired token." });
-    }
-
-    const isValid = await bcryptCompare(rawToken, reset.tokenHash);
-    res.json({ valid: isValid });
+    res.json({ valid: !!matchedReset });
   } catch (err) {
     res.status(500).json({ valid: false, error: "Failed to validate token." });
   }
 });
 
 // ── UTILS ──────────────────────────────────────────────────────────────────────
+
+// Shared helper: find a valid password reset token by raw token value.
+// Returns the matched reset document or null.
+async function findValidResetToken(rawToken) {
+  const candidateResets = await PasswordReset.find({ used: false, expiresAt: { $gt: new Date() } })
+    .sort({ createdAt: -1 })
+    .limit(1)
+    .lean();
+
+  if (candidateResets.length > 0 && await bcryptCompare(rawToken, candidateResets[0].tokenHash)) {
+    return candidateResets[0];
+  }
+  return null;
+}
 
 function cryptoRandomToken(length) {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";

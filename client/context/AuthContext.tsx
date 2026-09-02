@@ -28,6 +28,9 @@ export type AuthState = {
   signOut: () => Promise<void>;
   updateProfile: (data: Partial<User>) => Promise<User>;
   refreshProfile: () => Promise<void>;
+  signInWithGoogle: (idToken: string) => Promise<void>;
+  forgotPassword: (email: string) => Promise<void>;
+  resetPassword: (token: string, password: string, confirmPassword: string) => Promise<void>;
 };
 
 const AuthContext = createContext<AuthState | undefined>(undefined);
@@ -142,8 +145,51 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [token]);
 
+  const signInWithGoogle = useCallback(async (idToken: string) => {
+    await setItem(TOKEN_KEY, idToken);
+    setToken(idToken);
+    try {
+      const res = await fetch(`${API}/api/me`, {
+        headers: { Authorization: `Bearer ${idToken}` },
+      });
+      if (res.ok) {
+        const userData = await res.json();
+        setUser(userData);
+      }
+    } catch (e) {
+      console.warn("[Auth] Failed to fetch profile after Google sign-in:", e);
+    }
+  }, []);
+
+  const forgotPassword = useCallback(async (email: string) => {
+    const res = await fetch(`${API}/api/auth/forgot-password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: email.trim().toLowerCase() }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error ?? "Failed to send reset link.");
+    }
+  }, []);
+
+  const resetPassword = useCallback(async (token: string, password: string, confirmPassword: string) => {
+    const res = await fetch(`${API}/api/auth/reset-password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, password, confirmPassword }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error ?? "Failed to reset password.");
+    }
+    await setItem(TOKEN_KEY, data.token);
+    setToken(data.token);
+    setUser(data.user);
+  }, []);
+
   return (
-    <AuthContext.Provider value={{ token, user, loading, signIn, signUp, signOut, updateProfile, refreshProfile }}>
+    <AuthContext.Provider value={{ token, user, loading, signIn, signUp, signOut, updateProfile, refreshProfile, signInWithGoogle, forgotPassword, resetPassword }}>
       {children}
     </AuthContext.Provider>
   );

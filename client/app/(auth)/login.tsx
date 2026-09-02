@@ -1,11 +1,15 @@
 import { useState } from "react";
-import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, Pressable, ScrollView } from "react-native";
+import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, Pressable, ScrollView, Linking } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/context/AuthContext";
 import { Field, Button } from "@/components/ui";
 import { useToast } from "@/components/feedback";
 import { colors, spacing, radius, font, shadow, layout } from "@/theme";
+import { getItem } from "@/utils/storage";
+import { API_BASE_URL } from "@/utils/api";
+
+const API = API_BASE_URL;
 
 const HIGHLIGHTS = [
   { icon: "sparkles-outline", text: "AI turns a project brief into a ready backlog" },
@@ -43,6 +47,22 @@ export default function Login() {
       const msg = e.message ?? "Sign in failed";
       setErrorMsg(msg);
       toast(msg, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleGoogle = async () => {
+    setBusy(true);
+    setErrorMsg(null);
+    try {
+      if (Platform.OS === "web") {
+        window.location.href = `${API}/api/auth/google`;
+      } else {
+        Linking.openURL(`${API}/api/auth/google`);
+      }
+    } catch {
+      toast("Failed to start Google sign-in.", "error");
     } finally {
       setBusy(false);
     }
@@ -109,6 +129,13 @@ export default function Login() {
                 />
 
                 <Button title="Login" icon="arrow-forward" onPress={onSubmit} loading={busy} style={{ marginTop: 4 }} />
+                <Pressable onPress={handleGoogle} style={[s.googleBtn, busy && s.googleBtnDisabled]}>
+                  <Ionicons name="logo-google" size={18} color="#fff" />
+                  <Text style={s.googleBtnTxt}>Continue with Google</Text>
+                </Pressable>
+                <Pressable onPress={() => router.push("/(auth)/forgot-password" as any)} hitSlop={8}>
+                  <Text style={s.forgotTxt}>Forgot password?</Text>
+                </Pressable>
               </View>
 
               <View style={s.divider}><View style={s.line} /><Text style={s.dividerTxt}>Don't have an account?</Text><View style={s.line} /></View>
@@ -163,4 +190,8 @@ const s = StyleSheet.create({
   errorTxt: { fontSize: 12.5, color: colors.danger, fontWeight: "600", flex: 1 },
   createBtn: { alignItems: "center", justifyContent: "center", paddingVertical: 12, borderRadius: radius.md, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.border, marginTop: spacing.md },
   createBtnTxt: { fontSize: 14, fontWeight: "700", color: colors.primary },
+  googleBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 12, borderRadius: radius.md, backgroundColor: colors.text, marginTop: spacing.sm },
+  googleBtnDisabled: { opacity: 0.6 },
+  googleBtnTxt: { fontSize: 14, fontWeight: "700", color: "#fff" },
+  forgotTxt: { fontSize: 13, color: colors.primary, fontWeight: "700", textAlign: "center", marginTop: spacing.sm },
 });

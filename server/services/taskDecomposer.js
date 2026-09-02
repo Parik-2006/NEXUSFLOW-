@@ -12,7 +12,7 @@
  *    recommendations, research topics, team skills, and existing tasks.
  *
  * 2. decomposeTasksWithContext(options)
- *    Queries OpenAI (gpt-4o-mini) with strict structured JSON or executes the
+ *    Routes through OmniRoute ($0 AI policy) with strict structured JSON or executes the
  *    deterministic heuristic decomposer fallback. Supports modes:
  *      - "project": Full project implementation backlog
  *      - "related": Task related to a specific existing task or topic
@@ -473,7 +473,7 @@ export function generateHeuristicProjectTasks(context, options = {}) {
   return validateDecomposedTasks({ tasks });
 }
 
-// ── 4. Main Decomposition Service (OpenAI / Heuristic) ────────────────────────
+// ── 4. Main Decomposition Service (OmniRoute / Heuristic Fallback) ─────────────
 export async function decomposeTasksWithContext(options = {}) {
   const { projectId, teamId, mode = "project", prompt = "", taskId, phase, previewOnly = false, user } = options;
 
@@ -489,9 +489,8 @@ export async function decomposeTasksWithContext(options = {}) {
 
   let rawTasks = [];
 
-  if (OPENAI_KEY) {
-    try {
-      const systemPrompt = `You are a Principal Technical Lead and Task Decomposer in NEXUSFLOW 2.0.
+  try {
+    const systemPrompt = `You are a Principal Technical Lead and Task Decomposer in NEXUSFLOW 2.0.
 Your responsibility is to break down a project into concrete, actionable engineering tasks.
 
 PROJECT CONTEXT & FACTS:
@@ -559,9 +558,6 @@ CRITICAL RULES:
       console.warn("[taskDecomposer] OmniRoute generation failed, using heuristic fallback:", err.message);
       rawTasks = generateHeuristicProjectTasks(context, { mode, phase, focusedTask });
     }
-  } else {
-    rawTasks = generateHeuristicProjectTasks(context, { mode, phase, focusedTask });
-  }
 
   if (previewOnly) {
     return {

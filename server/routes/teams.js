@@ -41,7 +41,7 @@ const MAX_SPRINT_HOURS = 200;
  * Use this in any route that writes ObjectId references to Invitation/Notification
  * to prevent "Cast to ObjectId failed" 500 errors.
  */
-async function resolveAuthUser(reqUser) {
+export async function resolveAuthUser(reqUser) {
   if (!reqUser) return null;
   const rawId = reqUser._id || reqUser.id;
   // Happy path: JWT id is already a valid ObjectId string
@@ -57,6 +57,20 @@ async function resolveAuthUser(reqUser) {
   return user || null;
 }
 
+// Shared helper: check invitation expiration and mark as expired if needed.
+// Returns the invitation (possibly mutated) or null with an error response.
+async function checkInvitationExpiry(inv) {
+  if (!inv) return { error: "Invitation not found.", status: 404 };
+  if (inv.status !== "pending") {
+    return { error: `Invitation is already ${inv.status}.`, status: 400 };
+  }
+  if (inv.expiresAt && new Date(inv.expiresAt) < new Date()) {
+    inv.status = "expired";
+    await inv.save();
+    return { error: "Invitation has expired.", status: 400 };
+  }
+  return { invitation: inv };
+}
 
 export async function verifyTeamAccess(teamId, user) {
   if (!mongoose.isValidObjectId(teamId)) return { error: "invalid_team_id", status: 400 };
@@ -390,6 +404,11 @@ router.get("/invitations", requireAuth, async (req, res) => {
     const invitations = await Invitation.find({
       invitedUserId: authUser._id,  // ObjectId — never email
       status: "pending",
+      $or: [
+        { expiresAt: { $exists: false } },
+        { expiresAt: null },
+        { expiresAt: { $gt: new Date() } },
+      ],
     }).sort({ createdAt: -1 }).lean();
 
     res.json(invitations);
@@ -422,9 +441,8 @@ router.post("/invitations/:invitationId/accept", requireAuth, async (req, res) =
       return res.status(403).json({ error: "Forbidden: You are not the recipient of this invitation." });
     }
 
-    if (inv.status !== "pending") {
-      return res.status(400).json({ error: `Invitation is already ${inv.status}.` });
-    }
+    const expiryCheck = await checkInvitationExpiry(inv);
+    if (expiryCheck.error) return res.status(expiryCheck.status).json({ error: expiryCheck.error });
 
     const team = await Team.findById(inv.teamId);
     if (!team) return res.status(404).json({ error: "Team no longer exists." });
@@ -520,9 +538,8 @@ router.post("/invitations/:invitationId/reject", requireAuth, async (req, res) =
       return res.status(403).json({ error: "Forbidden: You are not the recipient of this invitation." });
     }
 
-    if (inv.status !== "pending") {
-      return res.status(400).json({ error: `Invitation is already ${inv.status}.` });
-    }
+    const expiryCheck = await checkInvitationExpiry(inv);
+    if (expiryCheck.error) return res.status(expiryCheck.status).json({ error: expiryCheck.error });
 
     inv.status = "rejected";
     await inv.save();
@@ -699,22 +716,13 @@ router.post("/teams/:teamId/generate-tasks", requireAuth, async (req, res) => {
 //   • Topological reasoning → dependency awareness
 //   • buildCompactProjectContext → lean team-aware context object
 //
-// When OPENAI_API_KEY is present: uses OpenAI gpt-4o-mini with structured JSON
-//   output for genuinely project-specific suggestions in all modes.
-// When no key: falls back to the existing deterministic decomposer path.
-//
-// Modes:
-//   "related"      → A new task genuinely related to this project
-//   "missing-phase"→ Identify an important missing project phase
-//   "subtasks"     → Break a specific existing task into subtasks
 //   "project-plan" → Structured project plan: tech stack, research, risks, effort
 //   "architecture" → Architecture-level implementation tasks
 //   "research"     → Research spike tasks for the project domain
 //
 // Returns an autofill payload + explanation.
 // Does NOT persist — the existing task:create socket / REST pipeline saves the task.
-
-const OPENAI_KEY_FOR_SUGGEST = process.env.OPENAI_API_KEY;
+// AI calls go through OmniRoute ($0 policy enforced).
 
 const SUBTASKS = {
   Planning:    ["Define success metrics", "Create project timeline", "Risk assessment"],
@@ -759,30 +767,26 @@ function buildTaskPayload(seed, depCount = 0) {
   };
 }
 
-// ── OpenAI helper: call with timeout and structured JSON response ────────────
-async function callOpenAiStructured(systemPrompt, userMessage, timeoutMs = 20_000) {
+// ── OmniRoute helper: call with timeout and structured JSON response ───────────
+async function callOmniRouteStructured(systemPrompt, userMessage, timeoutMs = 20_000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method:  "POST",
-      signal:  controller.signal,
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENAI_KEY_FOR_SUGGEST}` },
-      body: JSON.stringify({
-        model:           "gpt-4o-mini",
-        response_format: { type: "json_object" },
-        temperature:     0.3,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user",   content: userMessage },
-        ],
-      }),
+    const { omniRouteGenerate } = await import("../services/omniRoute.js");
+    const result = await omniRouteGenerate({
+      systemPrompt,
+      prompt: userMessage,
+      responseFormat: "json_object",
+      temperature: 0.3,
+      maxTokens: 1200,
+      timeoutMs,
     });
-    if (!res.ok) return null;
-    const json = await res.json();
-    const raw  = json.choices?.[0]?.message?.content;
-    if (!raw) return null;
-    return JSON.parse(raw);
+    if (!result || !result.content) return null;
+    try {
+      return JSON.parse(result.content);
+    } catch {
+      return null;
+    }
   } catch {
     return null;
   } finally {
@@ -853,8 +857,7 @@ router.post("/teams/:teamId/ai-suggest", requireAuth, async (req, res) => {
     if (mode === "project-plan") {
       let aiResult = null;
 
-      if (OPENAI_KEY_FOR_SUGGEST) {
-        const sysPrompt = buildBaseSystemPrompt(ctx, "project-plan") + `
+      const sysPrompt = buildBaseSystemPrompt(ctx, "project-plan") + `
 
 Return a JSON object with this exact shape:
 {
@@ -894,11 +897,11 @@ Return a JSON object with this exact shape:
     "dependsOn": []
   }
 }`;
-        aiResult = await callOpenAiStructured(
-          sysPrompt,
-          `Generate a structured project plan for: "${ctx.projectTitle}" — ${ctx.projectDescription || "(no description provided)"}`
-        );
-      }
+
+      aiResult = await callOmniRouteStructured(
+        sysPrompt,
+        `Generate a structured project plan for: "${ctx.projectTitle}" — ${ctx.projectDescription || "(no description provided)"}`
+      );
 
       // Heuristic fallback for project-plan
       if (!aiResult || !aiResult.plan) {
@@ -968,8 +971,7 @@ Return a JSON object with this exact shape:
     else if (mode === "missing-phase") {
       let aiResult = null;
 
-      if (OPENAI_KEY_FOR_SUGGEST) {
-        const sysPrompt = buildBaseSystemPrompt(ctx, "missing-phase") + `
+      const sysPrompt = buildBaseSystemPrompt(ctx, "missing-phase") + `
 
 Analyze the existing backlog and identify the MOST IMPORTANT missing project phase.
 
@@ -990,11 +992,11 @@ Return a JSON object:
   },
   "alternatives": ["Other task titles for this phase"]
 }`;
-        aiResult = await callOpenAiStructured(
-          sysPrompt,
-          `Identify missing phase for "${ctx.projectTitle}". Current categories: ${ctx.categories.join(", ") || "none"}.`
-        );
-      }
+
+      aiResult = await callOmniRouteStructured(
+        sysPrompt,
+        `Identify missing phase for "${ctx.projectTitle}". Current categories: ${ctx.categories.join(", ") || "none"}.`
+      );
 
       // Deterministic fallback (existing logic)
       if (!aiResult || !aiResult.task) {
@@ -1025,8 +1027,9 @@ Return a JSON object:
       const parent = tasks.find((t) => t._id.toString() === String(taskId));
       let aiResult = null;
 
-      if (OPENAI_KEY_FOR_SUGGEST && parent) {
-        const sysPrompt = buildBaseSystemPrompt(ctx, "subtasks") + `
+      if (parent) {
+        aiResult = await callOmniRouteStructured(
+          buildBaseSystemPrompt(ctx, "subtasks") + `
 
 Break the following task into concrete, specific subtasks for this project.
 Parent task: "${parent.title}" (Category: ${parent.category || "General"})
@@ -1044,12 +1047,8 @@ Return a JSON object:
       "businessValue": 6,
       "reason": "Why this subtask is needed",
       "dependsOn": ["Previous subtask title if sequential"]
-    }
-  ]
-}`;
-        aiResult = await callOpenAiStructured(
-          sysPrompt,
-          `Break down: "${parent.title}" into subtasks for project "${ctx.projectTitle}".`
+  }
+}`
         );
       }
 
@@ -1104,8 +1103,7 @@ Return a JSON object:
     else {
       let aiResult = null;
 
-      if (OPENAI_KEY_FOR_SUGGEST) {
-        const sysPrompt = buildBaseSystemPrompt(ctx, "related") + `
+      const sysPrompt = buildBaseSystemPrompt(ctx, "related") + `
 
 Suggest ONE new task that is genuinely related to this specific project and not already in the backlog.
 
@@ -1124,11 +1122,11 @@ Return a JSON object:
   },
   "alternatives": ["Other possible related task titles"]
 }`;
-        aiResult = await callOpenAiStructured(
-          sysPrompt,
-          `Suggest a related task for "${ctx.projectTitle}" (${ctx.domain}). Existing: ${ctx.existingTasks.slice(0, 10).map((t) => t.title).join(", ")}.`
-        );
-      }
+
+      aiResult = await callOmniRouteStructured(
+        sysPrompt,
+        `Suggest a related task for "${ctx.projectTitle}" (${ctx.domain}). Existing: ${ctx.existingTasks.slice(0, 10).map((t) => t.title).join(", ")}.`
+      );
 
       if (!aiResult || !aiResult.task) {
         // Deterministic fallback: Boyer-Moore dedup + Merge Sort ranking
@@ -1291,9 +1289,7 @@ router.post("/teams/:teamId/decide", requireAuth, async (req, res) => {
     //   - tradeoff prose per option
     //   - risk narrative
     // If AI fails, the deterministic result stands as-is.
-    const OPENAI_KEY_DECIDE = process.env.OPENAI_API_KEY;
-
-    if (OPENAI_KEY_DECIDE && ["technology", "architecture", "ai-ml"].includes(decisionType) && options.length > 0) {
+    if (["technology", "architecture", "ai-ml"].includes(decisionType) && options.length > 0) {
       try {
         const needsTypes = ["technology", "architecture", "ai-ml"];
         if (needsTypes.includes(decisionType)) {
@@ -1328,48 +1324,29 @@ Return a JSON object:
   }
 }`;
 
-          const aiRes = await fetch("https://api.openai.com/v1/chat/completions", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${OPENAI_KEY_DECIDE}`,
-            },
-            body: JSON.stringify({
-              model: "gpt-4o-mini",
-              messages: [
-                { role: "system", content: systemPrompt },
-                { role: "user", content: `Explain the decision recommendation for the ${decisionType} choice.` },
-              ],
-              temperature: 0.3,
-              max_tokens: 600,
-              response_format: { type: "json_object" },
-            }),
-            signal: AbortSignal.timeout(8000),
-          });
+          const aiResult = await callOmniRouteStructured(
+            systemPrompt,
+            `Explain the decision recommendation for the ${decisionType} choice.`
+          );
 
-          if (aiRes.ok) {
-            const aiData = await aiRes.json();
-            const aiContent = aiData.choices?.[0]?.message?.content;
-            if (aiContent) {
-              const aiQualitative = JSON.parse(aiContent);
-              // Re-run engine with AI qualitative content to enrich explanations
-              if (!timedOut) {
-                const enrichedResult = evaluateDecision({
-                  decisionType, question,
-                  options: Array.isArray(options) ? options : [],
-                  preferences, ctx, tasks: allTasks, members,
-                  aiQualitative,
-                });
-                if (!enrichedResult.error) {
-                  clearTimeout(timer);
-                  if (!res.headersSent) {
-                    return res.json({
-                      success: true,
-                      decision: { ...enrichedResult, aiEnhanced: true },
-                    });
-                  }
-                  return;
+          if (aiResult) {
+            const aiQualitative = aiResult;
+            if (!timedOut) {
+              const enrichedResult = evaluateDecision({
+                decisionType, question,
+                options: Array.isArray(options) ? options : [],
+                preferences, ctx, tasks: allTasks, members,
+                aiQualitative,
+              });
+              if (!enrichedResult.error) {
+                clearTimeout(timer);
+                if (!res.headersSent) {
+                  return res.json({
+                    success: true,
+                    decision: { ...enrichedResult, aiEnhanced: true },
+                  });
                 }
+                return;
               }
             }
           }
@@ -1460,9 +1437,8 @@ router.post("/teams/:teamId/project-guidance", requireAuth, async (req, res) => 
       aiNarrative: null,
     });
 
-    // 4. Optional AI Qualitative Enrichment (gpt-4o-mini)
-    const OPENAI_KEY_GUIDANCE = process.env.OPENAI_API_KEY;
-    if (OPENAI_KEY_GUIDANCE && ctx.projectTitle) {
+    // 4. Optional AI Qualitative Enrichment (OmniRoute $0)
+    if (ctx.projectTitle) {
       try {
         const systemPrompt = `You are a Project Advisor in NEXUSFLOW helping a student understand their project.
 Project Title: "${ctx.projectTitle}"
@@ -1477,47 +1453,30 @@ Provide a concise JSON object summarizing project understanding:
 }
 Do NOT invent fake features or mention technologies not relevant to this project. Return ONLY valid JSON.`;
 
-        const aiRes = await fetch("https://api.openai.com/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${OPENAI_KEY_GUIDANCE}`,
-          },
-          body: JSON.stringify({
-            model: "gpt-4o-mini",
-            messages: [
-              { role: "system", content: systemPrompt },
-              { role: "user", content: `Explain the project scope and problem for: ${ctx.projectTitle}` },
-            ],
-            temperature: 0.3,
-            max_tokens: 350,
-            response_format: { type: "json_object" },
-          }),
-          signal: AbortSignal.timeout(8000),
-        });
+        const aiResult = await callOmniRouteStructured(
+          systemPrompt,
+          `Explain the project scope and problem for: ${ctx.projectTitle}`,
+          8000
+        );
 
-        if (aiRes.ok) {
-          const aiData = await aiRes.json();
-          const aiContent = aiData.choices?.[0]?.message?.content;
-          if (aiContent && !timedOut) {
-            const aiNarrative = JSON.parse(aiContent);
-            const enriched = generateProjectGuidance({
-              ctx,
-              tasks: allTasks,
-              members,
-              hackathonHours: Number(hackathonHours) || 24,
-              aiNarrative,
+        if (aiResult && !timedOut) {
+          const aiNarrative = aiResult;
+          const enriched = generateProjectGuidance({
+            ctx,
+            tasks: allTasks,
+            members,
+            hackathonHours: Number(hackathonHours) || 24,
+            aiNarrative,
+          });
+
+          clearTimeout(timer);
+          if (!res.headersSent) {
+            return res.json({
+              success: true,
+              guidance: { ...enriched, aiEnhanced: true },
             });
-
-            clearTimeout(timer);
-            if (!res.headersSent) {
-              return res.json({
-                success: true,
-                guidance: { ...enriched, aiEnhanced: true },
-              });
-            }
-            return;
           }
+          return;
         }
       } catch (aiErr) {
         console.warn("[project-guidance] AI qualitative layer skipped/failed:", aiErr.message);
@@ -1546,23 +1505,52 @@ Do NOT invent fake features or mention technologies not relevant to this project
 router.delete("/teams/:teamId/members/:userId", requireAuth, async (req, res) => {
   try {
     const { teamId, userId } = req.params;
+    const { reason = "" } = req.body || {};
     const authCheck = await verifyTeamAccess(teamId, req.user);
     if (authCheck.error) return res.status(authCheck.status).json({ error: authCheck.error });
 
-    const team = await Team.findByIdAndUpdate(
+    const team = authCheck.team;
+    const isOwner = team.ownerId && team.ownerId.toString() === (req.user?._id || req.user?.id || "").toString();
+    if (!isOwner) {
+      return res.status(403).json({ error: "Forbidden: Only the team owner can remove members." });
+    }
+
+    const updatedTeam = await Team.findByIdAndUpdate(
       teamId,
       { $pull: { members: { $or: [{ userId }, { _id: userId }] } } },
       { new: true, lean: true }
     );
-    if (!team) return res.status(404).json({ error: "team_not_found" });
+    if (!updatedTeam) return res.status(404).json({ error: "team_not_found" });
     await Task.updateMany({ teamId, assignedTo: userId }, { $set: { assignedTo: null, assignmentCost: null } });
+
+    // Notify the removed member
+    try {
+      await Notification.create({
+        userId: userId,
+        type: "member_left",
+        title: "Removed from Team",
+        message: `You have been removed from the team "${team.name}".${reason ? ` Reason: ${reason}` : ""}`,
+        data: { teamId, teamName: team.name },
+        status: "unread",
+      });
+    } catch {
+      // non-fatal
+    }
 
     const io = req.app.get("io");
     if (io) {
-      io.to(`team:${teamId}`).emit("member:removed", { teamId, userId, team });
+      io.to(`team:${teamId}`).emit("member:removed", { teamId, userId, team, reason });
+      if (userId) {
+        io.to(`user:${userId}`).emit("team:member_left", {
+          teamId,
+          userId,
+          name: "",
+          reason: String(reason || "removed by leader").trim(),
+        });
+      }
     }
 
-    res.json(team);
+    res.json(updatedTeam);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1590,6 +1578,62 @@ router.patch("/teams/:teamId/members/:userId", requireAuth, async (req, res) => 
     }
 
     res.json(team);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── PATCH /api/teams/:teamId/members/me/skills ─────────────────────────────────
+// Update the authenticated user's own skill ratings in this team.
+// Users can ONLY edit their own ratings, not teammates'.
+router.patch("/teams/:teamId/members/me/skills", requireAuth, async (req, res) => {
+  try {
+    const { teamId } = req.params;
+    const authUser = await resolveAuthUser(req.user);
+    if (!authUser) return res.status(401).json({ error: "Unauthorized" });
+
+    const authCheck = await verifyTeamAccess(teamId, req.user);
+    if (authCheck.error) return res.status(authCheck.status).json({ error: authCheck.error });
+
+    const skillKeys = ["frontend", "backend", "devops", "design", "ml", "testing"];
+    const updates = {};
+    for (const key of skillKeys) {
+      if (req.body[key] !== undefined) {
+        const val = Number(req.body[key]);
+        if (!Number.isFinite(val) || val < 1 || val > 10) {
+          return res.status(400).json({ error: `${key} must be a number between 1 and 10.` });
+        }
+        updates[`members.$[elem].skills.${key}`] = val;
+      }
+    }
+
+    if (!Object.keys(updates).length) {
+      return res.status(400).json({ error: "No valid skill fields provided." });
+    }
+
+    const result = await Team.updateOne(
+      { _id: teamId, "members.userId": authUser._id },
+      { $set: updates },
+      { arrayFilters: [{ "elem.userId": authUser._id }] }
+    );
+
+    if (!result.matchedCount) return res.status(404).json({ error: "Team member not found." });
+
+    const team = await Team.findById(teamId).lean();
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`team:${teamId}`).emit("member:skills_updated", {
+        teamId,
+        userId: authUser._id.toString(),
+        skills: Object.fromEntries(
+          skillKeys.map((k) => [k, req.body[k] !== undefined ? Number(req.body[k]) : undefined])
+        ),
+        team,
+      });
+    }
+
+    res.json({ success: true, team });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1677,7 +1721,7 @@ router.post("/teams/:teamId/leave", requireAuth, async (req, res) => {
           const mUserId = m.userId?.toString?.() || m.userId?.toString?.();
           return Notification.create({
             userId: mUserId,
-            type: "team_invitation",
+            type: "member_left",
             title: "Team Member Left",
             message: `${leavingMember.name || "A member"} left the team. Reason: ${String(reason || "other").trim()}`,
             data: {

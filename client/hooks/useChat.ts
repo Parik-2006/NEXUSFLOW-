@@ -89,7 +89,14 @@ export function useChat(teamId?: string): UseChatResult {
     socket.on("chat:team:new", onTeam);
     socket.on("reconnect", refresh);
 
+    if (teamId) {
+      socket.emit("chat:join_team", { teamId });
+    }
+
     return () => {
+      if (teamId) {
+        socket.emit("chat:leave_team", { teamId });
+      }
       socket.off("chat:global:new", onGlobal);
       socket.off("chat:team:new", onTeam);
       socket.off("reconnect", refresh);

@@ -10,10 +10,8 @@ import User from "../models/User.js";
 export function registerChatHandlers(io, socket) {
   const userId = socket.data?.user?.id || socket.data?.user?._id;
 
-  // Join global chat room automatically
   socket.join("chat:global");
 
-  // Handle joining team chat room
   socket.on("chat:join_team", async ({ teamId }) => {
     try {
       if (!teamId || !userId) return;
@@ -26,6 +24,7 @@ export function registerChatHandlers(io, socket) {
         ) || team.ownerId?.toString() === userId.toString();
 
       if (isMember) {
+        socket.join(`team:${teamId}`);
         socket.join(`chat:team:${teamId}`);
       }
     } catch (e) {
@@ -33,7 +32,13 @@ export function registerChatHandlers(io, socket) {
     }
   });
 
-  // Handle sending a global message via socket
+  socket.on("chat:leave_team", ({ teamId }) => {
+    if (teamId) {
+      socket.leave(`team:${teamId}`);
+      socket.leave(`chat:team:${teamId}`);
+    }
+  });
+
   socket.on("chat:global:send", async ({ message, replyTo }, callback) => {
     try {
       if (!userId || !message || !String(message).trim()) {
@@ -58,7 +63,6 @@ export function registerChatHandlers(io, socket) {
     }
   });
 
-  // Handle sending a team message via socket
   socket.on("chat:team:send", async ({ teamId, message, replyTo }, callback) => {
     try {
       if (!userId || !teamId || !message || !String(message).trim()) {
@@ -93,6 +97,7 @@ export function registerChatHandlers(io, socket) {
         status: "sent",
       });
 
+      io.to(`team:${teamId}`).emit("chat:team:new", chatMsg);
       io.to(`chat:team:${teamId}`).emit("chat:team:new", chatMsg);
       if (typeof callback === "function") callback({ success: true, data: chatMsg });
     } catch (e) {

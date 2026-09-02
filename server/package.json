@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "node --watch index.js",
     "start": "node index.js",
-    "seed:demo": "node scripts/seedDemo.js"
+    "seed:demo": "node scripts/seedDemo.js",
+    "test": "node scripts/testMasterCorrections.js",
+    "test:all": "node scripts/testMasterCorrections.js && node scripts/testInvitationFlow.js && node scripts/testOmniRouteZeroCostPolicy.js && node scripts/testNexusflowV3.js && node scripts/testPhase3TaskDecomposition.js && node scripts/testPhase2ProjectIntelligence.js && node scripts/testPhase1DataFoundation.js && node scripts/testPhase6Fixes.js && node scripts/testMasterRefactorFixes.js && node scripts/testAuthAndIsolation.js && node scripts/testProjectBrain.js && node scripts/testLearningLoop.js && node scripts/testRetrospective.js && node scripts/testRiskEngine.js && node scripts/testTeamHealth.js && node scripts/testPhase10Sync.js && node scripts/testOpinionSystem.js && node scripts/testNexusflowAiHub.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

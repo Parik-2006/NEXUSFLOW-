@@ -262,8 +262,8 @@ Respond in valid JSON array format:
       maxTokens: 1000,
     });
 
-    if (aiRes && aiRes.text) {
-      const match = aiRes.text.match(/\[\s*\{[\s\S]*\}\s*\]/);
+    if (aiRes && aiRes.content) {
+      const match = aiRes.content.match(/\[\s*\{[\s\S]*\}\s*\]/);
       if (match) {
         const parsed = JSON.parse(match[0]);
         if (Array.isArray(parsed) && parsed.length > 0) {

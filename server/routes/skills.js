@@ -2,8 +2,8 @@ import { Router } from "express";
 import mongoose from "mongoose";
 import SkillVerification from "../models/SkillVerification.js";
 import Team from "../models/Team.js";
-import User from "../models/User.js";
 import { requireAuth } from "../auth.js";
+import { resolveAuthUser } from "./teams.js";
 
 const router = Router();
 
@@ -225,19 +225,5 @@ router.get("/skills/team/:teamId/gaps", requireAuth, async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
-
-// ── Helper ─────────────────────────────────────────────────────────────────────
-async function resolveAuthUser(reqUser) {
-  if (!reqUser) return null;
-  const rawId = reqUser._id || reqUser.id;
-  if (rawId && mongoose.isValidObjectId(rawId)) {
-    const user = await User.findById(rawId).select("_id name email avatar").lean();
-    return user || null;
-  }
-  const email = (reqUser.email || "").toLowerCase().trim();
-  if (!email) return null;
-  const user = await User.findOne({ email }).select("_id name email avatar").lean();
-  return user || null;
-}
 
 export default router;

@@ -10,7 +10,7 @@ const NotificationSchema = new mongoose.Schema(
     },
     type: {
       type: String,
-      enum: ["team_invitation", "invitation_accepted", "invitation_rejected", "task_assigned", "general"],
+      enum: ["team_invitation", "invitation_accepted", "invitation_rejected", "member_left", "task_assigned", "general"],
       default: "team_invitation",
     },
     title: { type: String, required: true },

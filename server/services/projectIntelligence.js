@@ -14,7 +14,7 @@
  *    controlled, concise context object.
  *
  * 2. analyzeProject(projectId, options)
- *    Queries OpenAI (gpt-4o-mini) with strict structured JSON output to extract:
+ *    Routes through OmniRoute ($0 AI policy) with strict structured JSON output to extract:
  *      - Problem statement, target users, constraints, goals
  *      - Hardware, software, AI/ML, integrations, deployment requirements
  *      - Recommended technologies, libraries, frameworks
@@ -59,14 +59,12 @@ import {
   generateProjectGuidance,
 } from "../algorithms/projectGuidanceEngine.js";
 
-// AI Orchestrator with 3-tier fallback (OpenAI -> Gemini -> Deterministic)
+// AI Orchestrator with 3-tier fallback (Gemini Free -> OpenRouter Free -> Deterministic)
 import {
   orchestrateCopilotChat,
   orchestrateProjectAnalysis,
   extractMemoryUpdates,
 } from "./aiOrchestrator.js";
-
-const OPENAI_KEY = process.env.OPENAI_API_KEY;
 
 // ── 1. Build Project Context ──────────────────────────────────────────────────
 /**
@@ -439,15 +437,9 @@ export function generateHeuristicAnalysis(projectContext) {
   });
 }
 
-// ── 4. Analyze Project with OpenAI / Heuristic ─────────────────────────────────
+// ── 4. Analyze Project with OmniRoute / Heuristic Fallback ────────────────────
 export async function analyzeProject(projectId, options = {}) {
   const context = await buildProjectContext(projectId);
-
-  if (!OPENAI_KEY) {
-    // Graceful fallback when OpenAI key is not configured
-    const heuristicData = generateHeuristicAnalysis(context);
-    return persistAnalysisResults(projectId, heuristicData, { source: "heuristic" });
-  }
 
   const systemPrompt = `You are a Principal Software Architect and Project Intelligence Advisor in NEXUSFLOW 2.0.
 Your task is to perform an in-depth, project-aware architectural analysis for a student or engineering team project.

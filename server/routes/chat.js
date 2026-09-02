@@ -2,8 +2,8 @@ import { Router } from "express";
 import mongoose from "mongoose";
 import ChatMessage from "../models/ChatMessage.js";
 import Team from "../models/Team.js";
-import User from "../models/User.js";
 import { requireAuth } from "../auth.js";
+import { resolveAuthUser } from "./teams.js";
 
 const router = Router();
 
@@ -131,7 +131,10 @@ router.post("/chat/team/:teamId", requireAuth, async (req, res) => {
     });
 
     const io = req.app.get("io");
-    if (io) io.to(`chat:team:${teamId}`).emit("chat:team:new", chatMsg);
+    if (io) {
+      io.to(`team:${teamId}`).emit("chat:team:new", chatMsg);
+      io.to(`chat:team:${teamId}`).emit("chat:team:new", chatMsg);
+    }
 
     res.status(201).json(chatMsg);
   } catch (e) {
@@ -197,19 +200,5 @@ router.delete("/chat/:messageId", requireAuth, async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
-
-// ── Helper ─────────────────────────────────────────────────────────────────────
-async function resolveAuthUser(reqUser) {
-  if (!reqUser) return null;
-  const rawId = reqUser._id || reqUser.id;
-  if (rawId && mongoose.isValidObjectId(rawId)) {
-    const user = await User.findById(rawId).select("_id name email avatar").lean();
-    return user || null;
-  }
-  const email = (reqUser.email || "").toLowerCase().trim();
-  if (!email) return null;
-  const user = await User.findOne({ email }).select("_id name email avatar").lean();
-  return user || null;
-}
 
 export default router;
