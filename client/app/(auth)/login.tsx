@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, Pressable, ScrollView, Linking } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -18,13 +18,37 @@ const HIGHLIGHTS = [
 ] as const;
 
 export default function Login() {
-  const { signIn } = useAuth();
+  const { signIn, signInWithGoogle } = useAuth();
   const router = useRouter();
   const toast = useToast();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("token");
+    const err = params.get("error");
+    if (err) {
+      const msg = err.replace(/_/g, " ");
+      setErrorMsg(`Google sign-in error: ${msg}`);
+      toast(`Google sign-in error: ${msg}`, "error");
+      window.history.replaceState({}, "", window.location.pathname);
+    } else if (token) {
+      setBusy(true);
+      signInWithGoogle(token)
+        .then(() => {
+          toast("Signed in with Google!", "success");
+          window.history.replaceState({}, "", window.location.pathname);
+        })
+        .catch(() => {
+          toast("Failed to complete Google sign-in", "error");
+        })
+        .finally(() => setBusy(false));
+    }
+  }, [signInWithGoogle, toast]);
 
   const onSubmit = async () => {
     if (!email.trim()) {

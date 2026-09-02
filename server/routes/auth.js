@@ -7,9 +7,10 @@ import { sign, verify, requireAuth, formatUser } from "../auth.js";
 const router = Router();
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
-const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
-const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || "";
+const GOOGLE_CLIENT_ID = () => process.env.GOOGLE_CLIENT_ID || "";
+const GOOGLE_CLIENT_SECRET = () => process.env.GOOGLE_CLIENT_SECRET || "";
+const GOOGLE_REDIRECT_URI = () => process.env.GOOGLE_REDIRECT_URI || "";
+const getFrontendUrl = () => (process.env.FRONTEND_URL || "http://localhost:8081").replace(/\/+$/, "");
 
 // Simple in-memory store for OAuth state tokens (CSRF protection)
 const oauthStateStore = new Map();
@@ -46,13 +47,15 @@ setInterval(() => {
 // ── GOOGLE OAUTH ────────────────────────────────────────────────────────────────
 
 router.get("/auth/google", (req, res) => {
-  if (!GOOGLE_CLIENT_ID || !GOOGLE_REDIRECT_URI) {
+  const clientId = GOOGLE_CLIENT_ID();
+  const redirectUri = GOOGLE_REDIRECT_URI();
+  if (!clientId || !redirectUri) {
     return res.status(500).json({ error: "Google OAuth is not configured on the server." });
   }
   const state = generateOAuthState();
   const params = new URLSearchParams({
-    client_id: GOOGLE_CLIENT_ID,
-    redirect_uri: GOOGLE_REDIRECT_URI,
+    client_id: clientId,
+    redirect_uri: redirectUri,
     response_type: "code",
     scope: "openid email profile",
     access_type: "offline",
@@ -63,13 +66,14 @@ router.get("/auth/google", (req, res) => {
 });
 
 router.get("/auth/google/callback", async (req, res) => {
+  const frontendUrl = getFrontendUrl();
   try {
     const code = String(req.query.code || "").trim();
     const state = String(req.query.state || "").trim();
     
-    if (!code) return res.redirect(`/?error=missing_code`);
+    if (!code) return res.redirect(`${frontendUrl}/?error=missing_code`);
     if (!validateOAuthState(state)) {
-      return res.redirect(`/?error=invalid_state`);
+      return res.redirect(`${frontendUrl}/?error=invalid_state`);
     }
 
     const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
@@ -77,9 +81,9 @@ router.get("/auth/google/callback", async (req, res) => {
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
         code,
-        client_id: GOOGLE_CLIENT_ID,
-        client_secret: GOOGLE_CLIENT_SECRET,
-        redirect_uri: GOOGLE_REDIRECT_URI,
+        client_id: GOOGLE_CLIENT_ID(),
+        client_secret: GOOGLE_CLIENT_SECRET(),
+        redirect_uri: GOOGLE_REDIRECT_URI(),
         grant_type: "authorization_code",
       }),
     });
@@ -87,15 +91,15 @@ router.get("/auth/google/callback", async (req, res) => {
     if (!tokenRes.ok) {
       const text = await tokenRes.text();
       console.error("[Google OAuth] Token exchange failed:", tokenRes.status, text);
-      return res.redirect(`/?error=token_exchange_failed`);
+      return res.redirect(`${frontendUrl}/?error=token_exchange_failed`);
     }
 
     const tokenData = await tokenRes.json();
     const idToken = tokenData.id_token;
-    if (!idToken) return res.redirect(`/?error=no_id_token`);
+    if (!idToken) return res.redirect(`${frontendUrl}/?error=no_id_token`);
 
     const payloadRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`);
-    if (!payloadRes.ok) return res.redirect(`/?error=invalid_token`);
+    if (!payloadRes.ok) return res.redirect(`${frontendUrl}/?error=invalid_token`);
     const payload = await payloadRes.json();
 
     const googleId = String(payload.sub || "");
@@ -103,14 +107,14 @@ router.get("/auth/google/callback", async (req, res) => {
     const name = String(payload.name || "").trim();
 
     if (!googleId || !email || !EMAIL_REGEX.test(email)) {
-      return res.redirect(`/?error=invalid_google_payload`);
+      return res.redirect(`${frontendUrl}/?error=invalid_google_payload`);
     }
 
-    let user = await User.findOne({ $or: [{ googleId }, { email }] }).lean();
+    let user = await User.findOne({ $or: [{ googleId }, { email }] });
 
     if (user) {
       if (user.googleId && user.googleId !== googleId) {
-        return res.redirect(`/?error=email_conflict`);
+        return res.redirect(`${frontendUrl}/?error=email_conflict`);
       }
       if (!user.googleId) {
         user = await User.findByIdAndUpdate(user._id, { $set: { googleId, authProvider: "google" } }, { new: true });
@@ -133,10 +137,10 @@ router.get("/auth/google/callback", async (req, res) => {
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
       path: "/",
     });
-    res.redirect(`/?google=1`);
+    res.redirect(`${frontendUrl}/?google=1&token=${encodeURIComponent(jwtToken)}`);
   } catch (err) {
     console.error("[Google OAuth] Callback error:", err.message);
-    res.redirect(`/?error=server_error`);
+    res.redirect(`${frontendUrl}/?error=server_error`);
   }
 });
 

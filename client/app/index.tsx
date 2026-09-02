@@ -3,21 +3,22 @@ import { Redirect } from "expo-router";
 import { useAuth } from "@/context/AuthContext";
 
 export default function Index() {
-  const { refreshProfile } = useAuth();
+  const { signInWithGoogle, refreshProfile } = useAuth();
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
     const google = params.get("google");
+    const token = params.get("token");
 
-    if (google === "1") {
-      // Google OAuth callback — token is now in HTTP-only cookie
-      // Clean URL and refresh profile from cookie
+    if (token) {
       window.history.replaceState({}, "", "/");
-      refreshProfile().catch(() => {
-        // fallback: redirect to login
-      });
+      signInWithGoogle(token).catch(() => {});
+    } else if (google === "1") {
+      window.history.replaceState({}, "", "/");
+      refreshProfile().catch(() => {});
     }
-  }, [refreshProfile]);
+  }, [signInWithGoogle, refreshProfile]);
 
   return <Redirect href="/(auth)/login" />;
 }
