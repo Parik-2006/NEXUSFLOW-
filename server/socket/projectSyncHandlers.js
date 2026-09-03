@@ -11,17 +11,30 @@ import Team from "../models/Team.js";
 
 /**
  * Verifies that the socket's authenticated user is a member of the team
- * that owns the given project, before allowing them to join the room.
+ * that owns the given project (or team), before allowing them to join the room.
  */
 async function verifyProjectAccess(userId, projectId) {
-  if (!mongoose.isValidObjectId(projectId)) return false;
+  if (!mongoose.isValidObjectId(projectId) || !userId) return false;
   const Project = (await import("../models/Project.js")).default;
+  let targetTeamId = null;
+
   const project = await Project.findById(projectId).select("teamId").lean();
-  if (!project) return false;
+  if (project) {
+    targetTeamId = project.teamId;
+  } else {
+    // projectId might be a teamId
+    const teamDoc = await Team.findById(projectId).select("_id ownerId members").lean();
+    if (teamDoc) targetTeamId = teamDoc._id;
+  }
+
+  if (!targetTeamId) return false;
 
   const team = await Team.findOne({
-    _id: project.teamId,
-    "members.userId": userId,
+    _id: targetTeamId,
+    $or: [
+      { ownerId: userId },
+      { "members.userId": userId },
+    ],
   }).lean();
 
   return !!team;
@@ -36,6 +49,13 @@ export function registerProjectSyncHandlers(io, socket) {
     const allowed = await verifyProjectAccess(userId, projectId);
     if (allowed) {
       socket.join(`project:${projectId}`);
+      // Also join activeProjectId if projectId was a teamId
+      try {
+        const team = await Team.findById(projectId).select("activeProjectId").lean();
+        if (team?.activeProjectId) {
+          socket.join(`project:${team.activeProjectId}`);
+        }
+      } catch {}
     }
   });
 
@@ -48,6 +68,7 @@ export function registerProjectSyncHandlers(io, socket) {
 // ── Broadcast Helpers ────────────────────────────────────────────────────────
 
 function emit(io, projectId, event, payload) {
+  if (!io || !projectId) return;
   io.to(`project:${projectId}`).emit(event, { projectId, _ts: Date.now(), ...payload });
 }
 

@@ -97,7 +97,7 @@ import Risk              from "../models/Risk.js";
 import Opinion          from "../models/Opinion.js";
 import Retrospective    from "../models/Retrospective.js";
 import LearningInsight  from "../models/LearningInsight.js";
-import { computeTeamHealth }      from "../services/teamHealth.js";
+import { computeTeamHealth, resolveProjectAndTeam } from "../services/teamHealth.js";
 import { scanProjectRisks }       from "../services/riskEngine.js";
 import { generateRetrospective }  from "../services/retrospectiveService.js";
 import { generateInsights }       from "../services/learningService.js";
@@ -1463,8 +1463,6 @@ router.post("/projects/:projectId/tasks/ai-suggest", requireAuth, async (req, re
   }
 });
 
-export default router;
-
 // =============================================================================
 // NEXUSFLOW 3.0 — PHASE 12: TEAM HEALTH ENGINE
 // =============================================================================
@@ -1474,8 +1472,6 @@ router.get("/projects/:projectId/team-health", requireAuth, async (req, res) => 
   const { projectId } = req.params;
   if (!mongoose.isValidObjectId(projectId)) return res.status(400).json({ error: "invalid_project_id" });
   try {
-    const existing = await TeamHealth.findOne({ projectId }).sort({ createdAt: -1 }).lean();
-    if (existing) return res.json({ health: existing });
     const health = await computeTeamHealth(projectId);
     res.json({ health });
   } catch (e) {
@@ -1488,9 +1484,13 @@ router.post("/projects/:projectId/team-health/refresh", requireAuth, async (req,
   const { projectId } = req.params;
   if (!mongoose.isValidObjectId(projectId)) return res.status(400).json({ error: "invalid_project_id" });
   try {
+    const { projectId: resolvedPid } = await resolveProjectAndTeam(projectId);
     const health = await computeTeamHealth(projectId);
     const io = req.app.get("io");
-    if (io) broadcastHealthUpdate(io, projectId, { health });
+    if (io) {
+      broadcastHealthUpdate(io, resolvedPid, { health });
+      broadcastHealthUpdate(io, projectId, { health });
+    }
     res.json({ health });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1507,7 +1507,8 @@ router.get("/projects/:projectId/risks", requireAuth, async (req, res) => {
   const { status = "open" } = req.query;
   if (!mongoose.isValidObjectId(projectId)) return res.status(400).json({ error: "invalid_project_id" });
   try {
-    const filter = { projectId };
+    const { projectId: resolvedPid, teamId } = await resolveProjectAndTeam(projectId);
+    const filter = { $or: [{ projectId: resolvedPid }, { teamId }] };
     if (status !== "all") filter.status = status;
     const risks = await Risk.find(filter).sort({ severity: 1, createdAt: -1 }).lean();
     res.json({ risks });
@@ -1521,9 +1522,13 @@ router.post("/projects/:projectId/risks/scan", requireAuth, async (req, res) => 
   const { projectId } = req.params;
   if (!mongoose.isValidObjectId(projectId)) return res.status(400).json({ error: "invalid_project_id" });
   try {
+    const { projectId: resolvedPid } = await resolveProjectAndTeam(projectId);
     const risks = await scanProjectRisks(projectId);
     const io = req.app.get("io");
-    if (io) broadcastRiskUpdate(io, projectId, { action: "scan", risks });
+    if (io) {
+      broadcastRiskUpdate(io, resolvedPid, { action: "scan", risks });
+      broadcastRiskUpdate(io, projectId, { action: "scan", risks });
+    }
     res.json({ risks, count: risks.length });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1541,15 +1546,23 @@ router.patch("/projects/:projectId/risks/:riskId", requireAuth, async (req, res)
     return res.status(400).json({ error: "status must be acknowledged or resolved" });
   }
   try {
+    const { projectId: resolvedPid, teamId } = await resolveProjectAndTeam(projectId);
     const updates = { status };
     if (status === "resolved") {
-      updates.resolvedBy = req.user.id;
+      updates.resolvedBy = req.user.id || req.user._id;
       updates.resolvedAt = new Date();
     }
-    const risk = await Risk.findOneAndUpdate({ _id: riskId, projectId }, { $set: updates }, { new: true });
+    const risk = await Risk.findOneAndUpdate(
+      { _id: riskId, $or: [{ projectId: resolvedPid }, { teamId }, { projectId }] },
+      { $set: updates },
+      { new: true }
+    );
     if (!risk) return res.status(404).json({ error: "risk_not_found" });
     const io = req.app.get("io");
-    if (io) broadcastRiskUpdate(io, projectId, { risk });
+    if (io) {
+      broadcastRiskUpdate(io, resolvedPid, { risk });
+      broadcastRiskUpdate(io, projectId, { risk });
+    }
     res.json({ risk });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1677,11 +1690,13 @@ router.post("/projects/:projectId/retrospectives", requireAuth, async (req, res)
   if (!mongoose.isValidObjectId(projectId)) return res.status(400).json({ error: "invalid_project_id" });
   if (!sprintName) return res.status(400).json({ error: "sprintName is required" });
   try {
-    const project = await Project.findById(projectId).lean();
-    if (!project) return res.status(404).json({ error: "project_not_found" });
-    const retro = await generateRetrospective({ projectId, teamId: project.teamId, sprintName, period });
+    const { project, team, projectId: resolvedPid, teamId } = await resolveProjectAndTeam(projectId);
+    const retro = await generateRetrospective({ projectId: resolvedPid, teamId, sprintName, period });
     const io = req.app.get("io");
-    if (io) broadcastRetrospectiveUpdate(io, projectId, { action: "create", retrospective: retro });
+    if (io) {
+      broadcastRetrospectiveUpdate(io, resolvedPid, { action: "create", retrospective: retro });
+      broadcastRetrospectiveUpdate(io, projectId, { action: "create", retrospective: retro });
+    }
     res.status(201).json({ retrospective: retro });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1693,7 +1708,10 @@ router.get("/projects/:projectId/retrospectives", requireAuth, async (req, res) 
   const { projectId } = req.params;
   if (!mongoose.isValidObjectId(projectId)) return res.status(400).json({ error: "invalid_project_id" });
   try {
-    const retros = await Retrospective.find({ projectId }).sort({ createdAt: -1 }).lean();
+    const { projectId: resolvedPid, teamId } = await resolveProjectAndTeam(projectId);
+    const retros = await Retrospective.find({
+      $or: [{ projectId: resolvedPid }, { teamId }, { projectId }],
+    }).sort({ createdAt: -1 }).lean();
     res.json({ retrospectives: retros });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1707,7 +1725,11 @@ router.get("/projects/:projectId/retrospectives/:retroId", requireAuth, async (r
     return res.status(400).json({ error: "invalid_id" });
   }
   try {
-    const retro = await Retrospective.findOne({ _id: retroId, projectId }).lean();
+    const { projectId: resolvedPid, teamId } = await resolveProjectAndTeam(projectId);
+    const retro = await Retrospective.findOne({
+      _id: retroId,
+      $or: [{ projectId: resolvedPid }, { teamId }, { projectId }],
+    }).lean();
     if (!retro) return res.status(404).json({ error: "retrospective_not_found" });
     res.json({ retrospective: retro });
   } catch (e) {
@@ -1722,9 +1744,11 @@ router.patch("/projects/:projectId/retrospectives/:retroId/acknowledge", require
     return res.status(400).json({ error: "invalid_id" });
   }
   try {
+    const { projectId: resolvedPid, teamId } = await resolveProjectAndTeam(projectId);
+    const userId = req.user?.id || req.user?._id;
     const retro = await Retrospective.findOneAndUpdate(
-      { _id: retroId, projectId },
-      { $addToSet: { acknowledgedBy: req.user.id } },
+      { _id: retroId, $or: [{ projectId: resolvedPid }, { teamId }, { projectId }] },
+      { $addToSet: { acknowledgedBy: userId } },
       { new: true }
     );
     if (!retro) return res.status(404).json({ error: "retrospective_not_found" });
@@ -1781,5 +1805,8 @@ router.get("/projects/:projectId/brain", requireAuth, async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+export default router;
+
 
 

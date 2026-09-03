@@ -7,11 +7,12 @@
 import Task from "../models/Task.js";
 import Team from "../models/Team.js";
 import Retrospective from "../models/Retrospective.js";
+import { resolveProjectAndTeam } from "./teamHealth.js";
 import { omniRouteGenerate } from "./omniRoute.js";
 import { logger } from "../utils/logger.js";
 
 function buildDeterministicAnalysis(taskStats, memberContributions, sprintName) {
-  const { completionRate, blocked, total } = taskStats;
+  const { completionRate, blocked, total, completed, inProgress } = taskStats;
 
   const wentWell = [];
   const wentPoorly = [];
@@ -19,46 +20,56 @@ function buildDeterministicAnalysis(taskStats, memberContributions, sprintName) 
   const bottlenecks = [];
 
   if (completionRate >= 70) {
-    wentWell.push(`Strong sprint delivery — ${completionRate}% tasks completed`);
-    wentWell.push("Team maintained consistent pace throughout the sprint");
+    wentWell.push(`Strong sprint delivery — ${completionRate}% tasks completed (${completed}/${total})`);
+    wentWell.push("Team maintained consistent execution velocity throughout the sprint");
+  } else if (completed > 0) {
+    wentWell.push(`Delivered ${completed} functional task(s) during this sprint`);
   } else {
-    wentPoorly.push(`Completion rate was only ${completionRate}% — below the 70% target`);
+    wentPoorly.push("No tasks reached completion by the end of this sprint cycle");
+  }
+
+  if (completionRate < 70 && total > 0) {
+    wentPoorly.push(`Completion rate was ${completionRate}% (${completed}/${total}) — below the 70% target`);
   }
 
   if (blocked > 0) {
-    bottlenecks.push(`${blocked} tasks were blocked during the sprint`);
-    recommendations.push("Introduce daily blocker-clearance standups to reduce blocked task time");
+    bottlenecks.push(`${blocked} task(s) encountered dependency blockers during execution`);
+    recommendations.push("Establish daily blocker-clearing reviews to resolve task dependencies faster");
   }
 
   if (memberContributions.length > 0) {
-    const topContributor = memberContributions.reduce((a, b) =>
-      a.tasksCompleted > b.tasksCompleted ? a : b
-    );
-    if (topContributor.tasksCompleted > 0) {
-      wentWell.push(`${topContributor.userName} led with ${topContributor.tasksCompleted} task(s) completed`);
+    const activeMembers = memberContributions.filter((m) => m.tasksCompleted > 0);
+    if (activeMembers.length > 0) {
+      const topContributor = activeMembers.reduce((a, b) =>
+        a.tasksCompleted > b.tasksCompleted ? a : b
+      );
+      wentWell.push(`${topContributor.userName} led team delivery with ${topContributor.tasksCompleted} completed task(s)`);
+    }
+
+    const noContrib = memberContributions.filter((m) => m.tasksCompleted === 0 && m.tasksInProgress === 0);
+    if (noContrib.length > 0 && memberContributions.length > 1) {
+      wentPoorly.push(`${noContrib.map((m) => m.userName).join(", ")} had no active task assignments`);
+      recommendations.push("Distribute work evenly so all members hold active sprint ownership");
     }
   }
 
-  const noContrib = memberContributions.filter((m) => m.tasksCompleted === 0 && m.tasksInProgress === 0);
-  if (noContrib.length > 0) {
-    wentPoorly.push(`${noContrib.map((m) => m.userName).join(", ")} had no task activity this sprint`);
-    recommendations.push("Ensure all team members have at least one assigned task per sprint");
-  }
-
-  recommendations.push("Review task estimates against actuals to improve future accuracy");
+  recommendations.push("Calibrate effort estimation against actual hours to refine future sprint scope");
   if (total > 0 && completionRate < 50) {
-    recommendations.push("Consider reducing sprint scope — commit to fewer, higher-impact tasks");
+    recommendations.push("Refine sprint scope: prioritize fewer high-impact tasks to improve completion velocity");
   }
 
   return {
     wentWell,
     wentPoorly,
     bottlenecks,
-    risks: blocked > 2 ? ["Blocked tasks risk becoming sprint carry-overs"] : [],
+    risks: blocked > 2 ? ["Multiple unresolved task dependencies risk rolling into subsequent sprints"] : [],
     recommendations,
-    suggestedImprovements: ["Add explicit acceptance criteria to each task before sprint start"],
-    summary: `${sprintName} achieved ${completionRate}% completion. ${
-      completionRate >= 70 ? "On track." : "Below target — review sprint scope and blockers."
+    suggestedImprovements: [
+      "Define clear acceptance criteria before moving tasks into In Progress",
+      "Conduct mid-sprint check-ins to rebalance task allocation",
+    ],
+    summary: `${sprintName} closed with ${completionRate}% completion (${completed}/${total} tasks completed, ${inProgress} in progress, ${blocked} blocked). ${
+      completionRate >= 70 ? "Sprint objectives met." : "Sprint fell below target — adjust scope and address blockers."
     }`,
   };
 }
@@ -66,12 +77,13 @@ function buildDeterministicAnalysis(taskStats, memberContributions, sprintName) 
 /**
  * generateRetrospective({ projectId, teamId, sprintName, period })
  */
-export async function generateRetrospective({ projectId, teamId, sprintName, period }) {
-  const team  = await Team.findById(teamId).lean();
-  if (!team) throw new Error("Team not found");
+export async function generateRetrospective({ projectId: id, teamId: givenTeamId, sprintName, period }) {
+  const { project, team, projectId, teamId } = await resolveProjectAndTeam(id || givenTeamId);
 
-  // Build task filter for sprint period
-  const taskFilter = { projectId };
+  // Build task filter for sprint period across both projectId and teamId
+  const taskFilter = {
+    $or: [{ projectId }, { teamId }],
+  };
   if (period?.start && period?.end) {
     taskFilter.createdAt = { $gte: new Date(period.start), $lte: new Date(period.end) };
   }
@@ -80,7 +92,7 @@ export async function generateRetrospective({ projectId, teamId, sprintName, per
   // Task stats
   const completed  = tasks.filter((t) => t.status === "done").length;
   const inProgress = tasks.filter((t) => t.status === "in_progress").length;
-  const blocked    = tasks.filter((t) => t.status === "blocked").length;
+  const blocked    = tasks.filter((t) => t.status !== "done" && ((t.dependencies?.length > 0) || (t.dependencyCount > 0))).length;
   const total      = tasks.length;
   const completionRate = total > 0 ? Math.round((completed / total) * 100) : 0;
 
@@ -88,14 +100,14 @@ export async function generateRetrospective({ projectId, teamId, sprintName, per
 
   // Member contributions
   const memberContributions = (team.members || []).map((m) => {
-    const uid = m.userId?.toString();
-    const memberTasks = tasks.filter((t) => t.assignedTo?.toString() === uid);
+    const uid = (m.userId?._id || m.userId)?.toString();
+    const memberTasks = tasks.filter((t) => (t.assignedTo?._id || t.assignedTo)?.toString() === uid);
     return {
       userId:           m.userId,
-      userName:         m.name,
+      userName:         m.name || "Member",
       tasksCompleted:   memberTasks.filter((t) => t.status === "done").length,
       tasksInProgress:  memberTasks.filter((t) => t.status === "in_progress").length,
-      tasksBlocked:     memberTasks.filter((t) => t.status === "blocked").length,
+      tasksBlocked:     memberTasks.filter((t) => t.status !== "done" && ((t.dependencies?.length > 0) || (t.dependencyCount > 0))).length,
       totalHoursLogged: memberTasks.reduce((s, t) => s + (t.estimatedHours || 0), 0),
     };
   });
@@ -107,7 +119,7 @@ export async function generateRetrospective({ projectId, teamId, sprintName, per
   try {
     const prompt = `You are an expert Agile coach. Generate a concise sprint retrospective analysis.
 
-Sprint: "${sprintName}"
+Sprint: "${sprintName || "Sprint Retrospective"}"
 Task Completion: ${completionRate}% (${completed}/${total} tasks)
 Blocked Tasks: ${blocked}
 Team Size: ${team.members?.length || 0}
@@ -140,13 +152,13 @@ Return ONLY valid JSON with this exact structure:
   }
 
   if (!analysis) {
-    analysis = buildDeterministicAnalysis(taskStats, memberContributions, sprintName);
+    analysis = buildDeterministicAnalysis(taskStats, memberContributions, sprintName || "Sprint Retrospective");
   }
 
   const retro = await Retrospective.create({
     projectId,
     teamId,
-    sprintName,
+    sprintName: sprintName || `Sprint Retrospective #${Date.now()}`,
     period,
     taskStats,
     memberContributions,
@@ -156,7 +168,7 @@ Return ONLY valid JSON with this exact structure:
 
   logger.info("[retrospective] Generated retrospective", {
     projectId: projectId.toString(),
-    sprintName,
+    sprintName: retro.sprintName,
     completionRate,
     generatedBy,
   });

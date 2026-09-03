@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, RefreshControl } from "react-native";
+import { View, Text, StyleSheet, ScrollView, RefreshControl, ActivityIndicator, Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/context/AuthContext";
 import { Card, Button, Badge, SkeletonCard, EmptyState, ProgressBar } from "@/components/ui";
@@ -12,26 +12,26 @@ const API = API_BASE_URL;
 
 interface HealthDimension {
   score: number;
-  label?: string;
   description?: string;
 }
 
 interface TeamHealthData {
+  _id?: string;
   score: number;
   grade: string;
   dimensions: {
-    workloadBalance?: HealthDimension;
     taskCompletion?: HealthDimension;
-    sprintProgress?: HealthDimension;
-    skillCoverage?: HealthDimension;
-    contribution?: HealthDimension;
+    workloadBalance?: HealthDimension;
     blockedTasks?: HealthDimension;
+    skillCoverage?: HealthDimension;
+    sprintProgress?: HealthDimension;
     githubActivity?: HealthDimension;
+    [key: string]: HealthDimension | undefined;
   };
   strengths: string[];
   warnings: string[];
   advisories?: string[];
-  generatedAt?: string;
+  updatedAt?: string;
 }
 
 export default function TeamHealthPanel({
@@ -46,43 +46,56 @@ export default function TeamHealthPanel({
   const [health, setHealth] = useState<TeamHealthData | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const fetchHealth = useCallback(async () => {
-    if (!projectId) {
+  const targetId = projectId || teamId;
+
+  const fetchHealth = useCallback(async (isSilent = false) => {
+    if (!targetId || !token) {
       setLoading(false);
       return;
     }
+    if (!isSilent) setLoading(true);
+    setError(null);
     try {
-      const res = await fetch(`${API}/api/projects/${projectId}/team-health`, {
+      const res = await fetch(`${API}/api/projects/${targetId}/team-health`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {
         const data = await res.json();
         setHealth(data.health || null);
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `Error ${res.status}: Failed to load health data`);
       }
-    } catch {
-      // non-fatal
+    } catch (e: any) {
+      setError(e.message || "Failed to load team health.");
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [projectId, token]);
+  }, [targetId, token]);
 
-  const handleRefresh = async () => {
-    if (!projectId) return;
+  const handleRecalculate = async () => {
+    if (!targetId || !token) return;
     setRefreshing(true);
+    setError(null);
     try {
-      const res = await fetch(`${API}/api/projects/${projectId}/team-health/refresh`, {
+      const res = await fetch(`${API}/api/projects/${targetId}/team-health/refresh`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {
         const data = await res.json();
         setHealth(data.health || null);
-        toast("Team health score updated", "success");
+        toast("Team health recalculated from live database state", "success");
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || "Recalculation failed");
       }
     } catch (e: any) {
-      toast(e.message || "Failed to update health", "error");
+      toast(e.message || "Unable to recalculate team health", "error");
+      setError(e.message);
     } finally {
       setRefreshing(false);
     }
@@ -92,27 +105,30 @@ export default function TeamHealthPanel({
     fetchHealth();
   }, [fetchHealth]);
 
-  // Real-time project health synchronization
+  // Real-time project & team health synchronization
   useEffect(() => {
-    if (!projectId) return;
+    if (!targetId || !token) return;
     const socket = getSocket(token);
-    socket.emit("room:join:project", { projectId });
+    socket.emit("room:join:project", { projectId: targetId });
 
     const handleHealthUpdate = (payload: any) => {
-      if (payload.health) {
+      if (payload?.health) {
         setHealth(payload.health);
       } else {
-        fetchHealth();
+        fetchHealth(true);
       }
     };
 
     socket.on("project:health:updated", handleHealthUpdate);
+    socket.on("reconnect", () => fetchHealth(true));
+
     return () => {
       socket.off("project:health:updated", handleHealthUpdate);
+      socket.off("reconnect", () => {});
     };
-  }, [projectId, token, fetchHealth]);
+  }, [targetId, token, fetchHealth]);
 
-  if (loading) {
+  if (loading && !health) {
     return (
       <ScrollView contentContainerStyle={s.container}>
         <SkeletonCard />
@@ -121,27 +137,39 @@ export default function TeamHealthPanel({
     );
   }
 
-  if (!projectId) {
+  if (error && !health) {
     return (
       <View style={s.container}>
         <EmptyState
-          icon="heart-outline"
-          title="No Project Selected"
-          message="Team health is calculated across active project tasks, workloads, and contributor metrics."
+          icon="alert-circle-outline"
+          title="Unable to Calculate Team Health"
+          message={error}
+          actionLabel="Retry"
+          actionIcon="refresh"
+          onAction={() => fetchHealth(false)}
         />
       </View>
     );
   }
 
   const score = health?.score ?? 0;
-  const grade = health?.grade ?? "C";
+  const grade = health?.grade ?? (score >= 85 ? "A" : score >= 70 ? "B" : score >= 55 ? "C" : score >= 40 ? "D" : "F");
   const gradeColor =
     score >= 80 ? colors.success : score >= 60 ? colors.accent : score >= 40 ? colors.warning : colors.danger;
+
+  const dimensionKeys = [
+    { key: "taskCompletion", label: "Task Completion", icon: "checkmark-circle" },
+    { key: "workloadBalance", label: "Workload Balance", icon: "people" },
+    { key: "blockedTasks", label: "Blocked Tasks & Dependencies", icon: "git-merge" },
+    { key: "skillCoverage", label: "Skill Coverage", icon: "ribbon" },
+    { key: "sprintProgress", label: "Sprint Delivery Pace", icon: "rocket" },
+    { key: "githubActivity", label: "GitHub Integration Activity", icon: "logo-github" },
+  ];
 
   return (
     <ScrollView
       contentContainerStyle={s.container}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.primary} />}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRecalculate} tintColor={colors.primary} />}
     >
       {/* Top Health Hero Card */}
       <Card style={s.heroCard}>
@@ -155,16 +183,21 @@ export default function TeamHealthPanel({
               <Text style={font.h2}>Team Health Score</Text>
               <Badge label={`Grade ${grade}`} color={gradeColor} />
             </View>
-            <Text style={[font.small, { color: colors.textMuted, marginTop: 2 }]}>
-              Multidimensional analysis of team balance, blockers, task completion & contributions.
+            <Text style={[font.small, { color: colors.textMuted, marginTop: 4, lineHeight: 18 }]}>
+              Real-time composite score based on task completions, member load balance, blockers, and skill coverage.
             </Text>
+            {!!health?.updatedAt && (
+              <Text style={[font.caption, { color: colors.textFaint, marginTop: 4 }]}>
+                Last recalculated: {new Date(health.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+              </Text>
+            )}
           </View>
           <Button
-            title={refreshing ? "Updating..." : "Recalculate"}
+            title={refreshing ? "Calculating..." : "Recalculate"}
             icon="refresh"
-            variant="secondary"
+            variant="primary"
             small
-            onPress={handleRefresh}
+            onPress={handleRecalculate}
             disabled={refreshing}
           />
         </View>
@@ -173,24 +206,31 @@ export default function TeamHealthPanel({
       {/* Dimensions Breakdown */}
       {health?.dimensions && (
         <Card style={s.sectionCard}>
-          <Text style={[font.h3, { marginBottom: spacing.md }]}>Health Dimensions</Text>
+          <View style={s.sectionHeaderRow}>
+            <Ionicons name="stats-chart" size={18} color={colors.primary} />
+            <Text style={font.h3}>Health Dimensions Breakdown</Text>
+          </View>
           <View style={s.dimGrid}>
-            {Object.entries(health.dimensions).map(([key, dim]) => {
+            {dimensionKeys.map(({ key, label, icon }) => {
+              const dim = health.dimensions?.[key];
               if (!dim) return null;
+              const dimScore = dim.score ?? 0;
               const dimColor =
-                dim.score >= 75 ? colors.success : dim.score >= 50 ? colors.warning : colors.danger;
-              const title = key
-                .replace(/([A-Z])/g, " $1")
-                .replace(/^./, (str) => str.toUpperCase());
+                dimScore >= 75 ? colors.success : dimScore >= 50 ? colors.warning : colors.danger;
               return (
                 <View key={key} style={s.dimItem}>
                   <View style={s.dimHeader}>
-                    <Text style={font.body}>{title}</Text>
-                    <Text style={[font.body, { fontWeight: "700", color: dimColor }]}>{dim.score}%</Text>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                      <Ionicons name={icon as any} size={15} color={colors.textMuted} />
+                      <Text style={[font.body, { fontWeight: "600" }]}>{label}</Text>
+                    </View>
+                    <Text style={[font.body, { fontWeight: "800", color: dimColor }]}>{dimScore}%</Text>
                   </View>
-                  <ProgressBar value={dim.score / 100} color={dimColor} height={6} />
+                  <ProgressBar value={dimScore / 100} color={dimColor} height={7} />
                   {!!dim.description && (
-                    <Text style={[font.caption, { color: colors.textMuted, marginTop: 4 }]}>{dim.description}</Text>
+                    <Text style={[font.small, { color: colors.textMuted, marginTop: 4, lineHeight: 17 }]}>
+                      {dim.description}
+                    </Text>
                   )}
                 </View>
               );
@@ -199,46 +239,52 @@ export default function TeamHealthPanel({
         </Card>
       )}
 
-      {/* Strengths & Warnings */}
+      {/* Strengths & Advisories Grid */}
       <View style={s.advisoryRow}>
-        {/* Strengths */}
+        {/* Strengths Card */}
         <Card style={s.halfCard}>
           <View style={s.cardHeader}>
             <Ionicons name="checkmark-circle" size={20} color={colors.success} />
             <Text style={[font.h3, { color: colors.text }]}>Strengths</Text>
           </View>
           {(!health?.strengths || health.strengths.length === 0) ? (
-            <Text style={[font.small, { color: colors.textMuted }]}>No major highlights recorded yet.</Text>
+            <Text style={[font.small, { color: colors.textMuted }]}>
+              {score > 0 ? "Execution underway. Deliver tasks on schedule to build team strengths." : "No completed tasks recorded yet."}
+            </Text>
           ) : (
             health.strengths.map((str, i) => (
               <View key={i} style={s.bulletRow}>
-                <Ionicons name="arrow-forward" size={14} color={colors.success} style={{ marginTop: 2 }} />
-                <Text style={[font.small, { flex: 1, color: colors.text }]}>{str}</Text>
+                <Ionicons name="checkmark" size={15} color={colors.success} style={{ marginTop: 2 }} />
+                <Text style={[font.small, { flex: 1, color: colors.text, lineHeight: 18 }]}>{str}</Text>
               </View>
             ))
           )}
         </Card>
 
-        {/* Warnings & Advisories */}
+        {/* Warnings & Advisories Card */}
         <Card style={s.halfCard}>
           <View style={s.cardHeader}>
             <Ionicons name="warning" size={20} color={colors.warning} />
-            <Text style={[font.h3, { color: colors.text }]}>Advisories</Text>
+            <Text style={[font.h3, { color: colors.text }]}>Advisories & Alerts</Text>
           </View>
           {(!health?.warnings || health.warnings.length === 0) && (!health?.advisories || health.advisories.length === 0) ? (
-            <Text style={[font.small, { color: colors.textMuted }]}>No active warnings or risks detected.</Text>
+            <Text style={[font.small, { color: colors.textMuted }]}>
+              No critical risks or workload bottlenecks detected.
+            </Text>
           ) : (
             <>
               {(health?.warnings || []).map((w, i) => (
                 <View key={`w-${i}`} style={s.bulletRow}>
-                  <Ionicons name="alert-circle" size={14} color={colors.danger} style={{ marginTop: 2 }} />
-                  <Text style={[font.small, { flex: 1, color: colors.text }]}>{w}</Text>
+                  <Ionicons name="alert-circle" size={15} color={colors.danger} style={{ marginTop: 2 }} />
+                  <Text style={[font.small, { flex: 1, color: colors.danger, fontWeight: "600", lineHeight: 18 }]}>
+                    {w}
+                  </Text>
                 </View>
               ))}
               {(health?.advisories || []).map((a, i) => (
                 <View key={`a-${i}`} style={s.bulletRow}>
-                  <Ionicons name="information-circle" size={14} color={colors.info} style={{ marginTop: 2 }} />
-                  <Text style={[font.small, { flex: 1, color: colors.text }]}>{a}</Text>
+                  <Ionicons name="information-circle" size={15} color={colors.info} style={{ marginTop: 2 }} />
+                  <Text style={[font.small, { flex: 1, color: colors.text, lineHeight: 18 }]}>{a}</Text>
                 </View>
               ))}
             </>
@@ -253,6 +299,7 @@ const s = StyleSheet.create({
   container: {
     padding: spacing.lg,
     gap: spacing.lg,
+    paddingBottom: 40,
   },
   heroCard: {
     padding: spacing.lg,
@@ -260,26 +307,35 @@ const s = StyleSheet.create({
   heroRow: {
     flexDirection: "row",
     alignItems: "center",
+    flexWrap: "wrap",
+    gap: spacing.md,
   },
   scoreBadge: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    borderWidth: 3,
+    width: 86,
+    height: 86,
+    borderRadius: 43,
+    borderWidth: 3.5,
     alignItems: "center",
     justifyContent: "center",
   },
   scoreText: {
-    fontSize: 28,
-    fontWeight: "700",
+    fontSize: 30,
+    fontWeight: "800",
   },
   scoreMax: {
-    fontSize: 10,
+    fontSize: 11,
     color: colors.textMuted,
     marginTop: -4,
+    fontWeight: "600",
   },
   sectionCard: {
     padding: spacing.lg,
+  },
+  sectionHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    marginBottom: spacing.md,
   },
   cardHeader: {
     flexDirection: "row",
@@ -292,9 +348,11 @@ const s = StyleSheet.create({
   },
   dimItem: {
     backgroundColor: colors.surfaceAlt,
-    padding: spacing.sm + 2,
+    padding: spacing.md,
     borderRadius: radius.md,
-    gap: 6,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   dimHeader: {
     flexDirection: "row",
@@ -304,15 +362,17 @@ const s = StyleSheet.create({
   advisoryRow: {
     flexDirection: "row",
     gap: spacing.lg,
+    flexWrap: "wrap",
   },
   halfCard: {
     flex: 1,
+    minWidth: 280,
     padding: spacing.lg,
   },
   bulletRow: {
     flexDirection: "row",
     gap: spacing.xs,
-    marginBottom: spacing.xs,
+    marginBottom: spacing.sm,
     alignItems: "flex-start",
   },
 });

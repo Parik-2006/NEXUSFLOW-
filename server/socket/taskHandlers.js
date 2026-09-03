@@ -32,6 +32,21 @@ export async function recomputeAndBroadcast(io, teamId) {
   io.to(`team:${teamId}`).emit("task:execution-order", { tasks: updated, edges });
 }
 
+async function notifyHealthAndRiskChange(io, teamId) {
+  try {
+    if (!io || !teamId) return;
+    io.to(`team:${teamId}`).emit("project:health:updated", { teamId });
+    io.to(`project:${teamId}`).emit("project:health:updated", { teamId });
+    io.to(`team:${teamId}`).emit("project:risk:updated", { teamId });
+    io.to(`project:${teamId}`).emit("project:risk:updated", { teamId });
+    const team = await Team.findById(teamId).select("activeProjectId").lean();
+    if (team?.activeProjectId) {
+      io.to(`project:${team.activeProjectId}`).emit("project:health:updated", { projectId: team.activeProjectId, teamId });
+      io.to(`project:${team.activeProjectId}`).emit("project:risk:updated", { projectId: team.activeProjectId, teamId });
+    }
+  } catch {}
+}
+
 export function registerTaskHandlers(io, socket) {
   socket.on("room:join", async ({ teamId }, ack) => {
     try {
@@ -91,6 +106,7 @@ export function registerTaskHandlers(io, socket) {
 
       const taskObj = task.toObject();
       io.to(`team:${teamId}`).emit("task:created", taskObj);
+      notifyHealthAndRiskChange(io, teamId);
       ack?.({ ok: true, task: taskObj });
 
       if (dependencies.length > 0) {
@@ -113,6 +129,7 @@ export function registerTaskHandlers(io, socket) {
       await Team.updateOne({ _id: teamId }, { $inc: dec });
 
       io.to(`team:${teamId}`).emit("task:deleted", { taskId });
+      notifyHealthAndRiskChange(io, teamId);
       ack?.({ ok: true, taskId });
 
       await recomputeAndBroadcast(io, teamId);
@@ -172,6 +189,7 @@ export function registerTaskHandlers(io, socket) {
       }
 
       io.to(`team:${teamId}`).emit("task:updated", { ...task, prevStatus: effPrev });
+      notifyHealthAndRiskChange(io, teamId);
       ack?.({ ok: true, task });
     } catch (e) {
       ack?.({ ok: false, error: e.message });

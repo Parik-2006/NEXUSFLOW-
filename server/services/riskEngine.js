@@ -20,6 +20,7 @@ import Team from "../models/Team.js";
 import Task from "../models/Task.js";
 import Risk from "../models/Risk.js";
 import User from "../models/User.js";
+import { resolveProjectAndTeam } from "./teamHealth.js";
 import { logger } from "../utils/logger.js";
 
 const DEADLINE_DAYS = 5;            // approaching deadline window
@@ -38,21 +39,20 @@ function fp(s) {
 }
 
 /**
- * scanProjectRisks(projectId)
- * - Always reads CURRENT data (live Task, Team, User).
+ * scanProjectRisks(id)
+ * - Resolves Project and Team from either a projectId or teamId.
+ * - Always reads CURRENT data across both projectId and teamId.
  * - Writes a fingerprint on every Risk so we can update / reuse rather than
  *   duplicate on repeated button presses.
  * - Resolves previously-open risks whose condition is gone (status → resolved).
  */
-export async function scanProjectRisks(projectId) {
-  const Project = (await import("../models/Project.js")).default;
-  const project = await Project.findById(projectId).lean();
-  if (!project) throw new Error("Project not found");
+export async function scanProjectRisks(id) {
+  const { project, team, projectId, teamId } = await resolveProjectAndTeam(id);
 
-  const team     = await Team.findById(project.teamId).lean();
-  if (!team) throw new Error("Team not found");
+  const allTasks = await Task.find({
+    $or: [{ projectId }, { teamId }],
+  }).lean();
 
-  const allTasks = await Task.find({ projectId }).lean();
   const now      = Date.now();
   const detected = [];
 
@@ -132,7 +132,6 @@ export async function scanProjectRisks(projectId) {
   }
 
   // ── 4. Dependency cascade ──────────────────────────────────────────────────
-  // A task whose upstream is overdue / blocked AND which other tasks depend on.
   const idSet = new Set(allTasks.map((t) => String(t._id)));
   const downstreamCount = (id) =>
     allTasks.filter((t) => (t.dependencies || []).some((d) => String(d) === String(id))).length;
@@ -191,21 +190,24 @@ export async function scanProjectRisks(projectId) {
   // ── 6. Member overload ─────────────────────────────────────────────────────
   const memberLoad = {};
   for (const m of team.members || []) {
-    memberLoad[m.userId?.toString()] = {
-      name: m.name || m.email || "Member",
-      assigned: 0,
-      capacity: m.capacity || 40,
-    };
+    const uid = (m.userId?._id || m.userId)?.toString();
+    if (uid) {
+      memberLoad[uid] = {
+        name: m.name || "Member",
+        assigned: 0,
+        capacity: m.capacity || 40,
+      };
+    }
   }
   for (const t of allTasks) {
     if (isDone(t)) continue;
-    const uid = t.assignedTo?.toString();
+    const uid = (t.assignedTo?._id || t.assignedTo)?.toString();
     if (uid && memberLoad[uid]) memberLoad[uid].assigned += hours(t);
   }
   for (const [uid, m] of Object.entries(memberLoad)) {
     if (m.assigned > m.capacity * OVERLOAD_RATIO) {
       const memberTasks = allTasks.filter(
-        (t) => !isDone(t) && String(t.assignedTo) === uid
+        (t) => !isDone(t) && ((t.assignedTo?._id || t.assignedTo)?.toString() === uid)
       );
       detected.push({
         title: `${m.name} is overloaded (${m.assigned}h vs ${m.capacity}h)`,
@@ -400,7 +402,7 @@ export async function scanProjectRisks(projectId) {
           document: {
             ...d,
             projectId,
-            teamId: team._id,
+            teamId,
             status: "open",
           },
         },
@@ -430,7 +432,6 @@ export async function scanProjectRisks(projectId) {
     try {
       await Risk.bulkWrite(ops, { ordered: false });
     } catch (e) {
-      // Fallback to sequential inserts if bulkWrite isn't supported
       logger.warn("[riskEngine] bulkWrite fallback", { err: e.message });
       for (const d of detected) {
         const prev = existingByFp.get(d.fingerprint);
@@ -453,7 +454,7 @@ export async function scanProjectRisks(projectId) {
           await Risk.create({
             ...d,
             projectId,
-            teamId: team._id,
+            teamId,
             status: "open",
           });
         }

@@ -7,8 +7,9 @@ import mongoose from "mongoose";
 
 const DimensionSchema = new mongoose.Schema(
   {
-    score:   { type: Number, min: 0, max: 100, default: 50 },
-    details: { type: String, default: "" },
+    score:       { type: Number, min: 0, max: 100, default: 50 },
+    description: { type: String, default: "" },
+    details:     { type: String, default: "" },
   },
   { _id: false }
 );
@@ -22,13 +23,13 @@ const TeamHealthSchema = new mongoose.Schema(
     grade: { type: String, enum: ["A", "B", "C", "D", "F"], default: "F" },
 
     dimensions: {
-      workloadBalance: { type: DimensionSchema, default: {} },
-      taskCompletion:  { type: DimensionSchema, default: {} },
-      blockedTasks:    { type: DimensionSchema, default: {} },
-      skillCoverage:   { type: DimensionSchema, default: {} },
-      contribution:    { type: DimensionSchema, default: {} },
-      sprintProgress:  { type: DimensionSchema, default: {} },
-      githubActivity:  { type: DimensionSchema, default: {} },
+      workloadBalance: { type: DimensionSchema, default: () => ({}) },
+      taskCompletion:  { type: DimensionSchema, default: () => ({}) },
+      blockedTasks:    { type: DimensionSchema, default: () => ({}) },
+      skillCoverage:   { type: DimensionSchema, default: () => ({}) },
+      contribution:    { type: DimensionSchema, default: () => ({}) },
+      sprintProgress:  { type: DimensionSchema, default: () => ({}) },
+      githubActivity:  { type: DimensionSchema, default: () => ({}) },
     },
 
     strengths:  { type: [String], default: [] },
