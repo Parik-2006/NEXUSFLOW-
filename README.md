@@ -93,31 +93,6 @@ AI requests are routed through the zero-cost OmniRoute layer with free-provider 
 - Project activity tracking
 - Development progress signals
 
-### ⚡ Real-Time Experience
-- Socket.IO powered synchronization
-- Live task and project updates
-- Live team membership updates
-- Independent chat unread counters
-- Mark-as-read support
-- Persistent MongoDB chat history
-- Responsive web and mobile UI
-
----
-
-# 🔐 Security & Design Principles
-
-- JWT-based authentication
-- HTTP-only session handling for OAuth callbacks
-- Server-side authorization
-- Protected team/project actions
-- Secure password reset tokens
-- AI cannot silently perform destructive actions
-- User confirmation for important project changes
-- Backward-compatible database evolution
-- Production and development environments kept separate
-
----
-
 # 🛠️ Technology Stack
 
 | Layer | Technology |
