@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { View, Text, StyleSheet, Pressable, ScrollView } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -45,8 +45,16 @@ export default function Workspace() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
-  const { team, refetch: refetchTeam } = useTeam(teamId);
+  const { team, loading: teamLoading, notFound, refetch: refetchTeam } = useTeam(teamId);
   const [active, setActive] = useState<TabKey>((tab as TabKey) && TABS.some((t) => t.key === tab) ? (tab as TabKey) : "overview");
+
+  // If the team was deleted (server returns 404) bounce safely to the dashboard.
+  // This covers: owner deleted it from another tab, owner deleted this very tab.
+  useEffect(() => {
+    if (teamId && notFound && !teamLoading) {
+      router.replace("/(tabs)/dashboard" as any);
+    }
+  }, [teamId, notFound, teamLoading, router]);
 
   // Shared invitation state — same hook as dashboard so bell is always in sync
   const { invitations, pendingCount, acceptInvitation, rejectInvitation } = useInvitations();

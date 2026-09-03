@@ -96,7 +96,7 @@ export default function TeamMenu({
     { icon: "add-circle-outline", label: "Add manual task", onPress: () => { setMode(null); onNavigate("tasks"); } },
     { icon: "people-outline", label: "Manage members", onPress: () => open("members") },
     { icon: "settings-outline", label: "Team settings", onPress: () => open("settings") },
-    { icon: "trash-outline", label: "Delete team", danger: true, ownerOnly: true, onPress: () => { setMode(null); onDelete(); } },
+    { icon: "trash-outline", label: "Delete workspace", danger: true, ownerOnly: true, onPress: () => { setMode(null); onDelete(); } },
   ];
 
   const ACTIONS = ALL_ACTIONS.filter((a) => !a.ownerOnly || isOwner);

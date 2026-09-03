@@ -91,6 +91,14 @@ export default function Dashboard() {
     return h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
   })();
 
+  // Real authenticated user's display name. Never fall back to the literal word
+  // "there" — derive a name from the email's local-part if the user model has
+  // no name field for any reason.
+  const displayName =
+    (user?.name && String(user.name).trim()) ||
+    (user?.email ? String(user.email).split("@")[0] : "").trim() ||
+    "friend";
+
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <FloatingBackground />
@@ -103,7 +111,7 @@ export default function Dashboard() {
           <View style={s.header}>
             <View style={{ flex: 1 }}>
               <Text style={s.greeting}>{greeting},</Text>
-              <Text style={font.h1}>{user?.name ?? "there"}</Text>
+              <Text style={font.h1}>{displayName}</Text>
             </View>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
               <Pressable

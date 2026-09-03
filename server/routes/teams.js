@@ -1764,7 +1764,23 @@ router.post("/teams/:teamId/leave", requireAuth, async (req, res) => {
 });
 
 // ── DELETE /api/teams/:teamId ─────────────────────────────────────────────────
-// Remove a team and all of its tasks. STRICT: Only the team owner/leader can delete!
+// Remove a team and all of its owned data. STRICT: Only the team owner can delete.
+//
+// Cascade policy (kept in sync with the dashboard contract):
+//   • Team record
+//   • Tasks
+//   • Invitations to the team
+//   • Projects owned by the team
+//   • Chat messages scoped to the team (team chat only)
+//   • Risks / Retrospectives / Team Health / Learning Insights / Opinions
+//   • Decision Feedback / Team Departures / GitHub Integrations
+//   • Notifications that reference the team are NOT hard-deleted (so other
+//     users keep an audit trail), but their teamId pointer is cleared.
+//
+// What is NEVER deleted by this route:
+//   • The User profile(s) of any member (including the owner).
+//   • Global chat (no teamId or unrelated teamId).
+//   • Other teams / workspaces.
 router.delete("/teams/:teamId", requireAuth, async (req, res) => {
   try {
     const { teamId } = req.params;
@@ -1775,17 +1791,61 @@ router.delete("/teams/:teamId", requireAuth, async (req, res) => {
     const team = await Team.findById(teamId);
     if (!team) return res.status(404).json({ error: "team_not_found" });
 
+    // Authorize: must be the team's owner. Members cannot delete.
     const authUser = await resolveAuthUser(req.user);
-    const userIdStr = (authUser?._id || req.user?._id || req.user?.id)?.toString() || "";
-
+    if (!authUser) {
+      return res.status(401).json({ error: "Unauthorized: Could not resolve your account." });
+    }
+    const userIdStr = authUser._id.toString();
     const isOwner = team.ownerId && team.ownerId.toString() === userIdStr;
     if (!isOwner) {
       return res.status(403).json({ error: "Forbidden: Only the team leader can delete this team." });
     }
 
-    await Team.findByIdAndDelete(teamId);
-    await Task.deleteMany({ teamId });
-    await Invitation.deleteMany({ teamId });
+    // Dynamic imports avoid circular dependency issues between models and routes.
+    const [
+      { default: ChatMessage },
+      { default: TeamHealth },
+      { default: Risk },
+      { default: Retrospective },
+      { default: LearningInsight },
+      { default: Opinion },
+      { default: DecisionFeedback },
+      { default: GitHubIntegration },
+    ] = await Promise.all([
+      import("../models/ChatMessage.js"),
+      import("../models/TeamHealth.js"),
+      import("../models/Risk.js"),
+      import("../models/Retrospective.js"),
+      import("../models/LearningInsight.js"),
+      import("../models/Opinion.js"),
+      import("../models/DecisionFeedback.js"),
+      import("../models/GitHubIntegration.js"),
+    ]);
+
+    // Hard-delete team-scoped data. Run in parallel.
+    await Promise.all([
+      Team.findByIdAndDelete(teamId),
+      Task.deleteMany({ teamId }),
+      Project.deleteMany({ teamId }),
+      Invitation.deleteMany({ teamId }),
+      ChatMessage.deleteMany({ teamId }),
+      TeamHealth.deleteMany({ teamId }),
+      Risk.deleteMany({ teamId }),
+      Retrospective.deleteMany({ teamId }),
+      LearningInsight.deleteMany({ teamId }),
+      Opinion.deleteMany({ teamId }),
+      DecisionFeedback.deleteMany({ teamId }),
+      TeamDeparture.deleteMany({ teamId }),
+      GitHubIntegration.deleteMany({ teamId }),
+    ]);
+
+    // Soft-disassociate: clear teamId on notifications that reference this team
+    // (keeps users' inbox / audit trail intact without dangling pointers).
+    await Notification.updateMany(
+      { teamId },
+      { $unset: { teamId: "" } }
+    );
 
     const io = req.app.get("io");
     if (io) {
@@ -1794,6 +1854,7 @@ router.delete("/teams/:teamId", requireAuth, async (req, res) => {
 
     res.json({ ok: true, message: "Team deleted successfully." });
   } catch (e) {
+    console.error("[DELETE /teams/:teamId] error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });

@@ -46,13 +46,23 @@ export function useTeam(teamId: string | undefined) {
   const { token } = useAuth();
   const [team, setTeam] = useState<Team | null>(null);
   const [loading, setLoading] = useState(true);
+  const [notFound, setNotFound] = useState(false);
 
   const hydrate = useCallback(async () => {
     if (!teamId) return;
     try {
       const res = await fetch(`${API}/api/teams/${teamId}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.status === 404) {
+        // Team was deleted (or never existed). Surface a sentinel so the page
+        // can safely redirect instead of leaving the user on a broken workspace.
+        setTeam(null);
+        setNotFound(true);
+        return;
+      }
       if (res.ok) {
-        setTeam(await res.json());
+        const data = await res.json();
+        setTeam(data);
+        setNotFound(false);
       }
     } finally {
       setLoading(false);
@@ -140,6 +150,7 @@ export function useTeam(teamId: string | undefined) {
     const onTeamDeleted = (payload: { teamId: string }) => {
       if (payload.teamId === teamId) {
         setTeam(null);
+        setNotFound(true);
       }
     };
 
@@ -317,6 +328,7 @@ export function useTeam(teamId: string | undefined) {
     team,
     members,
     loading,
+    notFound,
     refetch: hydrate,
     addMember,
     inviteMemberByEmail,

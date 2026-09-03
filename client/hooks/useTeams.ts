@@ -208,12 +208,20 @@ export function useTeams() {
     const onTaskUpdated = (p: { teamId: string; prevStatus: string; status: string }) =>
       recomputeProgress(p.teamId, p.prevStatus, p.status);
 
+    // Mirror server-side deletion in any other open tab/device.
+    const onTeamDeleted = (p: { teamId: string }) => {
+      if (!p?.teamId) return;
+      setTeams((prev) => prev.filter((t) => t._id !== p.teamId));
+    };
+
     socket.on("task:updated", onTaskUpdated);
+    socket.on("team:deleted", onTeamDeleted);
     // Reconnection replay: when the socket comes back, refetch to catch missed deltas.
     socket.on("reconnect", hydrate);
 
     return () => {
       socket.off("task:updated", onTaskUpdated);
+      socket.off("team:deleted", onTeamDeleted);
       socket.off("reconnect", hydrate);
     };
   }, [token, recomputeProgress, hydrate]);
