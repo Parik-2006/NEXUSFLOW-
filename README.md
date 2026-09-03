@@ -1,35 +1,39 @@
 # 🚀 NexusFlow – AI Powered Agile Project Management System
 
-> **An Intelligent Project Management Platform powered by AI and Design & Analysis Algorithms.**
-> *Built for Smart Project Planning, Task Scheduling, Sprint Optimization, and Team Collaboration.*
+> **An Intelligent Project Management Platform powered by AI and Design & Analysis Algorithms.**  
+> *Built for Smart Project Planning, Task Scheduling, Team Collaboration, and Project Intelligence.*
 
 ---
 
 # 📖 Project Objective
 
-Managing software projects manually becomes difficult as project size grows. Traditional project management tools require users to create every task, prioritize work manually, and assign members without intelligent assistance.
+Managing software projects manually becomes difficult as project size grows. Traditional project management tools require users to create tasks, prioritize work, coordinate teammates, and track progress manually.
 
-**NexusFlow** solves this problem by combining **Artificial Intelligence** with **Design & Analysis of Algorithms (DAA)** to automate project planning, optimize sprint scheduling, manage dependencies, recommend task priorities, and intelligently assign work among team members.
+**NexusFlow** combines Artificial Intelligence with Design & Analysis of Algorithms (DAA) to simplify project planning, task management, team collaboration, sprint planning, dependency management, and project monitoring.
 
 ---
 
 # 🏗️ System Workflow
 
 <p align="center">
-<img src="images/workflow-version2.0.png" width="100%">
+<img src="images/workflow-version3.0.png" width="100%">
 </p>
 
-The workflow begins with project creation, where AI analyzes the project description and automatically decomposes it into meaningful tasks. These tasks are prioritized using Greedy Scheduling, optimized into sprints using 0/1 Knapsack, organized through Topological Sorting, assigned using Branch & Bound, and continuously managed through AI recommendations.
+The workflow takes a project from idea to execution through planning, task creation, team collaboration, sprint management, and continuous monitoring.  
+AI assists users with project understanding and recommendations, while deterministic DAA algorithms handle optimization and structured decision-making.  
+Real-time synchronization keeps tasks, teams, chats, notifications, and project activity consistent for everyone.
 
 ---
 
 # 🏛️ System Architecture
 
 <p align="center">
-<img src="images/architecture-version2.0.png" width="100%">
+<img src="images/architecture-version3.0.png" width="100%">
 </p>
 
-The architecture follows a layered design consisting of a React Native frontend, Node.js + Express backend, MongoDB database, Socket.IO real-time communication, Gemini AI integration, and multiple DAA algorithm modules working together to automate project management.
+NexusFlow uses a React Native + Expo frontend connected to a Node.js + Express backend and MongoDB database.  
+Socket.IO provides real-time collaboration, while authentication, project services, DAA algorithms, GitHub integration, and AI services operate through the backend.  
+AI requests are routed through the zero-cost OmniRoute layer with free-provider routes and deterministic fallback support.
 
 ---
 
@@ -37,48 +41,73 @@ The architecture follows a layered design consisting of a React Native frontend,
 
 | Algorithm | Purpose |
 |------------|---------|
-| 🟢 Greedy Algorithm | Calculates task priority based on urgency, impact and dependency weight |
-| 🟠 0/1 Knapsack | Selects the maximum-value tasks that fit within sprint capacity |
-| 🔵 Topological Sort | Generates dependency-aware execution order |
-| 🟣 Branch & Bound | Assigns the best team member based on skill-gap cost |
-| 🟡 Merge Sort | Sorts tasks by priority, deadline and status |
-| 🔍 Boyer–Moore Search | Fast task searching within large backlogs |
+| 🟢 Greedy Algorithm | Calculates and ranks task priority |
+| 🟠 0/1 Knapsack | Selects valuable tasks within sprint capacity |
+| 🔵 DFS | Detects dependency cycles |
+| 🔵 BFS | Determines dependency levels and execution waves |
+| 🟣 Topological Sort | Generates dependency-aware execution order |
+| 🟣 Branch & Bound | Finds suitable team-member/task assignments |
+| 🟡 Merge Sort | Provides efficient task ordering |
+| 🔍 Boyer–Moore | Enables fast task searching |
 
 ---
 
 # 🌍 Key Features
 
-- 🤖 AI Project Decomposition
-- 📋 Intelligent Task Generation
-- ⚡ AI Assisted Task Creation
-- 📊 Greedy Task Prioritization
-- 🚀 Sprint Optimization
-- 🔗 Dependency Graph Generation
-- 👥 Smart Team Assignment
-- 📈 Analytics Dashboard
-- 🔔 Smart Notifications & Reminders
-- 💬 Team Collaboration
-- 📱 Responsive Modern UI
+### 🤖 AI & Project Assistance
+- AI project understanding
+- Intelligent task generation
+- AI-assisted recommendations
+- Project-aware Copilot
+- AI sprint retrospective
+- Historical learning and recommendations
+- AI & dataset resource discovery
 
----
+### 👥 Team & Collaboration
+- Google OAuth authentication
+- Email/password authentication
+- Forgot-password flow
+- Team invitations
+- Role-based team management
+- Verified member skills
+- Skill quizzes and badges
+- Team skill graph and skill-gap detection
+- Global Chat
+- Private Team Chat
+- Real-time notifications
 
-# ☁️ Deployment
+### 📋 Project Management
+- Workspace creation and management
+- Task creation and tracking
+- Task priority scoring
+- Sprint planning
+- Dependency graph
+- Analytics dashboard
+- Team Health monitoring
+- Risk Intelligence
+- Decision and opinion tracking
 
-The project can be deployed using:
+### 🔗 Development Integration
+- GitHub repository integration
+- Commit / PR / issue activity
+- Project activity tracking
+- Development progress signals
 
-- Vercel (Frontend)
-- Render / Railway (Backend)
-- MongoDB Atlas
-- Google Gemini API
+# 🛠️ Technology Stack
 
----
-
-# 📄 Documentation
-
-Project documentation is available inside the **documents/** folder.
-
-- 📘 DAA Project Report
-- 📑 DAA Project Poster
+| Layer | Technology |
+|-------|------------|
+| Frontend | React Native + Expo Router + TypeScript |
+| Web | React Native Web |
+| Backend | Node.js + Express |
+| Real-Time | Socket.IO |
+| Database | MongoDB + Mongoose |
+| Authentication | JWT + Google OAuth |
+| AI | OmniRoute → Gemini Free / OpenRouter Free |
+| Repository Integration | GitHub |
+| Frontend Deployment | Vercel |
+| Backend Deployment | Render |
+| Database Hosting | MongoDB Atlas |
 
 ---
 
@@ -88,4 +117,6 @@ This project is developed for **RV College of Engineering** as part of the **Des
 
 ---
 
-# ⭐ If you like this project, consider giving it a star!
+# ⭐ NexusFlow
+
+**Plan smarter. Collaborate better. Execute together.**
