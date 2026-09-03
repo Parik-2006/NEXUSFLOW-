@@ -9,6 +9,15 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const GOOGLE_CLIENT_ID = () => process.env.GOOGLE_CLIENT_ID || "";
 const GOOGLE_CLIENT_SECRET = () => process.env.GOOGLE_CLIENT_SECRET || "";
+const GOOGLE_REDIRECT_URI = () => {
+  if (process.env.GOOGLE_REDIRECT_URI) {
+    return process.env.GOOGLE_REDIRECT_URI;
+  }
+  if (process.env.NODE_ENV === "production" || process.env.RENDER) {
+    return "https://nexusflow-nxeg.onrender.com/api/auth/google/callback";
+  }
+  return "http://localhost:4000/api/auth/google/callback";
+};
 const getFrontendUrl = () => {
   const url = process.env.FRONTEND_URL || "";
   if (!url || url.includes("your-frontend") || url.includes("example.com")) {
