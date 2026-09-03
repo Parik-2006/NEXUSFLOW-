@@ -70,6 +70,11 @@ const TaskSchema = new mongoose.Schema(
     skillWeights:   { type: SkillWeightsSchema, default: () => ({}) },
     assignedTo:     { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     assignmentCost: { type: Number, default: null },
+
+    // ── Skill gap detection (FIX 2) ───────────────────────────────────────────
+    // Optional list of skill names a task requires. Used by the Risk
+    // Intelligence engine to detect skill gaps. Migration-safe default.
+    requiredSkills: { type: [String], default: [] },
   },
   { timestamps: true }
 );

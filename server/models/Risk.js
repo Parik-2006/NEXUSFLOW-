@@ -23,12 +23,31 @@ const RiskSchema = new mongoose.Schema(
     category: {
       type: String,
       enum: [
-        "deadline",       "overload",    "missing_skills",
-        "blocked_tasks",  "single_point_of_failure",
-        "stale_tasks",    "scope_creep",  "other",
+        "deadline",
+        "approaching_deadline",
+        "overdue_tasks",
+        "blocked_tasks",
+        "dependency_cascade",
+        "unassigned_high_priority",
+        "high_priority_unfinished",
+        "overload",
+        "member_overload",
+        "workload_imbalance",
+        "missing_skills",
+        "skill_gap",
+        "sprint_capacity",
+        "stalled_progress",
+        "single_point_of_failure",
+        "stale_tasks",
+        "github_inactivity",
+        "scope_creep",
+        "other",
       ],
       default: "other",
     },
+
+    // Deterministic fingerprint used to dedupe and re-open on rescan.
+    fingerprint: { type: String, default: "", index: true },
 
     status: {
       type: String,
@@ -44,5 +63,6 @@ const RiskSchema = new mongoose.Schema(
 );
 
 RiskSchema.index({ projectId: 1, status: 1, severity: 1 });
+RiskSchema.index({ projectId: 1, fingerprint: 1 }, { unique: false });
 
 export default mongoose.model("Risk", RiskSchema);

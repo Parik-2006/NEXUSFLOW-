@@ -10,6 +10,7 @@ import authRoutes    from "./routes/auth.js";         // NEXUSFLOW 3.0 — Googl
 import chatRoutes   from "./routes/chat.js";           // NEXUSFLOW 3.0 — Chat system
 import skillsRoutes from "./routes/skills.js";         // NEXUSFLOW 3.0 — Skill verification + graph
 import aiRoutes     from "./routes/ai.js";             // NEXUSFLOW 3.0 — AI quiz generation
+import userLookupRoutes from "./routes/userLookup.js"; // NEXUSFLOW 3.0 — Workspace email lookup (Fix 4)
 import teamRoutes   from "./routes/teams.js";
 import projectRoutes from "./routes/projects.js";   // NEXUSFLOW 2.0 — Phase 1
 import githubRoutes  from "./routes/github.js";      // NEXUSFLOW 3.0 — Phase 11
@@ -224,6 +225,7 @@ app.use("/api", authRoutes);       // NEXUSFLOW 3.0 — Google OAuth + forgot pa
 app.use("/api", chatRoutes);       // NEXUSFLOW 3.0 — Chat system
 app.use("/api", skillsRoutes);     // NEXUSFLOW 3.0 — Skills
 app.use("/api", aiRoutes);         // NEXUSFLOW 3.0 — AI quiz
+app.use("/api", userLookupRoutes); // NEXUSFLOW 3.0 — Workspace email lookup (Fix 4)
 app.use("/api", teamRoutes);
 app.use("/api", projectRoutes);   // NEXUSFLOW 2.0 — Phase 1 project routes
 app.use("/api", githubRoutes);    // NEXUSFLOW 3.0 — Phase 11 GitHub integration

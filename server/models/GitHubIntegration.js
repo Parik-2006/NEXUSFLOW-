@@ -28,6 +28,8 @@ const GitHubIntegrationSchema = new mongoose.Schema(
       recentCommits:  { type: Number, default: 0 },
       contributors:   [{ login: String, contributions: Number }],
       lastFetchedAt:  { type: Date },
+      // FIX 2 — last commit timestamp used by the risk engine for github_inactivity
+      lastCommitAt:   { type: Date, default: null },
     },
     cacheExpiresAt: { type: Date },
     isActive:       { type: Boolean, default: true },

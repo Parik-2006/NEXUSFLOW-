@@ -8,6 +8,9 @@ import { resolveAuthUser } from "./teams.js";
 const router = Router();
 
 // ── POST /api/skills/verify ────────────────────────────────────────────────────
+// FIX 5F: Verification threshold = score >= 3 of totalQuestions AND
+// totalQuestions must be 5. Backwards-compatible: if totalQuestions is not 5
+// (legacy), keep the legacy 80% rule.
 router.post("/skills/verify", requireAuth, async (req, res) => {
   try {
     const authUser = await resolveAuthUser(req.user);
@@ -18,21 +21,23 @@ router.post("/skills/verify", requireAuth, async (req, res) => {
     if (!skill || !String(skill).trim()) {
       return res.status(400).json({ error: "Skill is required." });
     }
-    if (typeof score !== "number" || score < 0 || score > 100) {
-      return res.status(400).json({ error: "Score must be a number between 0 and 100." });
+    if (typeof score !== "number" || score < 0) {
+      return res.status(400).json({ error: "Score must be a non-negative number." });
     }
-    if (!totalQuestions || totalQuestions < 1) {
+    const total = Number(totalQuestions) || 0;
+    if (total < 1) {
       return res.status(400).json({ error: "totalQuestions must be at least 1." });
     }
 
-    const percentage = Math.round((score / totalQuestions) * 100);
-    const verified = percentage >= 80;
+    // FIX 5F — strict 3-of-5 threshold for 5-question quizzes.
+    const verified = total === 5 ? score >= 3 : score / total >= 0.8;
+    const percentage = Math.round((score / total) * 100);
 
     const verification = await SkillVerification.create({
       userId: authUser._id,
       skill: String(skill).trim(),
       score,
-      totalQuestions,
+      totalQuestions: total,
       percentage,
       difficulty: ["beginner", "intermediate", "advanced"].includes(difficulty) ? difficulty : "intermediate",
       attemptId: attemptId || `verify_${Date.now()}_${authUser._id.toString()}`,
@@ -56,7 +61,7 @@ router.post("/skills/verify", requireAuth, async (req, res) => {
     });
   } catch (e) {
     console.error("[POST /skills/verify] Error:", e.message);
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: "We couldn't save your verification. Please try again." });
   }
 });
 

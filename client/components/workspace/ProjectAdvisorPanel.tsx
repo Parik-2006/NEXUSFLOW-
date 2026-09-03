@@ -113,7 +113,7 @@ interface ChatTurn {
   };
 }
 
-type SubTabKey = "brief" | "guidance" | "copilot" | "decisions" | "architecture" | "research" | "tools" | "decide";
+type SubTabKey = "brief" | "guidance" | "copilot" | "decisions" | "architecture" | "research" | "tools" | "decide" | "resources";
 
 export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
   const { token, user } = useAuth();
@@ -139,6 +139,16 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
   const [generatingTasks, setGeneratingTasks] = useState(false);
   const [generatedResult, setGeneratedResult] = useState<{ added: number; duplicatesSkipped: number } | null>(null);
   const [activeSection, setActiveSection] = useState<SubTabKey>("brief");
+
+  // AI & Dataset Resources (Fix 1)
+  const [discoveredResources, setDiscoveredResources] = useState<{
+    datasets: any[];
+    models: any[];
+    provider?: string;
+    aiEnhanced?: boolean;
+  } | null>(null);
+  const [discoveringResources, setDiscoveringResources] = useState(false);
+  const [resourcesCount, setResourcesCount] = useState(0);
 
   // Chat State
   const [chatMessages, setChatMessages] = useState<ChatTurn[]>([]);
@@ -360,6 +370,33 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
       toast("Research discovery failed: " + err.message, "error");
     } finally {
       setDiscoveringResearch(false);
+    }
+  };
+
+  // Discover AI & Dataset Resources (Fix 1)
+  const discoverResources = async () => {
+    let targetPid = projectId;
+    if (!targetPid) targetPid = await ensureProject();
+    if (!targetPid || !token || discoveringResources) return;
+    try {
+      setDiscoveringResources(true);
+      const res = await fetch(`${API}/api/projects/${targetPid}/resources/discover`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Resource discovery failed");
+      setDiscoveredResources({
+        datasets: data.datasets || [],
+        models: data.models || [],
+        provider: data.provider,
+        aiEnhanced: data.aiEnhanced,
+      });
+      setResourcesCount((data.datasets?.length || 0) + (data.models?.length || 0));
+    } catch (err: any) {
+      toast("Resource discovery failed: " + err.message, "error");
+    } finally {
+      setDiscoveringResources(false);
     }
   };
 
@@ -606,6 +643,7 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
     { key: "architecture", label: "Architecture", icon: "layers", count: architecture.length },
     { key: "research", label: "Research", icon: "book", count: academicPapers.length },
     { key: "tools", label: "API & Tools", icon: "construct", count: projectTools.length },
+    { key: "resources", label: "AI & Dataset Resources", icon: "server-outline", count: resourcesCount },
     { key: "decide", label: "Decision Engine", icon: "analytics", count: 0 },
   ];
 
@@ -1334,10 +1372,206 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
         </ScrollView>
       )}
 
-      {/* ── TAB 8: DECISION ENGINE ───────────────────────────────────── */}
+      {/* ── TAB 8: AI & DATASET RESOURCES (Fix 1) ─────────────────────── */}
+      {activeSection === "resources" && (
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: spacing.md, paddingBottom: 80 }}>
+          <View style={{ gap: spacing.md }}>
+            <View style={s.researchHeaderRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={font.h3}>AI & Dataset Resources</Text>
+                <Text style={s.sectionSub}>
+                  Discover free/open datasets and pretrained AI/ML models relevant to your project.
+                </Text>
+              </View>
+              <Pressable
+                style={[s.discoverBtn, discoveringResources && { opacity: 0.7 }]}
+                onPress={discoverResources}
+                disabled={discoveringResources}
+              >
+                {discoveringResources ? (
+                  <>
+                    <ActivityIndicator size="small" color="#fff" />
+                    <Text style={s.discoverBtnText}>Searching...</Text>
+                  </>
+                ) : (
+                  <>
+                    <Ionicons name="search" size={14} color="#fff" />
+                    <Text style={s.discoverBtnText}>Find Datasets & Models</Text>
+                  </>
+                )}
+              </Pressable>
+            </View>
+
+            <View style={s.infoNoticeBox}>
+              <Ionicons name="information-circle" size={16} color={colors.info} />
+              <Text style={s.infoNoticeText}>
+                Resource discovery is read-only. It does not download models, train models, create tasks, or modify your project. You stay in control.
+              </Text>
+            </View>
+
+            {!discoveredResources ? (
+              <View style={s.emptyCard}>
+                <Ionicons name="server-outline" size={32} color={colors.textMuted} />
+                <Text style={[font.body, { textAlign: "center", color: colors.textMuted, marginTop: 8 }]}>
+                  No resources discovered yet. Click "Find Datasets & Models" to discover free datasets and pretrained models for your project.
+                </Text>
+              </View>
+            ) : null}
+
+            {discoveredResources && discoveredResources.datasets.length === 0 && discoveredResources.models.length === 0 ? (
+              <View style={s.emptyCard}>
+                <Text style={[font.body, { textAlign: "center" }]}>No matching resources found for this project yet.</Text>
+              </View>
+            ) : null}
+
+            {discoveredResources && discoveredResources.datasets.length > 0 ? (
+              <View style={{ gap: spacing.sm }}>
+                <Text style={s.groupHeader}>📊 DATASETS ({discoveredResources.datasets.length})</Text>
+                {discoveredResources.datasets.map((d, idx) => (
+                  <View key={idx} style={s.resourceCard}>
+                    <View style={s.resourceHeader}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={s.resourceTitle}>{d.name}</Text>
+                        <Text style={s.resourceSource}>{d.source || "Dataset"}</Text>
+                      </View>
+                      <View style={[s.badgePill, accessBadgeStyle(d.access)]}>
+                        <Text style={[s.badgePillText, accessBadgeTextStyle(d.access)]}>
+                          {(d.access || "unknown").replace("_", " ").toUpperCase()}
+                        </Text>
+                      </View>
+                    </View>
+                    {d.description ? <Text style={s.resourceDesc}>{d.description}</Text> : null}
+                    {d.whyMatches ? (
+                      <Text style={s.resourceWhy}>
+                        <Text style={{ fontWeight: "700", color: colors.text }}>Why it matches: </Text>
+                        {d.whyMatches}
+                      </Text>
+                    ) : null}
+                    {d.dataContains ? (
+                      <Text style={s.resourceWhy}>
+                        <Text style={{ fontWeight: "700", color: colors.text }}>Contains: </Text>
+                        {d.dataContains}
+                      </Text>
+                    ) : null}
+                    <View style={s.resourceFooter}>
+                      <View style={s.resourceUseful}>
+                        <Ionicons name="pulse" size={11} color={colors.primary} />
+                        <Text style={s.resourceUsefulTxt}>Usefulness {d.usefulness}/100</Text>
+                      </View>
+                      <View style={{ flexDirection: "row", gap: 6 }}>
+                        {d.url ? (
+                          <Pressable style={s.resourceBtn} onPress={() => Linking.openURL(d.url)}>
+                            <Ionicons name="open-outline" size={12} color={colors.primary} />
+                            <Text style={s.resourceBtnTxt}>Open</Text>
+                          </Pressable>
+                        ) : null}
+                        {d.downloadUrl ? (
+                          <Pressable style={[s.resourceBtn, s.resourceBtnDl]} onPress={() => Linking.openURL(d.downloadUrl)}>
+                            <Ionicons name="download-outline" size={12} color={colors.success} />
+                            <Text style={[s.resourceBtnTxt, { color: colors.success }]}>Download</Text>
+                          </Pressable>
+                        ) : null}
+                      </View>
+                    </View>
+                    {!d.verified ? <Text style={s.resourceVerify}>URL needs verification before use.</Text> : null}
+                  </View>
+                ))}
+              </View>
+            ) : null}
+
+            {discoveredResources && discoveredResources.models.length > 0 ? (
+              <View style={{ gap: spacing.sm, marginTop: spacing.md }}>
+                <Text style={s.groupHeader}>🤖 PRETRAINED MODELS ({discoveredResources.models.length})</Text>
+                {discoveredResources.models.map((m, idx) => (
+                  <View key={idx} style={s.resourceCard}>
+                    <View style={s.resourceHeader}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={s.resourceTitle}>{m.name}</Text>
+                        <Text style={s.resourceSource}>{[m.framework, m.modelType].filter(Boolean).join(" · ") || "Model"}</Text>
+                      </View>
+                      <View style={[s.badgePill, accessBadgeStyle(m.access)]}>
+                        <Text style={[s.badgePillText, accessBadgeTextStyle(m.access)]}>
+                          {(m.access || "unknown").replace("_", " ").toUpperCase()}
+                        </Text>
+                      </View>
+                    </View>
+                    {m.description ? <Text style={s.resourceDesc}>{m.description}</Text> : null}
+                    {m.whatItDoes ? (
+                      <Text style={s.resourceWhy}>
+                        <Text style={{ fontWeight: "700", color: colors.text }}>What it does: </Text>
+                        {m.whatItDoes}
+                      </Text>
+                    ) : null}
+                    {m.whyFits ? (
+                      <Text style={s.resourceWhy}>
+                        <Text style={{ fontWeight: "700", color: colors.text }}>Why it fits: </Text>
+                        {m.whyFits}
+                      </Text>
+                    ) : null}
+                    {(m.inputType || m.outputType || m.license) ? (
+                      <Text style={s.resourceWhy}>
+                        <Text style={{ fontWeight: "700", color: colors.text }}>I/O: </Text>
+                        {m.inputType || "n/a"} → {m.outputType || "n/a"}
+                        {m.license ? ` · License: ${m.license}` : ""}
+                      </Text>
+                    ) : null}
+                    <View style={s.resourceFooter}>
+                      <View style={s.resourceUseful}>
+                        <Ionicons name="pulse" size={11} color={colors.primary} />
+                        <Text style={s.resourceUsefulTxt}>Usefulness {m.usefulness}/100</Text>
+                      </View>
+                      <View style={{ flexDirection: "row", gap: 6 }}>
+                        {m.url ? (
+                          <Pressable style={s.resourceBtn} onPress={() => Linking.openURL(m.url)}>
+                            <Ionicons name="open-outline" size={12} color={colors.primary} />
+                            <Text style={s.resourceBtnTxt}>Open</Text>
+                          </Pressable>
+                        ) : null}
+                        {m.downloadUrl ? (
+                          <Pressable style={[s.resourceBtn, s.resourceBtnDl]} onPress={() => Linking.openURL(m.downloadUrl)}>
+                            <Ionicons name="download-outline" size={12} color={colors.success} />
+                            <Text style={[s.resourceBtnTxt, { color: colors.success }]}>Download</Text>
+                          </Pressable>
+                        ) : null}
+                      </View>
+                    </View>
+                    {!m.verified ? <Text style={s.resourceVerify}>URL needs verification before use.</Text> : null}
+                  </View>
+                ))}
+              </View>
+            ) : null}
+
+            {discoveredResources ? (
+              <Text style={s.resourceProviderTxt}>
+                {discoveredResources.aiEnhanced
+                  ? `AI-enhanced via ${discoveredResources.provider || "OmniRoute"}`
+                  : "Local deterministic fallback (no AI needed)"}
+              </Text>
+            ) : null}
+          </View>
+        </ScrollView>
+      )}
+
+      {/* ── TAB 9: DECISION ENGINE ───────────────────────────────────────── */}
       {activeSection === "decide" && <DecisionPanel teamId={teamId} />}
     </View>
   );
+}
+
+function accessBadgeStyle(access?: string) {
+  const a = (access || "unknown").toLowerCase();
+  if (a === "free") return { backgroundColor: colors.successSoft };
+  if (a === "requires_account") return { backgroundColor: colors.infoSoft };
+  if (a === "paid") return { backgroundColor: colors.dangerSoft };
+  return { backgroundColor: colors.warningSoft };
+}
+
+function accessBadgeTextStyle(access?: string) {
+  const a = (access || "unknown").toLowerCase();
+  if (a === "free") return { color: colors.success };
+  if (a === "requires_account") return { color: colors.info };
+  if (a === "paid") return { color: colors.danger };
+  return { color: colors.warning };
 }
 
 const s = StyleSheet.create({
@@ -2027,4 +2261,56 @@ const s = StyleSheet.create({
     fontWeight: "700",
     color: colors.primary,
   },
+
+  // AI & Dataset Resources (Fix 1)
+  resourceCard: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    gap: 6,
+  },
+  resourceHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  resourceTitle: { fontSize: 14, fontWeight: "700", color: colors.text, lineHeight: 18 },
+  resourceSource: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
+  resourceDesc: { fontSize: 12, color: colors.text, lineHeight: 17 },
+  resourceWhy: { fontSize: 11, color: colors.textMuted, lineHeight: 15 },
+  resourceFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 4,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  resourceUseful: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: colors.surfaceAlt,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: radius.pill,
+  },
+  resourceUsefulTxt: { fontSize: 10, fontWeight: "700", color: colors.primary },
+  resourceBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: colors.surfaceAlt,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: radius.sm,
+  },
+  resourceBtnDl: { backgroundColor: colors.successSoft },
+  resourceBtnTxt: { fontSize: 11, fontWeight: "700", color: colors.primary },
+  resourceVerify: { fontSize: 10, color: colors.warning, fontStyle: "italic" },
+  resourceProviderTxt: { fontSize: 10, color: colors.textMuted, textAlign: "center", marginTop: 8 },
 });

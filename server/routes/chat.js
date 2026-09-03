@@ -2,10 +2,98 @@ import { Router } from "express";
 import mongoose from "mongoose";
 import ChatMessage from "../models/ChatMessage.js";
 import Team from "../models/Team.js";
+import User from "../models/User.js";
 import { requireAuth } from "../auth.js";
 import { resolveAuthUser } from "./teams.js";
 
 const router = Router();
+
+// FIX 3F/3G/3H — Unread count helpers
+// We store on the User doc a per-scope "last read" timestamp. Unread = count of
+// messages newer than that timestamp that the user did NOT send themselves.
+async function getUnreadCount(userId, scope, teamId = null) {
+  const user = await User.findById(userId).select("chatRead").lean();
+  const cr = user?.chatRead;
+  // Mongoose Map hydration vs lean plain-object — handle both.
+  let lastRead = null;
+  if (cr && typeof cr.get === "function") lastRead = cr.get(scope) || null;
+  else if (cr && typeof cr === "object") lastRead = cr[scope] || null;
+  const q = { deletedAt: null };
+  if (scope === "global") {
+    q.type = "global";
+  } else if (teamId) {
+    q.type = "team";
+    q.teamId = new mongoose.Types.ObjectId(teamId);
+  } else {
+    return 0;
+  }
+  if (lastRead) q.createdAt = { $gt: new Date(lastRead) };
+  // Don't count the user's own messages
+  q.senderId = { $ne: new mongoose.Types.ObjectId(userId) };
+  return await ChatMessage.countDocuments(q);
+}
+
+// ── GET /api/chat/unread ──────────────────────────────────────────────────────
+// Returns { global: N, teams: { "<teamId>": N, ... }, total: N }
+router.get("/chat/unread", requireAuth, async (req, res) => {
+  try {
+    const authUser = await resolveAuthUser(req.user);
+    if (!authUser) return res.status(401).json({ error: "Unauthorized" });
+    const userId = authUser._id;
+
+    const teams = await Team.find({
+      $or: [
+        { ownerId: userId },
+        { "members.userId": userId },
+      ],
+    }).select("_id").lean();
+    const teamIds = teams.map((t) => String(t._id));
+
+    const globalUnread = await getUnreadCount(userId, "global");
+    const teamUnreads = {};
+    for (const tid of teamIds) {
+      teamUnreads[tid] = await getUnreadCount(userId, tid, tid);
+    }
+    const total = globalUnread + Object.values(teamUnreads).reduce((a, b) => a + b, 0);
+    res.json({ global: globalUnread, teams: teamUnreads, total });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/chat/read ──────────────────────────────────────────────────────
+// Body: { scope: "global" | "<teamId>" }
+router.post("/chat/read", requireAuth, async (req, res) => {
+  try {
+    const authUser = await resolveAuthUser(req.user);
+    if (!authUser) return res.status(401).json({ error: "Unauthorized" });
+    const { scope } = req.body ?? {};
+    if (!scope || typeof scope !== "string") {
+      return res.status(400).json({ error: "scope is required." });
+    }
+    // Authorize: if scope is a teamId, ensure membership
+    if (scope !== "global") {
+      if (!mongoose.isValidObjectId(scope)) {
+        return res.status(400).json({ error: "Invalid scope." });
+      }
+      const team = await Team.findById(scope).lean();
+      if (!team) return res.status(404).json({ error: "Team not found." });
+      const isMember =
+        team.members?.some((m) => String(m.userId) === String(authUser._id)) ||
+        String(team.ownerId) === String(authUser._id);
+      if (!isMember) {
+        return res.status(403).json({ error: "Forbidden: not a team member." });
+      }
+    }
+    await User.updateOne(
+      { _id: authUser._id },
+      { $set: { [`chatRead.${scope}`]: new Date() } }
+    );
+    res.json({ success: true, scope, readAt: new Date().toISOString() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // ── GET /api/chat/global ───────────────────────────────────────────────────────
 router.get("/chat/global", requireAuth, async (req, res) => {
@@ -132,7 +220,9 @@ router.post("/chat/team/:teamId", requireAuth, async (req, res) => {
 
     const io = req.app.get("io");
     if (io) {
-      io.to(`team:${teamId}`).emit("chat:team:new", chatMsg);
+      // Broadcast only to the chat-specific room. The legacy `team:<id>`
+      // room is also joined by sockets (for non-chat broadcasts), but
+      // emitting to BOTH would deliver chat messages twice to listeners.
       io.to(`chat:team:${teamId}`).emit("chat:team:new", chatMsg);
     }
 

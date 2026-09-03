@@ -27,6 +27,7 @@ const TeamHealthSchema = new mongoose.Schema(
       blockedTasks:    { type: DimensionSchema, default: {} },
       skillCoverage:   { type: DimensionSchema, default: {} },
       contribution:    { type: DimensionSchema, default: {} },
+      sprintProgress:  { type: DimensionSchema, default: {} },
       githubActivity:  { type: DimensionSchema, default: {} },
     },
 

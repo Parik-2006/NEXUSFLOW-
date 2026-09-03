@@ -73,6 +73,18 @@ export function useChat(teamId?: string): UseChatResult {
     refresh();
   }, [token, teamId]);
 
+  // Mark this conversation as read on mount / when teamId changes
+  useEffect(() => {
+    if (!token) return;
+    const scope = isTeam ? teamId : "global";
+    if (!scope) return;
+    fetch(`${API}/api/chat/read`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ scope }),
+    }).catch(() => {});
+  }, [token, teamId, isTeam]);
+
   useEffect(() => {
     if (!token) return;
     const socket = getSocket(token);

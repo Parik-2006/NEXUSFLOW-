@@ -97,7 +97,8 @@ export function registerChatHandlers(io, socket) {
         status: "sent",
       });
 
-      io.to(`team:${teamId}`).emit("chat:team:new", chatMsg);
+      // Broadcast only to the chat-specific room to avoid double-delivery to
+      // sockets that joined both `team:<id>` and `chat:team:<id>`.
       io.to(`chat:team:${teamId}`).emit("chat:team:new", chatMsg);
       if (typeof callback === "function") callback({ success: true, data: chatMsg });
     } catch (e) {

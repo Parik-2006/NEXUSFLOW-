@@ -51,6 +51,13 @@ const UserSchema = new mongoose.Schema(
       enum: ["local", "google"],
       default: "local",
     },
+    chatRead: {
+      // Map of "<scope>" -> ISO timestamp of the last read message
+      // scope = "global" for global chat, "<teamId>" for team chat.
+      type: Map,
+      of: Date,
+      default: () => new Map(),
+    },
   },
   {
     timestamps: true,

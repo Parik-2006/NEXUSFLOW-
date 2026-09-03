@@ -652,11 +652,11 @@ function determineNextAction(hwInfo, aiInfo, readiness, tasks, phases) {
 
   if (aiInfo.status === "REQUIRED") {
     return {
-      action: "Validate Dataset Schema & Feasibility (100+ Samples)",
-      type: "dataset_collection",
-      reason: "Model training cannot proceed without real baseline data. Verifying data schema and source feasibility early prevents downstream blockers.",
-      buttonLabel: "Explore AI & Dataset Strategy",
-      targetTab: "guidance",
+      action: "Discover Datasets & Pretrained Models",
+      type: "resource_discovery",
+      reason: "AI/ML projects need real data and a baseline model. Use the dedicated Project AI resource discovery tab to find free datasets and pretrained models that fit this project.",
+      buttonLabel: "Find Datasets & Models",
+      targetTab: "resources",
     };
   }
 

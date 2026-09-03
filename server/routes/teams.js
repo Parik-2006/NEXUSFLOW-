@@ -1201,12 +1201,10 @@ Return a JSON object:
 // calculate any scores. All numerical scores are deterministic.
 //
 // Decision Types:
-//   technology    → weighted factor scoring + Merge Sort ranking
 //   task-priority → greedySortTasks() + computePriorityScore()
 //   sprint        → knapsackSprint() via computeRecommendation()
 //   assignment    → assignTasksToMembers() via Branch & Bound
-//   architecture  → weighted factor scoring + Merge Sort ranking
-//   ai-ml         → weighted factor scoring + Merge Sort ranking
+//   technology    → weighted factor scoring + Merge Sort ranking
 //
 // Body: { decisionType, question?, options?, preferences? }
 // Response: { success, decision: { recommendation, alternatives, factors, matrix,
@@ -1289,11 +1287,9 @@ router.post("/teams/:teamId/decide", requireAuth, async (req, res) => {
     //   - tradeoff prose per option
     //   - risk narrative
     // If AI fails, the deterministic result stands as-is.
-    if (["technology", "architecture", "ai-ml"].includes(decisionType) && options.length > 0) {
+    if (decisionType === "technology" && options.length > 0) {
       try {
-        const needsTypes = ["technology", "architecture", "ai-ml"];
-        if (needsTypes.includes(decisionType)) {
-          const systemPrompt = `You are a project advisor for NEXUSFLOW, a student project management tool.
+        const systemPrompt = `You are a project advisor for NEXUSFLOW, a student project management tool.
 Your role is to EXPLAIN a decision recommendation — you do NOT calculate scores (those are deterministic).
 
 Project: "${ctx.projectTitle}" (${ctx.domain})
@@ -1301,7 +1297,7 @@ Description: ${ctx.projectDescription ? ctx.projectDescription.slice(0, 200) : "
 Team size: ${members.length} members
 Existing tasks: ${ctx.taskCount}
 
-Decision: ${question || `Which ${decisionType} option best fits this project?`}
+Decision: ${question || `Which option best fits this project?`}
 Options being compared: ${options.join(" vs ")}
 Deterministic scores: ${engineResult.alternatives
   ? [engineResult.recommendation?.option, ...engineResult.alternatives.map((a) => a.option)]
@@ -1326,7 +1322,7 @@ Return a JSON object:
 
           const aiResult = await callOmniRouteStructured(
             systemPrompt,
-            `Explain the decision recommendation for the ${decisionType} choice.`
+            `Explain the decision recommendation for the technology choice.`
           );
 
           if (aiResult) {
@@ -1350,7 +1346,6 @@ Return a JSON object:
               }
             }
           }
-        }
       } catch (aiErr) {
         // AI failure is non-fatal — deterministic result stands
         console.warn("[decide] AI qualitative layer unavailable:", aiErr.message);

@@ -78,6 +78,7 @@ import ArchitectureComponent from "../models/ArchitectureComponent.js";
 import Resource         from "../models/Resource.js";
 import AIConversation   from "../models/AIConversation.js";
 import AIMessage        from "../models/AIMessage.js";
+import DecisionFeedback from "../models/DecisionFeedback.js";
 
 import {
   buildProjectContext,
@@ -88,6 +89,7 @@ import {
 } from "../services/projectIntelligence.js";
 import { discoverAcademicPapers } from "../services/academicResearchService.js";
 import { getProjectToolRecommendations } from "../services/projectToolsService.js";
+import { discoverProjectResources } from "../services/resourceDiscoveryService.js";
 
 // NEXUSFLOW 3.0 — Phase 12-17 imports
 import TeamHealth        from "../models/TeamHealth.js";
@@ -1243,6 +1245,131 @@ router.post("/projects/:projectId/ai/messages/:messageId/feedback", requireAuth,
   } catch (e) {
     console.error("[POST /projects/:id/ai/messages/:msgId/feedback] error:", e.message);
     res.status(500).json({ error: e.message || "Failed to record feedback" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NEXUSFLOW 3.0 — Fix 1: AI & Dataset Resources Discovery
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// RESOURCE DISCOVERY (recommendation only — no tasks, no downloads, no model
+// training). Returns structured datasets and pretrained models that fit the
+// project context. Uses OmniRoute ($0 policy). Falls back to a deterministic
+// curated set when AI is unavailable.
+
+router.post("/projects/:projectId/resources/discover", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const team = project.teamId
+      ? await Team.findById(project.teamId).lean()
+      : null;
+
+    const result = await discoverProjectResources({ project, team });
+
+    res.json({
+      success: true,
+      datasets: result.datasets,
+      models: result.models,
+      provider: result.provider,
+      tier: result.tier,
+      aiEnhanced: result.aiEnhanced,
+    });
+  } catch (e) {
+    console.error("[POST /projects/:id/resources/discover] error:", e.message);
+    res.status(500).json({ error: e.message || "Resource discovery failed" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NEXUSFLOW 3.0 — Fix 2: Decision Engine Feedback & Reliability Learning
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Endpoints to persist Decision Engine feedback signals and compute historical
+// reliability context for future AI explanations. DAA scores remain untouched.
+
+router.post("/projects/:projectId/decision-feedback", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const { feedback, decisionType, question, options, selected, score, factors, tradeoffs, risks, reason, comment, linkedDecisionId } = req.body ?? {};
+
+    if (!["helpful", "not_helpful", "saved"].includes(feedback)) {
+      return res.status(400).json({ error: "feedback must be 'helpful', 'not_helpful', or 'saved'." });
+    }
+
+    const userId = mongoose.isValidObjectId(req.user?.id) ? req.user.id : null;
+
+    const record = await DecisionFeedback.create({
+      projectId: req.params.projectId,
+      teamId: project.teamId,
+      userId,
+      feedback,
+      decisionType: ["technology", "task-priority", "sprint", "assignment"].includes(decisionType) ? decisionType : "technology",
+      question: typeof question === "string" ? question.slice(0, 500) : "",
+      options: Array.isArray(options) ? options.map((o) => String(o)).slice(0, 25) : [],
+      selected: typeof selected === "string" ? selected.slice(0, 250) : "",
+      score: Number.isFinite(score) ? score : null,
+      factors: factors ?? null,
+      tradeoffs: tradeoffs ?? null,
+      risks: risks ?? null,
+      reason: typeof reason === "string" ? reason.slice(0, 1000) : "",
+      comment: typeof comment === "string" ? comment.slice(0, 500) : "",
+      linkedDecisionId: mongoose.isValidObjectId(linkedDecisionId) ? linkedDecisionId : null,
+    });
+
+    res.json({ success: true, feedbackId: record._id });
+  } catch (e) {
+    console.error("[POST /projects/:id/decision-feedback] error:", e.message);
+    res.status(500).json({ error: e.message || "Failed to record decision feedback" });
+  }
+});
+
+router.get("/projects/:projectId/decision-feedback/summary", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const MIN_SAMPLES = 3; // avoid misleading percentages from tiny samples
+    const records = await DecisionFeedback.find({ projectId: req.params.projectId }).lean();
+    const total = records.length;
+
+    const helpful = records.filter((r) => r.feedback === "helpful").length;
+    const notHelpful = records.filter((r) => r.feedback === "not_helpful").length;
+    const saved = records.filter((r) => r.feedback === "saved").length;
+
+    const byCategory = {};
+    for (const r of records) {
+      const cat = r.decisionType || "technology";
+      if (!byCategory[cat]) byCategory[cat] = { helpful: 0, notHelpful: 0, saved: 0 };
+      if (r.feedback === "helpful") byCategory[cat].helpful += 1;
+      else if (r.feedback === "not_helpful") byCategory[cat].notHelpful += 1;
+      else if (r.feedback === "saved") byCategory[cat].saved += 1;
+    }
+
+    const summary = {
+      total,
+      helpful,
+      notHelpful,
+      saved,
+      minSamplesRequired: MIN_SAMPLES,
+      sufficientSamples: total >= MIN_SAMPLES,
+      helpfulPct: total > 0 ? Math.round((helpful / total) * 100) : null,
+      byCategory: Object.fromEntries(
+        Object.entries(byCategory).map(([k, v]) => {
+          const cTotal = v.helpful + v.notHelpful;
+          const helpfulRatio = cTotal > 0 ? Math.round((v.helpful / cTotal) * 100) : null;
+          return [k, { ...v, total: cTotal, helpfulPct: helpfulRatio }];
+        })
+      ),
+    };
+
+    res.json({ success: true, summary });
+  } catch (e) {
+    console.error("[GET /projects/:id/decision-feedback/summary] error:", e.message);
+    res.status(500).json({ error: e.message || "Failed to compute feedback summary" });
   }
 });
 

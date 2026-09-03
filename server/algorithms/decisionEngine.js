@@ -55,8 +55,6 @@ export const DECISION_TYPES = {
   "task-priority":"task-priority",
   sprint:         "sprint",
   assignment:     "assignment",
-  architecture:   "architecture",
-  "ai-ml":        "ai-ml",
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -69,18 +67,6 @@ export const FACTOR_DEFINITIONS = {
     { factor: "effortFit",     label: "Development Speed",   defaultWeight: 0.25, description: "Expected implementation speed given project timeline" },
     { factor: "deadlineFit",   label: "Deadline Alignment",  defaultWeight: 0.25, description: "Likelihood of delivering within project deadline" },
     { factor: "complexityFit", label: "Complexity Match",    defaultWeight: 0.20, description: "How well the technology's complexity matches project needs" },
-  ],
-  architecture: [
-    { factor: "scalabilityFit", label: "Scalability",        defaultWeight: 0.30, description: "Ability to scale with project growth" },
-    { factor: "complexityFit",  label: "Implementation Fit", defaultWeight: 0.25, description: "Implementation complexity vs team capacity" },
-    { factor: "effortFit",      label: "Development Speed",  defaultWeight: 0.25, description: "Expected setup and integration speed" },
-    { factor: "deadlineFit",    label: "Deadline Alignment", defaultWeight: 0.20, description: "Feasibility within project timeline" },
-  ],
-  "ai-ml": [
-    { factor: "skillFit",       label: "Team Skill Match",    defaultWeight: 0.30, description: "Team's ML/AI capability match" },
-    { factor: "complexityFit",  label: "Implementation Fit",  defaultWeight: 0.25, description: "Approach complexity vs time/resources" },
-    { factor: "effortFit",      label: "Development Speed",   defaultWeight: 0.25, description: "Speed to working prototype" },
-    { factor: "deadlineFit",    label: "Deadline Alignment",  defaultWeight: 0.20, description: "Feasibility within project timeline" },
   ],
 };
 
@@ -351,31 +337,212 @@ function evaluateScoredOptions(decisionType, options, ctx, preferences, aiQualit
 // TYPE B: Task Priority — uses existing Greedy Scheduler + Merge Sort
 // ─────────────────────────────────────────────────────────────────────────────
 
-function evaluateTaskPriority(tasks, ctx, aiQualitative) {
+// V2-compatible tier thresholds. These thresholds are the canonical mapping
+// from the greedy scheduler's 0–100 priority score to a HIGH/MEDIUM/LOW
+// classification used throughout NexusFlow.
+function priorityTier(score) {
+  if (score >= 80) return "HIGH";
+  if (score >= 55) return "HIGH";
+  if (score >= 30) return "MEDIUM";
+  return "LOW";
+}
+
+// ── Task Priority Optimization Modes (Fix 4) ────────────────────────────────
+// PRESERVES the V2 Greedy priorityScore as the canonical anchor, then applies
+// additional deterministic factor weighting using real task metadata so that
+// tasks with identical urgency/impact can still be meaningfully differentiated.
+//
+// The V2 score itself is never mutated — it is preserved on every ranked task.
+// DAA scoring remains deterministic and explainable; AI never modifies it.
+const TASK_PRIORITY_MODES = {
+  balanced: {
+    label: "Balanced",
+    weights: {
+      greedy:     0.50,
+      value:      0.15,
+      deadline:   0.15,
+      risk:       0.10,
+      relevance:  0.10,
+    },
+  },
+  fast_delivery: {
+    label: "Fast Delivery",
+    weights: {
+      greedy:     0.35,
+      value:      0.10,
+      deadline:   0.30,
+      risk:       0.10,
+      relevance:  0.15,
+    },
+  },
+  high_impact: {
+    label: "High Impact",
+    weights: {
+      greedy:     0.45,
+      value:      0.30,
+      deadline:   0.05,
+      risk:       0.10,
+      relevance:  0.10,
+    },
+  },
+  unblock_dependencies: {
+    label: "Unblock Dependencies",
+    weights: {
+      greedy:     0.40,
+      value:      0.10,
+      deadline:   0.10,
+      risk:       0.05,
+      relevance:  0.35,
+    },
+  },
+  reduce_risk: {
+    label: "Reduce Risk",
+    weights: {
+      greedy:     0.35,
+      value:      0.10,
+      deadline:   0.10,
+      risk:       0.35,
+      relevance:  0.10,
+    },
+  },
+};
+
+function deadlineProximityScore(task) {
+  if (!task || (!task.dueDate && !task.deadline)) return 50; // neutral baseline
+  const due = new Date(task.dueDate || task.deadline).getTime();
+  if (!Number.isFinite(due)) return 50;
+  const ms = due - Date.now();
+  const days = ms / 86_400_000;
+  if (days <= 0) return 100;             // overdue / due today → top pressure
+  if (days <= 1) return 92;
+  if (days <= 3) return 80;
+  if (days <= 7) return 65;
+  if (days <= 14) return 50;
+  if (days <= 30) return 35;
+  return 20;
+}
+
+function businessValueScore(task) {
+  if (!task) return 50;
+  const v = Number(task.businessValue);
+  if (!Number.isFinite(v) || v <= 0) return 50;
+  if (v >= 9) return 100;
+  if (v >= 7) return 85;
+  if (v >= 5) return 70;
+  if (v >= 3) return 55;
+  return 35;
+}
+
+function riskScore(task, riskIndex) {
+  if (!task) return 50;
+  if (riskIndex && riskIndex.size > 0) {
+    const id = task._id?.toString?.();
+    if (id && riskIndex.has(id)) return 90;
+  }
+  const status = (task.status || "").toLowerCase();
+  if (status === "in_progress") return 75;
+  return 40;
+}
+
+function relevanceScore(task) {
+  if (!task) return 50;
+  // Sprint relevance = fresh task with non-zero priorityScore and recent activity.
+  const created = task.createdAt ? new Date(task.createdAt).getTime() : Date.now();
+  const ageDays = (Date.now() - created) / 86_400_000;
+  if (ageDays <= 1) return 90;
+  if (ageDays <= 3) return 80;
+  if (ageDays <= 7) return 65;
+  if (ageDays <= 30) return 50;
+  return 35;
+}
+
+function computeTaskPriorityScore(task, ctx, weights, riskIndex) {
+  const greedy = Number(task.priorityScore || 0);                 // V2 score (0-100)
+  const value  = businessValueScore(task);                        // 0-100
+  const dl     = deadlineProximityScore(task);                    // 0-100
+  const risk   = riskScore(task, riskIndex);                      // 0-100
+  const rel    = relevanceScore(task);                            // 0-100
+  const raw = (weights.greedy    * greedy) +
+              (weights.value     * value)  +
+              (weights.deadline  * dl)     +
+              (weights.risk      * risk)   +
+              (weights.relevance * rel);
+  const score = Math.max(0, Math.min(100, Math.round(raw)));
+  return {
+    score,
+    breakdown: {
+      greedy: Math.round(greedy),
+      value,
+      deadline: dl,
+      risk,
+      relevance: rel,
+    },
+  };
+}
+
+function evaluateTaskPriority(tasks, ctx, aiQualitative, options = {}) {
   if (!tasks || tasks.length === 0) {
     return { error: "No tasks available for priority analysis." };
   }
 
-  // Use existing greedySortTasks() — authoritative for priority
+  const modeKey = TASK_PRIORITY_MODES[options.mode] ? options.mode : "balanced";
+  const mode = TASK_PRIORITY_MODES[modeKey];
+  const weights = (options.weights && typeof options.weights === "object")
+    ? { ...mode.weights, ...options.weights }
+    : mode.weights;
+
+  // Use V2 Greedy as authoritative ordering anchor.
   const sorted = greedySortTasks(tasks);
 
-  // Top recommended tasks
-  const topTasks = sorted.slice(0, 10).map((t, idx) => ({
+  // Build a risk index from existing project risk intelligence if available.
+  const riskIndex = ctx?.riskTaskIds instanceof Set
+    ? ctx.riskTaskIds
+    : new Set(Array.isArray(ctx?.riskTaskIds) ? ctx.riskTaskIds : []);
+
+  const ranked = sorted.map((t) => {
+    const { score, breakdown } = computeTaskPriorityScore(t, ctx, weights, riskIndex);
+    return {
+      task: t,
+      decisionScore: score,
+      decisionBreakdown: breakdown,
+      greedyScore: Number(t.priorityScore || 0),
+      tier: priorityTier(score),
+      v2Tier: priorityTier(Number(t.priorityScore || 0)),
+    };
+  });
+
+  // Re-rank by the decision-engine score for the user-facing ranking, while
+  // preserving the V2 Greedy ranking as a secondary signal.
+  const rankedByScore = [...ranked].sort((a, b) => {
+    if (b.decisionScore !== a.decisionScore) return b.decisionScore - a.decisionScore;
+    return b.greedyScore - a.greedyScore;
+  });
+
+  const topTasks = rankedByScore.slice(0, 10).map((r, idx) => ({
     rank: idx + 1,
-    taskId: t._id?.toString(),
-    title: t.title,
-    priorityScore: t.priorityScore || 0,
-    urgency: t.urgency || 1,
-    impact: t.impact || 1,
-    dependencyCount: t.dependencyCount || 0,
-    status: t.status,
-    strength: strengthLabel(t.priorityScore || 0),
-    reason: `Greedy score ${t.priorityScore || 0}/100 — urgency×${t.urgency}, impact×${t.impact}, dependency-fanin ${t.dependencyCount}.`,
+    taskId: r.task._id?.toString(),
+    title: r.task.title,
+    priorityScore: r.decisionScore,
+    v2GreedyScore: r.greedyScore,
+    priority: priorityTier(r.decisionScore),
+    urgency: r.task.urgency || 1,
+    impact: r.task.impact || 1,
+    dependencyCount: r.task.dependencyCount || 0,
+    status: r.task.status,
+    dueDate: r.task.dueDate || r.task.deadline || null,
+    businessValue: Number.isFinite(r.task.businessValue) ? r.task.businessValue : null,
+    estimatedHours: Number.isFinite(r.task.estimatedHours) ? r.task.estimatedHours : null,
+    category: r.task.category || "General",
+    strength: strengthLabel(r.decisionScore),
+    factorBreakdown: r.decisionBreakdown,
+    reason: `Decision score ${r.decisionScore}/100 (V2 Greedy anchor ${r.greedyScore}/100). ` +
+            `Urgency ${r.task.urgency || 1}/5 · Impact ${r.task.impact || 1}/5 · ` +
+            `Dependencies ${r.task.dependencyCount || 0}.`,
   }));
 
   const top = topTasks[0];
   const reason = aiQualitative?.reason ||
-    (top ? `"${top.title}" is recommended first with a Greedy priority score of ${top.priorityScore}/100.` : "No tasks to rank.");
+    (top ? `"${top.title}" ranks first with decision score ${top.priorityScore}/100 (V2 Greedy anchor ${top.v2GreedyScore}/100, mode: ${mode.label}).` : "No tasks to rank.");
 
   return {
     recommendation: top ? { option: top.title, score: top.priorityScore, strength: top.strength } : null,
@@ -385,26 +552,48 @@ function evaluateTaskPriority(tasks, ctx, aiQualitative) {
       reason: t.reason,
     })),
     factors: [
-      { factor: "urgency",     label: "Urgency",           weight: 0.50, description: "Deadline pressure and blocking severity" },
-      { factor: "impact",      label: "Business Impact",   weight: 0.35, description: "Strategic value of completing this task" },
-      { factor: "dependency",  label: "Dependency Fan-in", weight: 0.15, description: "Number of tasks that depend on this one" },
+      { factor: "v2Greedy",   label: "V2 Greedy Score",   weight: weights.greedy,    description: "Canonical urgency + impact + dependency fan-in score" },
+      { factor: "value",       label: "Business Value",    weight: weights.value,     description: "Strategic business value of the task" },
+      { factor: "deadline",    label: "Deadline Pressure", weight: weights.deadline,  description: "Proximity to the task's due date" },
+      { factor: "risk",        label: "Risk Reduction",    weight: weights.risk,      description: "Whether completing this task reduces project risk" },
+      { factor: "relevance",   label: "Sprint Relevance",  weight: weights.relevance, description: "How recent and aligned the task is to the current sprint" },
     ],
     tradeoffs: [],
     risks: [],
     reason,
-    nextAction: aiQualitative?.nextAction || (top ? `Start with "${top.title}" — it has the highest weighted priority score.` : "Add tasks to enable priority analysis."),
+    nextAction: aiQualitative?.nextAction ||
+      (top ? `Start with "${top.title}" — decision score ${top.priorityScore}/100 (V2 Greedy ${top.v2GreedyScore}/100).` : "Add tasks to enable priority analysis."),
     confidence: computeConfidence(ctx, tasks.length),
-    keyFactors: ["Urgency (50%)", "Business Impact (35%)", "Dependency Fan-in (15%)"],
-    daaAlgorithmsUsed: [
-      "Greedy Priority Scheduler — computePriorityScore() O(1) per task",
-      "Merge Sort — greedySortTasks() O(n log n)",
+    keyFactors: [
+      `V2 Greedy Score (${Math.round(weights.greedy * 100)}%)`,
+      `Business Value (${Math.round(weights.value * 100)}%)`,
+      `Deadline Pressure (${Math.round(weights.deadline * 100)}%)`,
+      `Risk Reduction (${Math.round(weights.risk * 100)}%)`,
+      `Sprint Relevance (${Math.round(weights.relevance * 100)}%)`,
     ],
+    daaAlgorithmsUsed: [
+      "Greedy Priority Scheduler — computePriorityScore() O(1) per task (V2 anchor)",
+      "Merge Sort — greedySortTasks() O(n log n) (V2 ordering preserved)",
+      "Deterministic Factor Weighting (mode-aware, $0)",
+    ],
+    mode: modeKey,
+    modeLabel: mode.label,
+    taskPriorityModes: Object.fromEntries(
+      Object.entries(TASK_PRIORITY_MODES).map(([k, v]) => [k, v.label])
+    ),
     matrix: {
-      factors: ["Urgency", "Impact", "Dep. Count", "Priority Score"],
+      factors: ["V2 Greedy", "Business Value", "Deadline", "Risk", "Relevance", "Score"],
       options: topTasks.slice(0, 5).map((t) => t.title),
-      scores: topTasks.slice(0, 5).map((t) => [t.urgency * 20, t.impact * 20, Math.min(100, t.dependencyCount * 10), t.priorityScore]),
+      scores: topTasks.slice(0, 5).map((t) => [
+        t.v2GreedyScore,
+        Number.isFinite(t.businessValue) ? Math.min(100, t.businessValue * 10) : 50,
+        t.factorBreakdown?.deadline ?? 50,
+        t.factorBreakdown?.risk ?? 40,
+        t.factorBreakdown?.relevance ?? 50,
+        t.priorityScore,
+      ]),
       finalScores: topTasks.slice(0, 5).map((t) => t.priorityScore),
-      weights: [0.50, 0.35, 0.15, 1.0],
+      weights: [weights.greedy, weights.value, weights.deadline, weights.risk, weights.relevance, 1.0],
       winner: top?.title,
     },
   };
@@ -777,7 +966,10 @@ export function evaluateDecision({
 
     switch (type) {
       case "task-priority":
-        result = evaluateTaskPriority(tasks, ctx, aiQualitative);
+        result = evaluateTaskPriority(tasks, ctx, aiQualitative, {
+          mode: preferences?.priorityMode,
+          weights: preferences?.priorityWeights,
+        });
         break;
 
       case "sprint":
@@ -790,8 +982,6 @@ export function evaluateDecision({
         break;
 
       case "technology":
-      case "architecture":
-      case "ai-ml":
         if (!options || options.length === 0) {
           return { ...base, error: "At least one option is required for this decision type." };
         }
@@ -825,11 +1015,9 @@ export function evaluateDecision({
  */
 export function listDecisionTypes() {
   return [
-    { key: "technology",    label: "Technology",    icon: "hardware-chip-outline",   description: "Compare technology or framework options" },
-    { key: "task-priority", label: "Task Priority", icon: "list-outline",            description: "Determine which tasks to tackle first (Greedy)" },
-    { key: "sprint",        label: "Sprint Plan",   icon: "rocket-outline",          description: "Optimize sprint selection (0/1 Knapsack)" },
-    { key: "assignment",    label: "Assignment",    icon: "people-outline",          description: "Assign tasks to members (Branch & Bound)" },
-    { key: "architecture",  label: "Architecture",  icon: "layers-outline",          description: "Compare architectural approach options" },
-    { key: "ai-ml",         label: "AI/ML Approach",icon: "brain-outline",          description: "Choose AI/ML strategy for your project" },
+    { key: "technology",    label: "Technology",    icon: "hardware-chip-outline",   description: "Compare project-related alternatives using weighted factor scoring." },
+    { key: "task-priority", label: "Task Priority", icon: "list-outline",            description: "Determine which tasks to tackle first (Greedy Priority Scheduler)." },
+    { key: "sprint",        label: "Sprint Plan",   icon: "rocket-outline",          description: "Optimize sprint selection (0/1 Knapsack DP)." },
+    { key: "assignment",    label: "Assignment",    icon: "people-outline",          description: "Assign tasks to members (Branch & Bound optimal assignment)." },
   ];
 }
