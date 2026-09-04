@@ -9,13 +9,18 @@
  *   unregistered email handling, accept/reject flows, and JWT resolution.
  */
 
-import "dotenv/config";
+import dotenv from "dotenv";
+import path from "path";
+import { fileURLToPath } from "url";
 import mongoose from "mongoose";
 import User from "../models/User.js";
 import Team from "../models/Team.js";
 import Invitation from "../models/Invitation.js";
 import Notification from "../models/Notification.js";
 import { sign } from "../auth.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.join(__dirname, "../.env") });
 
 const MONGO_URI = process.env.MONGO_URI ?? "mongodb://localhost:27017/nexusflow";
 

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * CreateTeamModal — guided 4-step "New workspace" wizard.
  *   1. Project information   (team name, project title, description)
  *   2. Your role             (Team Leader / Project Manager / Team Member)
@@ -22,6 +22,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { ModalSheet, useToast } from "@/components/feedback";
 import { Field, Button, Avatar, Chip, Badge } from "@/components/ui";
 import ImageUploader from "@/components/ImageUploader";
+import SkillVerificationModal from "@/components/SkillVerificationModal";
 import { useAuth } from "@/context/AuthContext";
 import { getItem } from "@/utils/storage";
 import { API_BASE_URL } from "@/utils/api";
@@ -68,6 +69,39 @@ const ROLES = [
   { key: "member", label: "Team Member", icon: "person-outline", desc: "Picks up assigned work and ships tasks to done." },
 ] as const;
 
+export const ROLE_CAPABILITIES: Record<
+  string,
+  {
+    primarySkill: string;
+    requiredSkills: string[];
+    title: string;
+    description: string;
+    whyQuiz: string;
+  }
+> = {
+  leader: {
+    primarySkill: "DevOps",
+    requiredSkills: ["DevOps", "Docker", "JavaScript", "Testing"],
+    title: "Delivery & Architecture Capability",
+    description: "Team Leaders drive project architecture, delivery velocity, and engineering unblocking.",
+    whyQuiz: "NexusFlow connects team leaders to verified DevOps and delivery skills so algorithmic project decomposition and capacity scheduling can trust lead assignments.",
+  },
+  manager: {
+    primarySkill: "Testing",
+    requiredSkills: ["Testing", "SQL", "Docker", "JavaScript"],
+    title: "Quality & Process Capability",
+    description: "Project Managers coordinate sprint schedules, quality metrics, and stakeholder deliverables.",
+    whyQuiz: "NexusFlow connects project managers to verified quality and testing skills to ensure reliable sprint scope planning.",
+  },
+  member: {
+    primarySkill: "Frontend",
+    requiredSkills: ["Frontend", "JavaScript", "TypeScript", "React", "Node.js", "Python"],
+    title: "Core Engineering Capability",
+    description: "Team Members implement tasks and ship features across the software stack.",
+    whyQuiz: "NexusFlow verifies engineering execution skills so Branch & Bound can assign tasks to members with verified competencies.",
+  },
+};
+
 const STEPS = ["Project", "Your role", "Members", "AI plan"];
 
 const DESC_MIN = 350;
@@ -88,6 +122,7 @@ type DraftMember = {
   userId: string;
   name: string;
   email: string;
+  role: string;
   avatar?: string;
   profileSkills: string[]; // read from the User profile
   skills: string[];        // workspace-specific selection
@@ -121,9 +156,31 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
   const [members, setMembers] = useState<DraftMember[]>([]);
   const [mEmail, setMEmail] = useState("");
   const [lookup, setLookup] = useState<LookupState>({ kind: "idle" });
+  const [draftMemberRole, setDraftMemberRole] = useState<string>("member");
+  const [userVerifications, setUserVerifications] = useState<string[]>([]);
+  const [activeQuizSkill, setActiveQuizSkill] = useState<string | null>(null);
   const [pickedCategory, setPickedCategory] = useState<string>(SKILL_CATEGORIES[0].key);
   const [busy, setBusy] = useState(false);
   const [showExamples, setShowExamples] = useState(false);
+
+  // Load existing verifications for the creator
+  useEffect(() => {
+    if (tokenStr && visible) {
+      fetch(`${API_BASE_URL}/api/skills/verifications`, {
+        headers: { Authorization: `Bearer ${tokenStr}` },
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (Array.isArray(data)) {
+            const list = data
+              .filter((v: any) => v.verified)
+              .map((v: any) => String(v.skill || "").toLowerCase().trim());
+            setUserVerifications(list);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [tokenStr, visible]);
 
   const descLen = description.trim().length;
   const descTooShort = descLen > 0 && descLen < DESC_MIN;
@@ -134,6 +191,7 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
   const reset = () => {
     setStep(0); setName(""); setLogo(null); setProjectTitle(""); setDescription("");
     setRole("leader"); setMembers([]); setMEmail(""); setLookup({ kind: "idle" });
+    setDraftMemberRole("member"); setActiveQuizSkill(null);
     setPickedCategory(SKILL_CATEGORIES[0].key); setShowExamples(false);
   };
   const close = () => { reset(); onClose(); };
@@ -181,6 +239,7 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
       userId: u._id,
       name: u.name,
       email: u.email,
+      role: draftMemberRole || "member",
       avatar: u.avatar,
       profileSkills: Array.isArray(u.skills) ? u.skills : [],
       skills: [],
@@ -188,6 +247,7 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
     setMembers((prev) => [...prev, newMember]);
     setLookup({ kind: "idle" });
     setMEmail("");
+    setDraftMemberRole("member");
   };
 
   const toggleWorkspaceSkill = (memberIdx: number, skill: string) => {
@@ -250,14 +310,17 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
       creatorImage: creatorImage ?? "",
       projectTitle: projectTitle.trim(),
       projectDescription: description.trim(),
+      role,
+      invitations: members.map((m) => ({
+        email: m.email,
+        role: m.role || "member",
+        skills: m.skills,
+      })),
       members: members.map((m) => ({
-        // Existing flow expected { name, skills }. We pass `name` (real name
-        // from the registered lookup) AND `userId` so the server can use the
-        // real identity. We also pass `skills` as a workspace-specific skill
-        // map so existing Branch & Bound engine still works.
         name: m.name,
         userId: m.userId,
         email: m.email,
+        role: m.role || "member",
         skills: skillObjectFromSkills(m.skills),
         workspaceSkills: m.skills,
       })) as any,
@@ -266,7 +329,11 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
     const { error } = await onCreate(input);
     setBusy(false);
     if (error) { toast(error, "error"); return; }
-    toast("Workspace created", "success");
+    if (members.length > 0) {
+      toast(`Workspace created! Invitations sent to ${members.length} teammate${members.length > 1 ? "s" : ""}.`, "success");
+    } else {
+      toast("Workspace created", "success");
+    }
     close();
   };
 
@@ -360,6 +427,71 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
               </Pressable>
             );
           })}
+
+          {/* Role Capability Requirement & Skill Verification */}
+          {ROLE_CAPABILITIES[role] && (() => {
+            const cap = ROLE_CAPABILITIES[role];
+            const hasVerified = cap.requiredSkills.some(
+              (sk) => userVerifications.includes(sk.toLowerCase().trim()) || (user?.skills || []).some((s) => s.toLowerCase() === sk.toLowerCase())
+            );
+            return (
+              <View style={s.capCard}>
+                <View style={s.capHead}>
+                  <Ionicons name="shield-checkmark" size={18} color={colors.accentDark} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.capTitle}>{cap.title}</Text>
+                    <Text style={s.capSub}>{cap.whyQuiz}</Text>
+                  </View>
+                </View>
+
+                <View style={s.capSkillsRow}>
+                  <Text style={s.capSkillsLabel}>Role-required capabilities:</Text>
+                  <View style={s.capChipGrid}>
+                    {cap.requiredSkills.map((sk) => {
+                      const isVer = userVerifications.includes(sk.toLowerCase().trim()) || (user?.skills || []).some((s) => s.toLowerCase() === sk.toLowerCase());
+                      return (
+                        <Pressable
+                          key={sk}
+                          style={[s.capChip, isVer && s.capChipVerified]}
+                          onPress={() => setActiveQuizSkill(sk)}
+                        >
+                          <Ionicons
+                            name={isVer ? "checkmark-circle" : "school-outline"}
+                            size={14}
+                            color={isVer ? colors.success : colors.accentDark}
+                          />
+                          <Text style={[s.capChipTxt, isVer && s.capChipTxtVerified]}>
+                            {sk} {isVer ? "✓ Verified" : "• Verify"}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
+
+                {hasVerified ? (
+                  <View style={s.capStatusOk}>
+                    <Ionicons name="checkmark-circle" size={16} color={colors.success} />
+                    <Text style={s.capStatusOkTxt}>
+                      Verified capability active for {ROLES.find((r) => r.key === role)?.label}.
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={s.capPromptBox}>
+                    <Text style={s.capPromptTxt}>
+                      Take a quick 5-question verification quiz now, or verify later from your profile.
+                    </Text>
+                    <Button
+                      title={`Verify ${cap.primarySkill} (5 Qs)`}
+                      icon="school-outline"
+                      small
+                      onPress={() => setActiveQuizSkill(cap.primarySkill)}
+                    />
+                  </View>
+                )}
+              </View>
+            );
+          })()}
         </View>
       )}
 
@@ -422,6 +554,29 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
                 </View>
                 <Button title="Add" small onPress={confirmAddMember} />
               </View>
+              <View style={s.foundRoleSelector}>
+                <Text style={s.foundRoleLabel}>Select Workspace Role:</Text>
+                <View style={{ flexDirection: "row", gap: 6 }}>
+                  {[
+                    { key: "member", label: "Team Member" },
+                    { key: "manager", label: "Project Manager" },
+                    { key: "leader", label: "Team Leader" },
+                  ].map((r) => {
+                    const active = draftMemberRole === r.key;
+                    return (
+                      <Pressable
+                        key={r.key}
+                        onPress={() => setDraftMemberRole(r.key)}
+                        style={[s.miniRoleChip, active && s.miniRoleChipOn]}
+                      >
+                        <Text style={[s.miniRoleChipTxt, active && { color: "#fff" }]}>
+                          {r.label}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
             </View>
           )}
 
@@ -433,7 +588,14 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
                   <View style={s.memberTop}>
                     <Avatar name={m.name} size={32} />
                     <View style={{ flex: 1 }}>
-                      <Text style={s.memberName}>{m.name}</Text>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                        <Text style={s.memberName}>{m.name}</Text>
+                        <Badge
+                          label={m.role === "leader" ? "Team Leader" : m.role === "manager" ? "Project Manager" : "Team Member"}
+                          color={colors.primary}
+                          bg={colors.primarySoft}
+                        />
+                      </View>
                       <Text style={s.memberSkill}>{m.email}</Text>
                     </View>
                     <Pressable onPress={() => setMembers((prev) => prev.filter((_, j) => j !== i))} hitSlop={8}>
@@ -574,6 +736,22 @@ const s = StyleSheet.create({
   roleLabel: { fontSize: 14, fontWeight: "700", color: colors.text },
   roleDesc: { fontSize: 12, color: colors.textMuted, marginTop: 2, lineHeight: 17 },
 
+  capCard: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, padding: spacing.md, gap: 12 },
+  capHead: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
+  capTitle: { fontSize: 14, fontWeight: "700", color: colors.text },
+  capSub: { fontSize: 12, color: colors.textMuted, marginTop: 2, lineHeight: 17 },
+  capSkillsRow: { gap: 6 },
+  capSkillsLabel: { fontSize: 11, fontWeight: "700", color: colors.textFaint, textTransform: "uppercase", letterSpacing: 0.5 },
+  capChipGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  capChip: { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 6, paddingHorizontal: 10, borderRadius: radius.pill, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.border },
+  capChipVerified: { backgroundColor: colors.successSoft, borderColor: colors.success },
+  capChipTxt: { fontSize: 12, fontWeight: "600", color: colors.text },
+  capChipTxtVerified: { color: colors.success, fontWeight: "700" },
+  capStatusOk: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.successSoft, padding: 8, borderRadius: radius.sm },
+  capStatusOkTxt: { fontSize: 12, color: colors.success, fontWeight: "600" },
+  capPromptBox: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.accentSoft, padding: 8, borderRadius: radius.sm },
+  capPromptTxt: { fontSize: 12, color: colors.accentDark, fontWeight: "600" },
+
   memberAdd: { flexDirection: "row", alignItems: "flex-end", gap: 8 },
   addBtn: { width: 44, height: 44, borderRadius: radius.md, backgroundColor: colors.primary, alignItems: "center", justifyContent: "center" },
   warnCard: { flexDirection: "row", alignItems: "center", gap: 8, padding: 10, borderRadius: radius.md, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.border },
@@ -584,6 +762,11 @@ const s = StyleSheet.create({
   foundName: { fontSize: 14, fontWeight: "800", color: colors.text },
   foundEmail: { fontSize: 12, color: colors.textMuted },
   foundSkills: { fontSize: 11, color: colors.accentDark, marginTop: 2 },
+  foundRoleSelector: { marginTop: 6, gap: 6, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 8 },
+  foundRoleLabel: { fontSize: 11, fontWeight: "700", color: colors.textFaint, textTransform: "uppercase", letterSpacing: 0.5 },
+  miniRoleChip: { paddingVertical: 4, paddingHorizontal: 10, borderRadius: radius.pill, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
+  miniRoleChipOn: { backgroundColor: colors.primary, borderColor: colors.primary },
+  miniRoleChipTxt: { fontSize: 11, fontWeight: "600", color: colors.text },
 
   memberRow: { backgroundColor: colors.surfaceAlt, borderRadius: radius.md, padding: 10, borderWidth: 1, borderColor: colors.border, gap: 8 },
   memberTop: { flexDirection: "row", alignItems: "center", gap: 10 },

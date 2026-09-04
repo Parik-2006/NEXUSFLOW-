@@ -16,7 +16,12 @@ import type { TeamMember } from "@/hooks/useTeams";
 import { Card, Button, Badge, Avatar, EmptyState, Field, Stepper } from "@/components/ui";
 import { ModalSheet, useToast, useConfirm } from "@/components/feedback";
 import SkillMatrix, { type SkillMatrixMember } from "@/components/workspace/SkillMatrix";
+import MemberProfileModal from "@/components/workspace/MemberProfileModal";
+import SkillVerificationModal from "@/components/SkillVerificationModal";
+import OpenRolesManagerModal from "@/components/workspace/OpenRolesManagerModal";
+import LeaderApplicationsPanel from "@/components/workspace/LeaderApplicationsPanel";
 import { WhyButton, AlgoExplainSheet, type AlgoEntry } from "@/components/AlgoExplain";
+import { API_BASE_URL } from "@/utils/api";
 import { colors, spacing, radius, font, avatarColor } from "@/theme";
 
 const SKILLS = ["frontend", "backend", "devops", "design", "ml", "testing"] as const;
@@ -31,14 +36,22 @@ const LEAVE_REASONS = [
   { id: "other",             label: "Other" },
 ];
 
+const REMOVE_REASONS = [
+  { id: "inactive",     label: "Inactive / Non-responsive" },
+  { id: "role_change",  label: "Role reassigned or no longer needed" },
+  { id: "performance",  label: "Skills mismatch or performance issue" },
+  { id: "scope_change", label: "Project scope changed" },
+  { id: "other",        label: "Other reason" },
+];
+
 export default function AssignmentBoard({ teamId }: { teamId: string }) {
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, token } = useAuth();
   const {
     team, members, loading,
     addMember, deleteMember, updateMember,
     updateMemberSkills, runAssignment, inviteMemberByEmail,
-    leaveTeam, deleteTeam,
+    leaveTeam, deleteTeam, refetch,
   } = useTeam(teamId);
 
   const toast = useToast();
@@ -54,6 +67,7 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
   const [removingId, setRemovingId] = useState<string | null>(null);
   const [explain, setExplain] = useState<AlgoEntry[] | null>(null);
   const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState("member");
   const [inviting, setInviting] = useState(false);
 
   // Skill Matrix Editing State (Fix 2: Current user's own skills only)
@@ -61,8 +75,15 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
   const [skillDraft, setSkillDraft] = useState<Record<string, number>>({});
   const [savingSkills, setSavingSkills] = useState(false);
 
-  // Teammate Profile View State (Fix 2)
+  // Teammate Profile View State (Fix 3: Professional Member Profile Modal)
   const [viewingProfileMember, setViewingProfileMember] = useState<TeamMember | null>(null);
+  const [showQuizModal, setShowQuizModal] = useState(false);
+
+  // Leader Member Removal State (Fix 3: Require reason & confirmation)
+  const [memberToRemove, setMemberToRemove] = useState<TeamMember | null>(null);
+  const [removeReasonCategory, setRemoveReasonCategory] = useState("inactive");
+  const [removeExplanation, setRemoveExplanation] = useState("");
+  const [removingMember, setRemovingMember] = useState(false);
 
   // Leave Team State (Fix 3)
   const [showLeaveModal, setShowLeaveModal] = useState(false);
@@ -74,6 +95,43 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleteConfirmInput, setDeleteConfirmInput] = useState("");
   const [deleting, setDeleting] = useState(false);
+
+  // Open Roles & Applications State (Fix 4: Open Discovery & Role Applications)
+  const [showRolesModal, setShowRolesModal] = useState(false);
+  const [showAppsModal, setShowAppsModal] = useState(false);
+  const [isDiscoverable, setIsDiscoverable] = useState(Boolean(team?.isDiscoverable));
+  const [togglingDiscoverable, setTogglingDiscoverable] = useState(false);
+
+  useEffect(() => {
+    if (team?.isDiscoverable !== undefined) {
+      setIsDiscoverable(Boolean(team.isDiscoverable));
+    }
+  }, [team?.isDiscoverable]);
+
+  const toggleDiscoverable = async () => {
+    if (!teamId) return;
+    setTogglingDiscoverable(true);
+    try {
+      const nextVal = !isDiscoverable;
+      const res = await fetch(`${API_BASE_URL}/api/teams/${teamId}/discovery`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ isDiscoverable: nextVal }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to update discovery settings.");
+      setIsDiscoverable(nextVal);
+      toast(nextVal ? "Workspace is now discoverable to students!" : "Workspace is now private.", "success");
+      refetch();
+    } catch (err: any) {
+      toast(err.message || "Failed to update discovery.", "error");
+    } finally {
+      setTogglingDiscoverable(false);
+    }
+  };
 
   const currentUserId = (user?._id || user?.id)?.toString();
   const currentUserName = (user?.name || "").toLowerCase().trim();
@@ -92,9 +150,13 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
     });
   }, [members, currentUserId, currentUserEmail, currentUserName]);
 
-  // Is current user the workspace owner?
+  // Is current user the workspace owner or authorized leader?
   const isOwner = Boolean(
     team?.ownerId && currentUserId && team.ownerId.toString() === currentUserId
+  );
+  const isLeader = Boolean(
+    isOwner ||
+    (myMember && ["owner", "leader", "team leader", "manager", "project manager"].includes((myMember.role || "").toLowerCase()))
   );
 
   const openSkillEdit = (m: TeamMember) => {
@@ -128,8 +190,7 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
 
   const handleLeaveTeam = async () => {
     setLeaving(true);
-    const selectedReasonLabel = LEAVE_REASONS.find((r) => r.id === leaveReason)?.label || leaveReason;
-    const { error } = await leaveTeam(selectedReasonLabel, leaveExplanation.trim());
+    const { error } = await leaveTeam(leaveReason, leaveExplanation);
     setLeaving(false);
     if (error) {
       toast(error, "error");
@@ -137,12 +198,12 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
     }
     toast("You have left the workspace.", "info");
     setShowLeaveModal(false);
-    router.replace("/(tabs)/dashboard" as any);
+    router.replace("/dashboard");
   };
 
   const handleDeleteTeam = async () => {
-    if (deleteConfirmInput.trim() !== team?.name.trim()) {
-      toast("Please enter the exact team name to confirm deletion.", "error");
+    if (deleteConfirmInput.trim() !== team?.name) {
+      toast(`Please type "${team?.name}" to confirm workspace deletion.`, "error");
       return;
     }
     setDeleting(true);
@@ -152,9 +213,9 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
       toast(error, "error");
       return;
     }
-    toast("Workspace permanently deleted.", "success");
+    toast(`Workspace "${team?.name}" has been permanently deleted.`, "info");
     setShowDeleteModal(false);
-    router.replace("/(tabs)/dashboard" as any);
+    router.replace("/dashboard");
   };
 
   const memberById = (id: string) => members.find((m) => m.userId === id || (m as any)._id === id);
@@ -178,32 +239,63 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
     if (!opts?.silent) toast("Optimal task assignment computed via Branch & Bound!", "success");
   };
 
-  const onSendInvite = async () => {
+  const openAdd = () => {
+    setShowAdd(true);
+  };
+
+  const openEdit = (m: TeamMember) => {
+    setEditing(m);
+    setEditName(m.name ?? "");
+  };
+
+  const onInviteTeammate = async () => {
     if (!inviteEmail.trim()) { toast("Email address is required", "error"); return; }
     setInviting(true);
-    const { error, message } = await inviteMemberByEmail(inviteEmail.trim());
+    const { error, message } = await inviteMemberByEmail(inviteEmail.trim(), inviteRole);
     setInviting(false);
     if (error) { toast(error, "error"); return; }
     toast(message || `Invitation sent to ${inviteEmail.trim()}`, "success");
-    setInviteEmail(""); setShowAdd(false);
+    setInviteEmail(""); setInviteRole("member"); setShowAdd(false);
   };
 
-  const onDeleteMember = async (m: TeamMember) => {
-    const ok = await confirm({
-      title: "Remove Member?",
-      message: `Are you sure you want to remove ${m.name || "this member"} from the workspace?`,
-      confirmLabel: "Remove",
-      destructive: true,
-    });
-    if (!ok) return;
+  const onDeleteMember = (m: TeamMember) => {
+    if (!isLeader) {
+      toast("Only team leaders can remove workspace members.", "error");
+      return;
+    }
+    setMemberToRemove(m);
+    setRemoveReasonCategory("inactive");
+    setRemoveExplanation("");
+  };
 
-    setRemovingId(m.userId);
-    await new Promise((r) => setTimeout(r, 280));
-    const { error } = await deleteMember(m.userId);
+  const handleConfirmRemoveMember = async () => {
+    if (!memberToRemove) return;
+    const targetUserId = memberToRemove.userId || (memberToRemove as any)._id;
+    if (!targetUserId) {
+      toast("Unable to identify team member.", "error");
+      return;
+    }
+
+    const categoryObj = REMOVE_REASONS.find((r) => r.id === removeReasonCategory);
+    const fullReason = removeExplanation.trim()
+      ? `${categoryObj?.label || "Leader removal"}: ${removeExplanation.trim()}`
+      : categoryObj?.label || "Removed by workspace leader";
+
+    setRemovingMember(true);
+    setRemovingId(targetUserId);
+    const { error } = await deleteMember(targetUserId, fullReason);
+    setRemovingMember(false);
     setRemovingId(null);
-    if (error) { toast(error, "error"); return; }
-    if (expanded === m.userId) setExpanded(null);
-    toast(`${m.name || "Member"} removed from workspace`, "info");
+
+    if (error) {
+      toast(error, "error");
+      return;
+    }
+
+    toast(`${memberToRemove.name || "Member"} removed from workspace`, "info");
+    if (expanded === targetUserId) setExpanded(null);
+    setMemberToRemove(null);
+    setViewingProfileMember(null);
   };
 
   const onSaveEdit = async () => {
@@ -241,6 +333,35 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
           <Button title="Invite Teammate" icon="person-add" variant="secondary" onPress={() => setShowAdd(true)} style={{ flex: 1 }} small />
           <Button title="Run Assignment" icon="git-branch" onPress={() => run()} loading={running} style={{ flex: 1 }} small disabled={members.length === 0} />
         </View>
+        {isLeader && (
+          <View style={{ flexDirection: "row", gap: spacing.sm, marginTop: spacing.xs }}>
+            <Button
+              title="Open Roles"
+              icon="briefcase-outline"
+              variant="ghost"
+              onPress={() => setShowRolesModal(true)}
+              style={{ flex: 1 }}
+              small
+            />
+            <Button
+              title="Applications"
+              icon="documents-outline"
+              variant="ghost"
+              onPress={() => setShowAppsModal(true)}
+              style={{ flex: 1 }}
+              small
+            />
+            <Button
+              title={isDiscoverable ? "Public" : "Private"}
+              icon={isDiscoverable ? "earth" : "lock-closed"}
+              variant="ghost"
+              loading={togglingDiscoverable}
+              onPress={toggleDiscoverable}
+              style={{ flex: 1 }}
+              small
+            />
+          </View>
+        )}
       </Card>
 
       {/* Low-resource warnings */}
@@ -277,6 +398,8 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
               key={m.userId || (m as any)._id}
               member={m}
               isSelf={isSelf}
+              isLeader={isLeader}
+              teamOwnerId={team?.ownerId?.toString()}
               open={expanded === (m.userId || (m as any)._id)}
               removing={removingId === (m.userId || (m as any)._id)}
               onToggle={() => setExpanded(expanded === (m.userId || (m as any)._id) ? null : (m.userId || (m as any)._id))}
@@ -479,42 +602,113 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
         </View>
       </ModalSheet>
 
-      {/* Teammate Profile View ModalSheet (Fix 2: Read-Only) */}
-      <ModalSheet
+      {/* Member Profile Modal (Fix 3: Professional Member Profile & Verified Badges) */}
+      <MemberProfileModal
         visible={!!viewingProfileMember}
         onClose={() => setViewingProfileMember(null)}
-        title={viewingProfileMember?.name || "Teammate Profile"}
+        member={viewingProfileMember}
+        teamId={teamId}
+        isSelf={Boolean(
+          viewingProfileMember && (
+            (viewingProfileMember.userId && currentUserId && viewingProfileMember.userId === currentUserId) ||
+            (currentUserEmail && viewingProfileMember.name && viewingProfileMember.name.toLowerCase().trim() === currentUserEmail) ||
+            (currentUserName && viewingProfileMember.name && viewingProfileMember.name.toLowerCase().trim() === currentUserName)
+          )
+        )}
+        isLeader={isLeader}
+        onEditSkills={() => {
+          if (viewingProfileMember) {
+            openSkillEdit(viewingProfileMember);
+            setViewingProfileMember(null);
+          }
+        }}
+        onVerifySkill={() => {
+          setShowQuizModal(true);
+        }}
+        onRemoveMember={(m) => {
+          onDeleteMember(m);
+        }}
+      />
+
+      {/* Skill Verification Quiz Modal from Profile */}
+      <SkillVerificationModal
+        visible={showQuizModal}
+        onClose={() => setShowQuizModal(false)}
+        skill="JavaScript"
+        onVerified={(skill) => {
+          toast(`${skill} is now verified on your profile!`, "success");
+        }}
+      />
+
+      {/* Leader Member Removal Modal (Fix 3: Required reason & audit record) */}
+      <ModalSheet
+        visible={!!memberToRemove}
+        onClose={() => setMemberToRemove(null)}
+        title="Remove Member from Workspace"
       >
-        {viewingProfileMember && (
+        {memberToRemove && (
           <View style={{ gap: spacing.md }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-              <Avatar name={viewingProfileMember.name || "Member"} size={48} image={viewingProfileMember.avatar} />
+              <Avatar name={memberToRemove.name || "Member"} size={44} image={memberToRemove.avatar} />
               <View style={{ flex: 1 }}>
-                <Text style={font.h3}>{viewingProfileMember.name || "Member"}</Text>
-                <Text style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>
-                  Role: {viewingProfileMember.role || "Team Member"}
+                <Text style={font.h3}>{memberToRemove.name || "Member"}</Text>
+                <Text style={{ fontSize: 12, color: colors.textMuted }}>
+                  Role: {memberToRemove.role || "Team Member"}
                 </Text>
               </View>
             </View>
 
-            <Text style={s.sectionLabel}>SKILL RATINGS (READ-ONLY)</Text>
-            <View style={{ gap: 8 }}>
-              {SKILLS.map((k) => {
-                const val = viewingProfileMember.skills?.[k] ?? 5;
-                const label = k === "ml" ? "ML / AI" : k === "devops" ? "DevOps / Ops" : k === "design" ? "Design / UX" : k.charAt(0).toUpperCase() + k.slice(1);
+            <Text style={{ fontSize: 13, color: colors.textMuted, lineHeight: 19 }}>
+              Are you sure you want to remove this member from <Text style={{ fontWeight: "700", color: colors.text }}>{team?.name}</Text>?
+              {"\n"}Any tasks assigned to them will be unassigned, and a departure audit record will be logged.
+            </Text>
+
+            <Text style={s.sectionLabel}>REMOVAL REASON (REQUIRED)</Text>
+            <View style={{ gap: 6 }}>
+              {REMOVE_REASONS.map((r) => {
+                const isSelected = removeReasonCategory === r.id;
                 return (
-                  <View key={k} style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-                    <Text style={{ width: 90, fontSize: 12, fontWeight: "600", color: colors.textMuted }}>{label}</Text>
-                    <View style={s.skillBarTrack}>
-                      <View style={[s.skillBarFill, { width: `${val * 10}%`, backgroundColor: colors.branch }]} />
-                    </View>
-                    <Text style={{ width: 36, fontSize: 12, fontWeight: "700", color: colors.text, textAlign: "right" }}>{val}/10</Text>
-                  </View>
+                  <Pressable
+                    key={r.id}
+                    style={[s.reasonOption, isSelected && s.reasonOptionSelected]}
+                    onPress={() => setRemoveReasonCategory(r.id)}
+                  >
+                    <Ionicons
+                      name={isSelected ? "radio-button-on" : "radio-button-off"}
+                      size={16}
+                      color={isSelected ? colors.danger : colors.textMuted}
+                    />
+                    <Text style={[s.reasonText, isSelected && { color: colors.text, fontWeight: "700" }]}>
+                      {r.label}
+                    </Text>
+                  </Pressable>
                 );
               })}
             </View>
 
-            <Button title="Close" variant="secondary" onPress={() => setViewingProfileMember(null)} style={{ marginTop: spacing.sm }} />
+            <Field
+              label="Optional Note / Explanation"
+              value={removeExplanation}
+              onChangeText={setRemoveExplanation}
+              placeholder="e.g. Inactive on sprint tasks for 2 weeks"
+            />
+
+            <View style={{ flexDirection: "row", gap: spacing.sm, marginTop: spacing.sm }}>
+              <Button
+                title="Cancel"
+                variant="secondary"
+                onPress={() => setMemberToRemove(null)}
+                style={{ flex: 1 }}
+              />
+              <Button
+                title={removingMember ? "Removing…" : "Confirm Removal"}
+                variant="danger"
+                icon="trash-outline"
+                loading={removingMember}
+                onPress={handleConfirmRemoveMember}
+                style={{ flex: 1 }}
+              />
+            </View>
           </View>
         )}
       </ModalSheet>
@@ -617,7 +811,37 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
       <ModalSheet visible={showAdd} onClose={() => setShowAdd(false)} title="Invite Teammate by Email">
         <Text style={s.hint}>Enter the email address of a registered NEXUSFLOW user. They will receive an invitation notification to join this workspace.</Text>
         <Field label="Teammate Email Address" value={inviteEmail} onChangeText={setInviteEmail} placeholder="teammate@example.com" />
-        <Button title="Send Team Invitation" icon="mail-outline" loading={inviting} onPress={onSendInvite} style={{ marginTop: spacing.sm }} />
+        <Text style={{ fontSize: 13, fontWeight: "700", color: colors.text, marginTop: spacing.sm, marginBottom: 6 }}>Workspace Role</Text>
+        <View style={{ flexDirection: "row", gap: 8, marginBottom: spacing.sm }}>
+          {[
+            { key: "member", label: "Team Member" },
+            { key: "manager", label: "Project Manager" },
+            { key: "leader", label: "Team Leader" },
+          ].map((r) => {
+            const active = inviteRole === r.key;
+            return (
+              <Pressable
+                key={r.key}
+                onPress={() => setInviteRole(r.key)}
+                style={{
+                  flex: 1,
+                  paddingVertical: 8,
+                  paddingHorizontal: 8,
+                  borderRadius: radius.md,
+                  borderWidth: 1,
+                  borderColor: active ? colors.primary : colors.border,
+                  backgroundColor: active ? colors.primarySoft : colors.surfaceAlt,
+                  alignItems: "center",
+                }}
+              >
+                <Text style={{ fontSize: 12, fontWeight: active ? "700" : "500", color: active ? colors.primary : colors.textMuted }}>
+                  {r.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        <Button title="Send Team Invitation" icon="mail-outline" loading={inviting} onPress={onInviteTeammate} style={{ marginTop: spacing.sm }} />
       </ModalSheet>
 
       {/* Edit Member Sheet */}
@@ -625,6 +849,27 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
         <Field label="Name" value={editName} onChangeText={setEditName} placeholder="Member name" />
         <Button title="Save changes" icon="checkmark" onPress={onSaveEdit} style={{ marginTop: spacing.sm }} />
       </ModalSheet>
+
+      {/* FIX 4: Open Roles Manager Modal */}
+      {isLeader && teamId && (
+        <OpenRolesManagerModal
+          visible={showRolesModal}
+          teamId={teamId}
+          roles={team?.openRoles || []}
+          onClose={() => setShowRolesModal(false)}
+          onRolesUpdated={() => refetch()}
+        />
+      )}
+
+      {/* FIX 4: Leader Applications Review Panel */}
+      {isLeader && teamId && (
+        <LeaderApplicationsPanel
+          visible={showAppsModal}
+          teamId={teamId}
+          onClose={() => setShowAppsModal(false)}
+          onMemberAdded={() => refetch()}
+        />
+      )}
 
       <AlgoExplainSheet visible={!!explain} onClose={() => setExplain(null)} title="Why this assignment?" entries={explain ?? []} />
     </ScrollView>
@@ -635,6 +880,8 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
 function RosterCard({
   member: m,
   isSelf,
+  isLeader,
+  teamOwnerId,
   open,
   removing,
   onToggle,
@@ -644,6 +891,8 @@ function RosterCard({
 }: {
   member: TeamMember;
   isSelf: boolean;
+  isLeader: boolean;
+  teamOwnerId?: string;
   open: boolean;
   removing: boolean;
   onToggle: () => void;
@@ -656,6 +905,7 @@ function RosterCard({
     if (removing) Animated.timing(anim, { toValue: 0, duration: 260, useNativeDriver: false }).start();
   }, [removing, anim]);
   const top = SKILLS.map((k) => ({ k, v: m.skills?.[k] ?? 5 })).sort((a, b) => b.v - a.v)[0];
+  const mUserId = (m.userId || (m as any)._id)?.toString();
 
   return (
     <Animated.View style={{ opacity: anim, transform: [{ scaleY: anim }] }}>
@@ -671,11 +921,15 @@ function RosterCard({
             </View>
           </Pressable>
 
-          <Pressable onPress={onEdit} hitSlop={6} style={({ hovered, pressed }: any) => [s.iconBtn, (hovered || pressed) && { backgroundColor: colors.primarySoft }]}>
-            {({ hovered, pressed }: any) => <Ionicons name="pencil-outline" size={15} color={hovered || pressed ? colors.primary : colors.textFaint} />}
-          </Pressable>
+          {/* Edit ratings button: strictly self-only */}
+          {isSelf && (
+            <Pressable onPress={onEdit} hitSlop={6} style={({ hovered, pressed }: any) => [s.iconBtn, (hovered || pressed) && { backgroundColor: colors.primarySoft }]}>
+              {({ hovered, pressed }: any) => <Ionicons name="pencil-outline" size={15} color={hovered || pressed ? colors.primary : colors.textFaint} />}
+            </Pressable>
+          )}
 
-          {!isSelf && (
+          {/* Remove member button: strictly authorized leader, non-self, and not owner */}
+          {isLeader && !isSelf && mUserId !== teamOwnerId && (
             <Pressable onPress={onDelete} hitSlop={6} style={({ hovered, pressed }: any) => [s.iconBtn, (hovered || pressed) && { backgroundColor: colors.dangerSoft }]}>
               {({ hovered, pressed }: any) => <Ionicons name="trash-outline" size={15} color={hovered || pressed ? colors.danger : colors.textFaint} />}
             </Pressable>

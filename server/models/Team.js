@@ -54,6 +54,37 @@ const TeamSettingsSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// Discovery settings for open team search and filters (Phase 16 / V4 Discovery)
+const DiscoverySettingsSchema = new mongoose.Schema(
+  {
+    domain:           { type: String, default: "General" },
+    methodology:      { type: String, default: "Agile/Scrum" },
+    projectStage:     { type: String, default: "planning" },
+    academicCategory: { type: String, default: "Independent" },
+    difficulty:       { type: String, default: "Intermediate" },
+    deadline:         { type: Date, default: null },
+    expectations:     { type: String, default: "" },
+    generalInfo:      { type: String, default: "" },
+  },
+  { _id: false }
+);
+
+// Open roles defined by team leaders for public application
+const OpenRoleSchema = new mongoose.Schema(
+  {
+    roleName:             { type: String, required: true },
+    roleDescription:      { type: String, default: "" },
+    requiredSkills:       { type: [String], default: [] },
+    preferredSkills:      { type: [String], default: [] },
+    minVerificationScore: { type: Number, default: 3, min: 1, max: 5 },
+    expectations:         { type: String, default: "" },
+    availableSlots:       { type: Number, default: 1, min: 1 },
+    filledSlots:          { type: Number, default: 0, min: 0 },
+    status:               { type: String, enum: ["open", "closed"], default: "open" },
+    createdAt:            { type: Date, default: Date.now },
+  }
+);
+
 const TeamSchema = new mongoose.Schema(
   {
     name:      { type: String, required: true },
@@ -65,6 +96,11 @@ const TeamSchema = new mongoose.Schema(
     members:   { type: [TeamMemberSchema], default: [] },
     taskCount: { type: Number, default: 0 },
     doneCount: { type: Number, default: 0 },
+
+    // ── NEXUSFLOW 4.0: Discovery & Open Roles ─────────────────────────────────
+    isDiscoverable:    { type: Boolean, default: false, index: true },
+    discoverySettings: { type: DiscoverySettingsSchema, default: () => ({}) },
+    openRoles:         { type: [OpenRoleSchema], default: [] },
 
     // ── NEXUSFLOW 2.0: Active Project pointer (optional, migration-safe) ───────
     // WHY OPTIONAL: All existing teams predate the Project model.

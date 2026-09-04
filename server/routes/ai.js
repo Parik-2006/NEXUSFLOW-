@@ -408,17 +408,18 @@ async function tryGenerateAI(skill, difficulty) {
     const result = await omniRouteGenerate({
       prompt:
         `Generate exactly 5 multiple-choice questions for ${skill} at ${difficulty} level. ` +
-        `Return strict JSON: { "questions": [ { "question": "...", "options": ["A","B","C","D"], "correctIndex": 0-3 } ] }`,
-      model: "gemini-1.5-flash",
-      maxOutputTokens: 1500,
-      timeoutMs: 12000,
-      responseMimeType: "application/json",
+        `Return strict JSON: { "questions": [ { "question": "...", "options": ["A","B","C","D"], "correctIndex": 0-3, "explanation": "..." } ] }`,
+      responseFormat: "json_object",
+      maxTokens: 1500,
     });
     let parsed = null;
-    if (typeof result?.text === "string") {
-      try { parsed = JSON.parse(result.text); } catch {}
+    if (typeof result?.content === "string") {
+      try {
+        const clean = result.content.replace(/^```json\s*/i, "").replace(/\s*```$/i, "").trim();
+        parsed = JSON.parse(clean);
+      } catch {}
     }
-    parsed = parsed || result?.json || result?.data;
+    parsed = parsed || result?.data;
     if (validateQuiz(parsed)) return parsed;
   } catch {
     // swallow — fallback below
@@ -446,6 +447,8 @@ router.post("/ai/quiz/generate", requireAuth, async (req, res) => {
           index: i,
           question: q.question,
           options: q.options,
+          correctIndex: q.correctIndex,
+          explanation: q.explanation || "Correct answer.",
         })),
         source: "ai",
       };
@@ -454,7 +457,7 @@ router.post("/ai/quiz/generate", requireAuth, async (req, res) => {
 
     // 2. Deterministic fallback (always works)
     const bank = bankForSkill(skillKey);
-    const shuffled = [...bank].sort(() => Math.random() - 0.5);
+    const shuffled = [...bank].sort(() => Math.random() - 0.5).slice(0, 5);
     const quiz = {
       skill: skillKey,
       difficulty,
@@ -463,6 +466,8 @@ router.post("/ai/quiz/generate", requireAuth, async (req, res) => {
         index: i,
         question: q.question,
         options: q.options,
+        correctIndex: q.correctIndex,
+        explanation: q.explanation || "",
       })),
       source: "fallback",
     };
@@ -489,22 +494,22 @@ router.post("/ai/quiz/submit", requireAuth, async (req, res) => {
     const skillKey = String(skill).trim();
     const bank = bankForSkill(skillKey);
 
-    // Scoring: prefer validating against the bank (always deterministic).
-    // We trust answers[i] only when 0 <= answer <= 3.
+    // Scoring: prefer questions array if provided, otherwise fallback to static bank.
     let correct = 0;
     const detail = [];
     for (let i = 0; i < 5; i++) {
       const a = answers[i];
-      const expected = bank[i]?.correctIndex ?? -1;
+      const q = questions && questions[i];
+      const expected = typeof q?.correctIndex === "number" ? q.correctIndex : (bank[i]?.correctIndex ?? -1);
       const ok = typeof a === "number" && a === expected;
       if (ok) correct++;
       detail.push({
         questionIndex: i,
-        questionText: bank[i]?.question || (questions && questions[i]?.question) || "",
+        questionText: q?.question || bank[i]?.question || "",
         userAnswer: a,
         correctIndex: expected,
         correct: ok,
-        explanation: bank[i]?.explanation || "",
+        explanation: q?.explanation || bank[i]?.explanation || "",
       });
     }
     const verified = correct >= 3;

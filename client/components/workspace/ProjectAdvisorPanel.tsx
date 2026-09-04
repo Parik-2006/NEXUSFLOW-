@@ -33,6 +33,7 @@ import { colors, spacing, radius, font } from "@/theme";
 import { API_BASE_URL } from "@/utils/api";
 import DecisionPanel from "./DecisionPanel";
 import GuidancePanel from "./GuidancePanel";
+import SafeMarkdownMessage from "@/components/chat/SafeMarkdownMessage";
 
 const API = API_BASE_URL;
 
@@ -890,7 +891,7 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
                             </View>
                           )}
                         </View>
-                        <Text style={[s.chatText, isUser && { color: "#fff" }]}>{msg.content}</Text>
+                        <SafeMarkdownMessage content={msg.content} isMe={isUser} />
 
                         {!isUser && (
                           <View style={s.feedbackRow}>

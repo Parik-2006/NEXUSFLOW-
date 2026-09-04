@@ -1,6 +1,7 @@
 import { Router } from "express";
 import mongoose from "mongoose";
 import SkillVerification from "../models/SkillVerification.js";
+import User from "../models/User.js";
 import Team from "../models/Team.js";
 import { requireAuth } from "../auth.js";
 import { resolveAuthUser } from "./teams.js";
@@ -16,7 +17,12 @@ router.post("/skills/verify", requireAuth, async (req, res) => {
     const authUser = await resolveAuthUser(req.user);
     if (!authUser) return res.status(401).json({ error: "Unauthorized" });
 
-    const { skill, score, totalQuestions, difficulty, questions, attemptId } = req.body ?? {};
+    const { skill, score, totalQuestions, difficulty, questions, attemptId, userId } = req.body ?? {};
+
+    // FIX 3: Cross-user mutation guard — users can only submit verification for themselves
+    if (userId && String(userId).trim() !== authUser._id.toString()) {
+      return res.status(403).json({ error: "Forbidden: You cannot submit skill verification for another user." });
+    }
 
     if (!skill || !String(skill).trim()) {
       return res.status(400).json({ error: "Skill is required." });
@@ -44,6 +50,13 @@ router.post("/skills/verify", requireAuth, async (req, res) => {
       verified,
       questions: Array.isArray(questions) ? questions.slice(0, 20) : [],
     });
+
+    if (verified) {
+      await User.updateOne(
+        { _id: authUser._id },
+        { $addToSet: { skills: String(skill).trim() } }
+      ).catch(() => {});
+    }
 
     res.status(201).json({
       success: true,

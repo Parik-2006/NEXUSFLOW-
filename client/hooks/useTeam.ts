@@ -12,6 +12,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { getSocket } from "@/services/socket";
 import type { Team, TeamMember } from "@/hooks/useTeams";
+export type { Team, TeamMember } from "@/hooks/useTeams";
 import { API_BASE_URL } from "@/utils/api";
 
 const API = API_BASE_URL;
@@ -188,13 +189,13 @@ export function useTeam(teamId: string | undefined) {
     return {};
   }, [teamId, token]);
 
-  const inviteMemberByEmail = useCallback(async (email: string): Promise<{ error?: string; message?: string }> => {
+  const inviteMemberByEmail = useCallback(async (email: string, role = "member"): Promise<{ error?: string; message?: string }> => {
     if (!token || !teamId) return { error: "Unauthorized or invalid team" };
     try {
       const res = await fetch(`${API}/api/teams/${teamId}/invitations`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ email: email.trim().toLowerCase() }),
+        body: JSON.stringify({ email: email.trim().toLowerCase(), role: role || "member" }),
       });
       const data = await res.json();
       if (!res.ok) return { error: data.error || "Failed to invite teammate" };
@@ -205,10 +206,14 @@ export function useTeam(teamId: string | undefined) {
   }, [teamId, token]);
 
   // Remove a member; server unassigns their tasks.
-  const deleteMember = useCallback(async (userId: string): Promise<{ error?: string }> => {
+  const deleteMember = useCallback(async (userId: string, reason?: string): Promise<{ error?: string }> => {
     const res = await fetch(`${API}/api/teams/${teamId}/members/${userId}`, {
       method: "DELETE",
-      headers: { Authorization: `Bearer ${token}` },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ reason: reason || "Removed by team leader" }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) return { error: data.error ?? "Failed to delete member" };

@@ -18,6 +18,8 @@ type QuizQuestion = {
   index: number;
   question: string;
   options: string[];
+  correctIndex?: number;
+  explanation?: string;
 };
 
 type QuizState =
@@ -80,10 +82,12 @@ export default function SkillVerification() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to generate quiz");
-      const qs: QuizQuestion[] = (data.quiz?.questions || []).slice(0, 5).map((q: any) => ({
-        index: q.index,
+      const qs: QuizQuestion[] = (data.quiz?.questions || []).slice(0, 5).map((q: any, i: number) => ({
+        index: q.index ?? i,
         question: q.question,
         options: q.options,
+        correctIndex: typeof q.correctIndex === "number" ? q.correctIndex : 0,
+        explanation: q.explanation || "Official skill verification standard.",
       }));
       if (qs.length !== 5) throw new Error("Quiz must contain 5 questions.");
       setState({
@@ -117,6 +121,7 @@ export default function SkillVerification() {
         body: JSON.stringify({
           skill: state.skill,
           answers: state.answers,
+          questions: state.questions,
           totalQuestions: 5,
         }),
       });
@@ -133,6 +138,12 @@ export default function SkillVerification() {
             score: r.score,
             totalQuestions: r.total,
             difficulty: "intermediate",
+            questions: state.questions.map((q, i) => ({
+              question: q.question,
+              options: q.options,
+              correctIndex: q.correctIndex,
+              userAnswer: state.answers[i],
+            })),
           }),
         });
       } catch {
@@ -276,7 +287,9 @@ function ActiveQuiz({
 }) {
   const q = quiz.questions[quiz.current];
   const selected = quiz.answers[quiz.current];
+  const isAnswered = selected !== null;
   const isLast = quiz.current === 4;
+  const isSelectedCorrect = isAnswered && selected === q.correctIndex;
 
   return (
     <View style={{ padding: spacing.lg }}>
@@ -296,28 +309,74 @@ function ActiveQuiz({
 
       <View style={{ gap: spacing.sm, marginTop: spacing.md }}>
         {q.options.map((opt, i) => {
-          const on = selected === i;
+          const isChosen = selected === i;
+          const isTargetCorrect = q.correctIndex === i;
+
+          let rowStyle: any = s.optionRow;
+          let textStyle: any = s.optionTxt;
+          let icon = null;
+
+          if (isAnswered) {
+            if (isChosen) {
+              if (isChosen === isTargetCorrect) {
+                rowStyle = [s.optionRow, s.optionRowCorrect];
+                textStyle = [s.optionTxt, s.optionTxtCorrect];
+                icon = <Ionicons name="checkmark-circle" size={18} color={colors.success} />;
+              } else {
+                rowStyle = [s.optionRow, s.optionRowWrong];
+                textStyle = [s.optionTxt, s.optionTxtWrong];
+                icon = <Ionicons name="close-circle" size={18} color={colors.danger} />;
+              }
+            } else if (isTargetCorrect) {
+              rowStyle = [s.optionRow, s.optionRowCorrectOutline];
+              textStyle = [s.optionTxt, s.optionTxtCorrect];
+              icon = <Ionicons name="checkmark-circle-outline" size={18} color={colors.success} />;
+            }
+          }
+
           return (
             <Pressable
               key={i}
-              onPress={() => onAnswer(i)}
-              style={[s.optionRow, on && s.optionRowOn]}
+              onPress={() => !isAnswered && onAnswer(i)}
+              disabled={isAnswered}
+              style={rowStyle}
             >
-              <View style={[s.optionDot, on && { borderColor: colors.primary }]}>
-                {on ? <View style={s.optionDotInner} /> : null}
-              </View>
-              <Text style={[s.optionTxt, on && { fontWeight: "700", color: colors.primary }]}>{opt}</Text>
+              {icon ? (
+                icon
+              ) : (
+                <View style={s.optionDot} />
+              )}
+              <Text style={textStyle}>{opt}</Text>
             </Pressable>
           );
         })}
       </View>
 
+      {/* Immediate feedback & explanation card */}
+      {isAnswered && (
+        <View style={[s.explanationBox, isSelectedCorrect ? s.explanationBoxCorrect : s.explanationBoxWrong]}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+            <Ionicons
+              name={isSelectedCorrect ? "checkmark-circle" : "information-circle"}
+              size={18}
+              color={isSelectedCorrect ? colors.success : colors.warning}
+            />
+            <Text style={[s.explanationTitle, isSelectedCorrect ? { color: colors.success } : { color: colors.warning }]}>
+              {isSelectedCorrect ? "Correct!" : "Incorrect"}
+            </Text>
+          </View>
+          <Text style={s.explanationText}>
+            {q.explanation || "Official verification standard for this skill."}
+          </Text>
+        </View>
+      )}
+
       <View style={{ flexDirection: "row", gap: spacing.sm, marginTop: spacing.lg }}>
         <Button title="Back" variant="secondary" onPress={onPrev} disabled={quiz.current === 0} style={{ flex: 1 }} />
         {!isLast ? (
-          <Button title="Next" onPress={onNext} disabled={selected === null} style={{ flex: 1 }} />
+          <Button title="Next" onPress={onNext} disabled={!isAnswered} style={{ flex: 1 }} />
         ) : (
-          <Button title="Submit" icon="checkmark" onPress={onSubmit} disabled={quiz.answers.some((a) => a === null)} style={{ flex: 1 }} />
+          <Button title="Submit" icon="checkmark" onPress={onSubmit} disabled={!isAnswered} style={{ flex: 1 }} />
         )}
       </View>
     </View>
@@ -382,7 +441,17 @@ const s = StyleSheet.create({
   modalCard: { backgroundColor: colors.surface, borderRadius: radius.lg, padding: 0, overflow: "hidden", maxHeight: "90%" },
   optionRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 12, paddingHorizontal: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
   optionRowOn: { borderColor: colors.primary, backgroundColor: colors.primarySoft },
+  optionRowCorrect: { borderColor: colors.success, backgroundColor: colors.successSoft },
+  optionRowWrong: { borderColor: colors.danger, backgroundColor: colors.dangerSoft },
+  optionRowCorrectOutline: { borderColor: colors.success, borderStyle: "dashed" },
   optionDot: { width: 18, height: 18, borderRadius: 9, borderWidth: 2, borderColor: colors.border, alignItems: "center", justifyContent: "center" },
   optionDotInner: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.primary },
   optionTxt: { flex: 1, fontSize: 14, color: colors.text },
+  optionTxtCorrect: { color: colors.success, fontWeight: "700" },
+  optionTxtWrong: { color: colors.danger, fontWeight: "700" },
+  explanationBox: { marginTop: spacing.md, padding: spacing.md, borderRadius: radius.md, borderWidth: 1, gap: 6 },
+  explanationBoxCorrect: { backgroundColor: colors.successSoft, borderColor: colors.success },
+  explanationBoxWrong: { backgroundColor: colors.surfaceAlt, borderColor: colors.warning },
+  explanationTitle: { fontSize: 13, fontWeight: "700" },
+  explanationText: { fontSize: 12, color: colors.text, lineHeight: 18 },
 });

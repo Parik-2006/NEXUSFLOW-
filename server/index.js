@@ -14,6 +14,7 @@ import userLookupRoutes from "./routes/userLookup.js"; // NEXUSFLOW 3.0 — Work
 import teamRoutes   from "./routes/teams.js";
 import projectRoutes from "./routes/projects.js";   // NEXUSFLOW 2.0 — Phase 1
 import githubRoutes  from "./routes/github.js";      // NEXUSFLOW 3.0 — Phase 11
+import discoveryRoutes from "./routes/discovery.js"; // NEXUSFLOW 4.0 — Open Team Discovery & Applications
 import { registerTaskHandlers } from "./socket/taskHandlers.js";
 import { registerAiOrchestrator } from "./socket/aiOrchestrator.js";
 import { registerProjectSyncHandlers } from "./socket/projectSyncHandlers.js"; // NEXUSFLOW 3.0 — Phase 10
@@ -229,6 +230,7 @@ app.use("/api", userLookupRoutes); // NEXUSFLOW 3.0 — Workspace email lookup (
 app.use("/api", teamRoutes);
 app.use("/api", projectRoutes);   // NEXUSFLOW 2.0 — Phase 1 project routes
 app.use("/api", githubRoutes);    // NEXUSFLOW 3.0 — Phase 11 GitHub integration
+app.use("/api", discoveryRoutes); // NEXUSFLOW 4.0 — Discovery & Applications
 
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: [FRONTEND_URL, "http://localhost:8081", "http://localhost:19006"] } });

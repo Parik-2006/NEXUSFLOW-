@@ -34,6 +34,29 @@ export type Team = {
   doneCount: number;
   members?: TeamMember[];
   aiGeneratedTasks?: { title: string }[];
+  isDiscoverable?: boolean;
+  discoverySettings?: {
+    domain?: string;
+    methodology?: string;
+    projectStage?: string;
+    academicCategory?: string;
+    difficulty?: string;
+    deadline?: string;
+    expectations?: string;
+    generalInfo?: string;
+  };
+  openRoles?: {
+    _id: string;
+    roleName: string;
+    roleDescription?: string;
+    requiredSkills: string[];
+    preferredSkills?: string[];
+    minVerificationScore?: number;
+    expectations?: string;
+    availableSlots: number;
+    filledSlots: number;
+    status: string;
+  }[];
 };
 
 export type NewTeamInput = {
@@ -42,7 +65,9 @@ export type NewTeamInput = {
   creatorImage?: string;
   projectTitle?: string;
   projectDescription?: string;
-  members?: { name: string; skills?: Record<string, number> }[];
+  role?: string;
+  invitations?: { email: string; role?: string; skills?: any }[];
+  members?: { name: string; userId?: string; email?: string; role?: string; skills?: Record<string, number> }[];
   tasks?: { title: string; description?: string; urgency?: number; impact?: number; businessValue?: number; estimatedHours?: number; priorityLabel?: string }[];
 };
 

@@ -7,6 +7,7 @@ import User from "../models/User.js";
 import Invitation from "../models/Invitation.js";
 import Notification from "../models/Notification.js";
 import TeamDeparture from "../models/TeamDeparture.js";
+import SkillVerification from "../models/SkillVerification.js";
 import { requireAuth } from "../auth.js";
 import { greedySortTasks, computePriorityScore } from "../algorithms/greedyScheduler.js";
 import { assignTasksToMembers } from "../algorithms/branchAndBound.js";
@@ -18,6 +19,7 @@ import { decomposeTasksWithContext } from "../services/taskDecomposer.js";
 import { buildCompactProjectContext } from "../utils/projectContextBuilder.js";
 import { evaluateDecision, listDecisionTypes } from "../algorithms/decisionEngine.js";
 import { generateProjectGuidance } from "../algorithms/projectGuidanceEngine.js";
+import { sendTeamInvitation, checkInvitationExpiry } from "../services/invitationService.js";
 
 const router = Router();
 
@@ -57,20 +59,6 @@ export async function resolveAuthUser(reqUser) {
   return user || null;
 }
 
-// Shared helper: check invitation expiration and mark as expired if needed.
-// Returns the invitation (possibly mutated) or null with an error response.
-async function checkInvitationExpiry(inv) {
-  if (!inv) return { error: "Invitation not found.", status: 404 };
-  if (inv.status !== "pending") {
-    return { error: `Invitation is already ${inv.status}.`, status: 400 };
-  }
-  if (inv.expiresAt && new Date(inv.expiresAt) < new Date()) {
-    inv.status = "expired";
-    await inv.save();
-    return { error: "Invitation has expired.", status: 400 };
-  }
-  return { invitation: inv };
-}
 
 export async function verifyTeamAccess(teamId, user) {
   if (!mongoose.isValidObjectId(teamId)) return { error: "invalid_team_id", status: 400 };
@@ -158,29 +146,49 @@ router.get("/teams/:teamId", requireAuth, async (req, res) => {
 // The creator is always added as the first member so they appear in the roster.
 router.post("/teams", requireAuth, async (req, res) => {
   try {
-    const { name, members = [], tasks = [], projectTitle = "", projectDescription = "", logo = "", creatorImage = "" } = req.body ?? {};
+    const {
+      name,
+      members = [],
+      invitations = [],
+      tasks = [],
+      projectTitle = "",
+      projectDescription = "",
+      logo = "",
+      creatorImage = "",
+      role = "leader",
+    } = req.body ?? {};
     if (!name || !name.trim()) return res.status(400).json({ error: "Team name is required." });
 
     const creatorId = mongoose.isValidObjectId(req.user?.id)
       ? new mongoose.Types.ObjectId(req.user.id)
       : new mongoose.Types.ObjectId();
 
+    const creatorRole = typeof role === "string" && role.trim() ? role.trim() : "leader";
     const creator = {
       userId: creatorId,
       name: req.user?.name || req.user?.email || "You",
       avatar: typeof creatorImage === "string" && creatorImage ? creatorImage : (req.user?.avatar || ""),
-      role: "leader",
+      role: creatorRole,
       skills: normalizeSkills(req.body.creatorSkills),
     };
-    const extraMembers = (Array.isArray(members) ? members : [])
-      .filter((m) => m && (m.name?.trim()))
-      .map((m) => ({
-        userId: mongoose.isValidObjectId(m.userId) ? new mongoose.Types.ObjectId(m.userId) : new mongoose.Types.ObjectId(),
-        name: m.name.trim(),
-        avatar: typeof m.avatar === "string" ? m.avatar : "",
-        role: m.role || "member",
-        skills: normalizeSkills(m.skills),
-      }));
+
+    // Separate direct mock members (only if explicitly supplied without invitation flow, for legacy test compatibility)
+    // from teammates invited via email. Teammates with emails receive genuine Invitations!
+    const extraMembers = [];
+    const directList = Array.isArray(members) ? members : [];
+    for (const m of directList) {
+      if (!m || !m.name?.trim()) continue;
+      // If member has no email and is explicitly passed as direct member
+      if (!m.email && m.userId && mongoose.isValidObjectId(m.userId)) {
+        extraMembers.push({
+          userId: new mongoose.Types.ObjectId(m.userId),
+          name: m.name.trim(),
+          avatar: typeof m.avatar === "string" ? m.avatar : "",
+          role: m.role || "member",
+          skills: normalizeSkills(m.skills),
+        });
+      }
+    }
 
     // Build the starter backlog. When a project description exists we DECOMPOSE
     // it into a grouped, professional backlog (Planning / Backend / Frontend / …)
@@ -219,8 +227,37 @@ router.post("/teams", requireAuth, async (req, res) => {
       await Team.updateOne({ _id: team._id }, { $set: { taskCount: count } });
     }
 
+    // Dispatch invitations for teammates added by email (from workflow creation)
+    const rawInvites = Array.isArray(invitations) && invitations.length > 0
+      ? invitations
+      : Array.isArray(members)
+        ? members.filter((m) => m && m.email)
+        : [];
+
+    const invitationsSent = [];
+    const inviter = await resolveAuthUser(req.user);
+    if (inviter && rawInvites.length > 0) {
+      const io = req.app.get("io");
+      for (const item of rawInvites) {
+        const targetEmail = typeof item === "string" ? item : item.email;
+        const targetRole = typeof item === "object" && item.role ? item.role : "member";
+        if (targetEmail) {
+          const invResult = await sendTeamInvitation({
+            teamId: team._id,
+            inviter,
+            email: targetEmail,
+            role: targetRole,
+            io,
+          });
+          if (invResult.success && invResult.invitation) {
+            invitationsSent.push(invResult.invitation);
+          }
+        }
+      }
+    }
+
     const fresh = await Team.findById(team._id).lean();
-    res.status(201).json(fresh);
+    res.status(201).json({ ...fresh, invitationsSent });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -278,112 +315,31 @@ router.post("/teams/:teamId/members", requireAuth, async (req, res) => {
 });
 
 // ── POST /api/teams/:teamId/invitations ───────────────────────────────────────
-// GitHub-like Email Teammate Invitation Flow — hardened against email/ObjectId confusion
+// GitHub-like Email Teammate Invitation Flow — centralized via invitationService
 router.post("/teams/:teamId/invitations", requireAuth, async (req, res) => {
   try {
-    // 0. Resolve the authenticated inviter to their real MongoDB ObjectId
     const inviter = await resolveAuthUser(req.user);
     if (!inviter) {
       return res.status(401).json({ error: "Unauthorized: Could not resolve your account. Please log in again." });
     }
 
-    const authCheck = await verifyTeamAccess(req.params.teamId, req.user);
-    if (authCheck.error) return res.status(authCheck.status).json({ error: authCheck.error });
-
-    const team = authCheck.team;
     const { email, role = "member" } = req.body ?? {};
-    if (!email || !String(email).trim()) {
-      return res.status(400).json({ error: "Email address is required to invite a teammate." });
-    }
-
-    const normalizedEmail = String(email).toLowerCase().trim();
-
-    // 1. Self-invite check
-    if (normalizedEmail === (inviter.email || "").toLowerCase().trim()) {
-      return res.status(400).json({ error: "You cannot invite yourself." });
-    }
-
-    // 2. Verify target user exists in NEXUSFLOW (email → ObjectId lookup)
-    const targetUser = await User.findOne({ email: normalizedEmail }).select("_id name email avatar").lean();
-    if (!targetUser) {
-      return res.status(404).json({
-        error: "User is not registered on NEXUSFLOW. They need to create an account before they can accept a team invitation.",
-      });
-    }
-
-    const targetUserIdStr = targetUser._id.toString();
-
-    // 3. Check if already an active member of this team
-    const alreadyMember =
-      (team.ownerId && team.ownerId.toString() === targetUserIdStr) ||
-      (Array.isArray(team.members) &&
-        team.members.some((m) => (m.userId?._id || m.userId)?.toString() === targetUserIdStr));
-
-    if (alreadyMember) {
-      return res.status(409).json({ error: "User is already a member of this team." });
-    }
-
-    // 4. Check for existing pending invitation — prevent duplicates
-    const existingInv = await Invitation.findOne({
-      teamId: team._id,
-      invitedUserId: targetUser._id,   // ← ObjectId, never email
-      status: "pending",
-    }).lean();
-
-    if (existingInv) {
-      return res.status(409).json({ error: "Invitation already pending for this user." });
-    }
-
-    // 5. Create Invitation with proper ObjectId references
-    const inviterName = inviter.name || inviter.email || "Teammate";
-    const invitation = await Invitation.create({
-      teamId: team._id,            // ObjectId
-      teamName: team.name,
-      inviterId: inviter._id,      // ObjectId — resolved from JWT, never raw email
-      inviterName,
-      inviterEmail: inviter.email || "",
-      invitedUserId: targetUser._id,  // ObjectId — resolved from email lookup
-      invitedEmail: targetUser.email,
-      role: typeof role === "string" ? role : "member",
-      status: "pending",
+    const result = await sendTeamInvitation({
+      teamId: req.params.teamId,
+      inviter,
+      email,
+      role,
+      io: req.app.get("io"),
     });
 
-    // 6. Create Notification for invited user with proper ObjectId references
-    await Notification.create({
-      userId: targetUser._id,          // ObjectId
-      type: "team_invitation",
-      title: "Team Collaboration Invitation",
-      message: `${inviterName} invited you to join team "${team.name}".`,
-      data: {
-        teamId: team._id,              // ObjectId
-        teamName: team.name,
-        invitationId: invitation._id,  // ObjectId
-        inviterName,
-      },
-      status: "unread",
-    });
-
-    // 7. Emit real-time notification to target user socket room
-    const io = req.app.get("io");
-    if (io) {
-      io.to(`user:${targetUser._id}`).emit("invitation:received", {
-        invitation: invitation.toObject(),
-        teamName: team.name,
-        inviterName,
-      });
-      if (targetUser.email) {
-        io.to(`user:${targetUser.email.toLowerCase().trim()}`).emit("invitation:received", {
-          invitation: invitation.toObject(),
-          teamName: team.name,
-          inviterName,
-        });
-      }
+    if (result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
     }
 
-    res.status(201).json({
+    res.status(result.status || 201).json({
       success: true,
-      message: `Invitation sent to ${targetUser.email}`,
-      invitation,
+      message: result.message,
+      invitation: result.invitation,
     });
   } catch (e) {
     console.error("[POST /invitations] Error:", e.message);
@@ -1495,8 +1451,89 @@ Do NOT invent fake features or mention technologies not relevant to this project
   }
 });
 
+// ── GET /api/teams/:teamId/members/:userId/profile ───────────────────────────
+// FIX 3: Professional Member Profile View with Verified Skills & Badges
+// Exposes email, team role, project role, skills, and verified badges while
+// excluding sensitive account data (passwords, tokens, external OAuth IDs).
+router.get("/teams/:teamId/members/:userId/profile", requireAuth, async (req, res) => {
+  try {
+    const { teamId, userId } = req.params;
+    if (!mongoose.isValidObjectId(teamId)) {
+      return res.status(400).json({ error: "Invalid team ID." });
+    }
+
+    const authCheck = await verifyTeamAccess(teamId, req.user);
+    if (authCheck.error) return res.status(authCheck.status).json({ error: authCheck.error });
+
+    const team = authCheck.team;
+
+    // Resolve target member in team
+    const targetMember = (team.members || []).find((m) => {
+      const mId = (m.userId?._id || m.userId)?.toString();
+      return mId === userId;
+    });
+
+    const isOwner = team.ownerId && team.ownerId.toString() === userId;
+    if (!targetMember && !isOwner) {
+      return res.status(404).json({ error: "Team member not found in this workspace." });
+    }
+
+    // Lookup User record for profile data
+    const memberUser = await User.findById(userId)
+      .select("_id name email avatar skills")
+      .lean();
+
+    // Fetch verified skill badges
+    let verifiedSkills = [];
+    if (mongoose.isValidObjectId(userId)) {
+      const verifications = await SkillVerification.find({
+        userId: new mongoose.Types.ObjectId(userId),
+        verified: true,
+      })
+        .sort({ createdAt: -1 })
+        .select("skill score totalQuestions percentage verified createdAt")
+        .lean();
+
+      // Deduplicate verified skills to latest per skill
+      const verifiedMap = new Map();
+      for (const v of verifications) {
+        const k = String(v.skill).toLowerCase().trim();
+        if (!verifiedMap.has(k)) {
+          verifiedMap.set(k, {
+            skill: v.skill,
+            score: v.score,
+            totalQuestions: v.totalQuestions,
+            percentage: v.percentage,
+            verified: v.verified,
+            verifiedAt: v.createdAt,
+          });
+        }
+      }
+      verifiedSkills = Array.from(verifiedMap.values());
+    }
+
+    const teamRole = targetMember?.role || (isOwner ? "leader" : "member");
+
+    res.json({
+      userId,
+      name: memberUser?.name || targetMember?.name || "Team Member",
+      email: memberUser?.email || "",
+      teamRole,
+      projectRole: teamRole === "leader" ? "Team Leader" : teamRole === "manager" ? "Project Manager" : "Team Member",
+      skills: targetMember?.skills || { frontend: 5, backend: 5, devops: 5, design: 5, ml: 5, testing: 5 },
+      profileSkills: Array.isArray(memberUser?.skills) ? memberUser.skills : [],
+      verifiedSkills,
+      isOwner: Boolean(isOwner),
+    });
+  } catch (e) {
+    console.error("[GET /teams/:teamId/members/:userId/profile] error:", e);
+    res.status(500).json({ error: e.message || "Failed to load member profile." });
+  }
+});
+
 // ── DELETE /api/teams/:teamId/members/:userId ─────────────────────────────────
-// Remove a member; unassign any tasks they held.
+// FIX 3: Authorized leader-only teammate removal with audit record,
+// notifications, and task unassignment.
 router.delete("/teams/:teamId/members/:userId", requireAuth, async (req, res) => {
   try {
     const { teamId, userId } = req.params;
@@ -1505,48 +1542,110 @@ router.delete("/teams/:teamId/members/:userId", requireAuth, async (req, res) =>
     if (authCheck.error) return res.status(authCheck.status).json({ error: authCheck.error });
 
     const team = authCheck.team;
-    const isOwner = team.ownerId && team.ownerId.toString() === (req.user?._id || req.user?.id || "").toString();
-    if (!isOwner) {
-      return res.status(403).json({ error: "Forbidden: Only the team owner can remove members." });
+    const authUser = await resolveAuthUser(req.user);
+    if (!authUser) return res.status(401).json({ error: "Unauthorized" });
+    const authUserIdStr = authUser._id.toString();
+
+    // 1. Authorization check: only workspace owner or leader/manager can remove members
+    const isOwner = team.ownerId && team.ownerId.toString() === authUserIdStr;
+    const callerMember = (team.members || []).find((m) => {
+      const mId = (m.userId?._id || m.userId)?.toString();
+      return mId && mId === authUserIdStr;
+    });
+    const callerRole = String(callerMember?.role || "").toLowerCase();
+    const isLeader = isOwner || ["owner", "leader", "team leader", "manager", "project manager"].includes(callerRole);
+
+    if (!isLeader) {
+      return res.status(403).json({ error: "Forbidden: Only authorized team leaders can remove members." });
     }
 
+    // 2. Prevent removing workspace owner
+    if (team.ownerId && team.ownerId.toString() === userId) {
+      return res.status(400).json({ error: "Cannot remove the workspace owner from the team." });
+    }
+
+    // 3. Find target member in workspace
+    const targetMember = (team.members || []).find((m) => {
+      const mId = (m.userId?._id || m.userId)?.toString();
+      return mId === userId;
+    });
+
+    if (!targetMember) {
+      return res.status(404).json({ error: "Team member not found in this workspace." });
+    }
+
+    const targetUserIdObj = targetMember.userId?._id || targetMember.userId;
+
+    // 4. Remove target member from team.members
     const updatedTeam = await Team.findByIdAndUpdate(
       teamId,
-      { $pull: { members: { $or: [{ userId }, { _id: userId }] } } },
+      { $pull: { members: { userId: targetUserIdObj } } },
       { new: true, lean: true }
     );
     if (!updatedTeam) return res.status(404).json({ error: "team_not_found" });
-    await Task.updateMany({ teamId, assignedTo: userId }, { $set: { assignedTo: null, assignmentCost: null } });
 
-    // Notify the removed member
+    // 5. Unassign any tasks held by the removed member
+    await Task.updateMany(
+      { teamId, assignedTo: userId },
+      { $set: { assignedTo: null, assignmentCost: null } }
+    );
+
+    const departureReason = String(reason || "Removed by team leader").trim();
+
+    // 6. Create TeamDeparture audit record
+    try {
+      await TeamDeparture.create({
+        userId: targetUserIdObj,
+        teamId: team._id,
+        reason: departureReason,
+        explanation: `Member removed from workspace "${team.name}" by leader ${authUser.name || authUser.email}`,
+        timestamp: new Date(),
+      });
+    } catch (depErr) {
+      console.warn("[DELETE member] TeamDeparture audit creation error:", depErr.message);
+    }
+
+    // 7. Notify the removed member
     try {
       await Notification.create({
-        userId: userId,
+        userId: targetUserIdObj,
         type: "member_left",
         title: "Removed from Team",
         message: `You have been removed from the team "${team.name}".${reason ? ` Reason: ${reason}` : ""}`,
-        data: { teamId, teamName: team.name },
+        data: {
+          teamId: team._id,
+          teamName: team.name,
+          role: targetMember.role || "member",
+          reason: departureReason,
+        },
         status: "unread",
       });
     } catch {
       // non-fatal
     }
 
+    // 8. Real-time events
     const io = req.app.get("io");
     if (io) {
-      io.to(`team:${teamId}`).emit("member:removed", { teamId, userId, team, reason });
+      io.to(`team:${teamId}`).emit("member:removed", {
+        teamId,
+        userId,
+        team: updatedTeam,
+        reason: departureReason,
+      });
       if (userId) {
         io.to(`user:${userId}`).emit("team:member_left", {
           teamId,
           userId,
-          name: "",
-          reason: String(reason || "removed by leader").trim(),
+          name: targetMember.name || "",
+          reason: departureReason,
         });
       }
     }
 
     res.json(updatedTeam);
   } catch (e) {
+    console.error("[DELETE member] error:", e);
     res.status(500).json({ error: e.message });
   }
 });
@@ -2416,14 +2515,16 @@ router.patch("/teams/:teamId/members/:userId/skills", requireAuth, async (req, r
     const targetMemberUserIdStr = (member.userId?._id || member.userId)?.toString() || "";
     const targetMemberName = (member.name || "").toLowerCase().trim();
 
-    // STRICT OWNERSHIP: Only the member themselves can edit their skills
-    const isSelf = (targetMemberUserIdStr && targetMemberUserIdStr === authUserIdStr) ||
-                   (userId && userId === authUserIdStr) ||
-                   (targetMemberName && userEmail && targetMemberName === userEmail) ||
-                   (targetMemberName && userName && targetMemberName === userName);
+    // STRICT OWNERSHIP (Fix 3): Only the member themselves can edit their skills
+    const isSelf = Boolean(
+      (targetMemberUserIdStr && authUserIdStr && targetMemberUserIdStr === authUserIdStr) ||
+      (userId && authUserIdStr && userId === authUserIdStr) ||
+      (!targetMemberUserIdStr && targetMemberName && userEmail && targetMemberName === userEmail) ||
+      (!targetMemberUserIdStr && targetMemberName && userName && targetMemberName === userName)
+    );
 
     if (!isSelf) {
-      return res.status(403).json({ error: "Forbidden: You can only edit your own skill ratings." });
+      return res.status(403).json({ error: "Forbidden: You can only edit your own skill ratings. Teammate skills are read-only." });
     }
 
     // Canonical skill map for robust parsing

@@ -26,6 +26,7 @@ interface JoinTeamModalProps {
   onAccept: (invitationId: string) => Promise<{ success?: boolean; teamId?: string; message?: string; error?: string }>;
   onReject: (invitationId: string) => Promise<{ success?: boolean; message?: string; error?: string }>;
   onTeamsRefetch?: () => void;
+  onBrowseTeams?: () => void;
 }
 
 export default function JoinTeamModal({
@@ -35,6 +36,7 @@ export default function JoinTeamModal({
   onAccept,
   onReject,
   onTeamsRefetch,
+  onBrowseTeams,
 }: JoinTeamModalProps) {
   const toast = useToast();
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -78,11 +80,24 @@ export default function JoinTeamModal({
   return (
     <ModalSheet visible={visible} onClose={onClose} title="Join a Team">
       {invitations.length === 0 ? (
-        <EmptyState
-          icon="mail-open-outline"
-          title="No pending invitations"
-          message={"Ask a teammate to invite you using your registered email address.\n\nThey can go to: Team → Members → Invite Teammate by Email"}
-        />
+        <View style={{ gap: spacing.md }}>
+          <EmptyState
+            icon="mail-open-outline"
+            title="No pending invitations"
+            message={"Ask a teammate to invite you using your registered email address.\n\nThey can go to: Team → Members → Invite Teammate by Email"}
+          />
+          {onBrowseTeams && (
+            <Button
+              title="Explore Discoverable Teams"
+              icon="compass-outline"
+              variant="secondary"
+              onPress={() => {
+                onClose();
+                onBrowseTeams();
+              }}
+            />
+          )}
+        </View>
       ) : (
         <>
           <Text style={s.sectionLabel}>PENDING INVITATIONS ({invitations.length})</Text>

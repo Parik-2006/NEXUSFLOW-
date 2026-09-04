@@ -12,6 +12,7 @@ import {
 import { useToast, useConfirm } from "@/components/feedback";
 import CreateTeamModal from "@/components/CreateTeamModal";
 import JoinTeamModal from "@/components/JoinTeamModal";
+import DiscoverTeamsModal from "@/components/discovery/DiscoverTeamsModal";
 import TeamMenu from "@/components/TeamMenu";
 import FloatingBackground from "@/components/FloatingBackground";
 import NotificationCenter from "@/components/NotificationCenter";
@@ -41,6 +42,7 @@ export default function Dashboard() {
   const insets = useSafeAreaInsets();
   const [showCreate, setShowCreate] = useState(false);
   const [showJoin, setShowJoin] = useState(false);
+  const [showDiscovery, setShowDiscovery] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   // ── Shared invitation state ─────────────────────────────────────────────────
@@ -172,6 +174,13 @@ export default function Dashboard() {
               onPress={() => setShowJoin(true)}
               style={{ flex: 1 }}
             />
+            <Button
+              title="Explore teams"
+              icon="compass-outline"
+              variant="secondary"
+              onPress={() => setShowDiscovery(true)}
+              style={{ flex: 1 }}
+            />
           </View>
 
           {/* Teams */}
@@ -271,6 +280,13 @@ export default function Dashboard() {
         onAccept={acceptInvitation}
         onReject={rejectInvitation}
         onTeamsRefetch={handleTeamsRefetch}
+        onBrowseTeams={() => setShowDiscovery(true)}
+      />
+
+      <DiscoverTeamsModal
+        visible={showDiscovery}
+        onClose={() => setShowDiscovery(false)}
+        onApplicationSubmitted={refetch}
       />
     </View>
   );

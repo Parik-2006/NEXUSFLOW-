@@ -12,6 +12,7 @@ import {
   Modal,
   ActivityIndicator,
   useWindowDimensions,
+  Platform,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/context/AuthContext";
@@ -19,6 +20,7 @@ import { useTeams, type Team } from "@/hooks/useTeams";
 import { useChat, type ChatMessage } from "@/hooks/useChat";
 import { Avatar, Badge, Button, Card, EmptyState } from "@/components/ui";
 import { useToast } from "@/components/feedback";
+import SafeMarkdownMessage from "@/components/chat/SafeMarkdownMessage";
 import { colors, spacing, radius, font } from "@/theme";
 import { API_BASE_URL } from "@/utils/api";
 
@@ -332,7 +334,7 @@ export default function ChatPanel({
                           {m.senderName || "Member"}
                         </Text>
                       )}
-                      <Text style={[s.messageText, isMe && s.messageTextMe]}>{m.message}</Text>
+                      <SafeMarkdownMessage content={m.message} isMe={isMe} />
                       <Text style={[s.messageTime, isMe && s.messageTimeMe]}>
                         {new Date(m.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                         {m.editedAt ? " (edited)" : ""}
@@ -346,13 +348,19 @@ export default function ChatPanel({
             {/* Bottom Message Input Bar */}
             <View style={s.inputBar}>
               <TextInput
-                style={s.textInput}
+                style={[s.textInput, { maxHeight: 110 }]}
                 value={text}
                 onChangeText={setText}
-                placeholder={isGlobal ? "Message Global Chat..." : `Message ${activeTeam?.name || "team"}...`}
+                placeholder={isGlobal ? "Message Global Chat... (Markdown supported)" : `Message ${activeTeam?.name || "team"}... (Markdown supported)`}
                 placeholderTextColor={colors.textFaint}
                 onSubmitEditing={handleSend}
-                multiline={false}
+                multiline
+                onKeyPress={(e: any) => {
+                  if (Platform.OS === "web" && e.nativeEvent.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault?.();
+                    handleSend();
+                  }
+                }}
               />
               <Pressable
                 onPress={handleSend}
@@ -563,7 +571,8 @@ const s = StyleSheet.create({
     marginBottom: 4,
   },
   bubble: {
-    maxWidth: "75%",
+    maxWidth: "85%",
+    minWidth: 70,
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.md,
     borderRadius: radius.lg,
