@@ -104,6 +104,23 @@ import { generateInsights }       from "../services/learningService.js";
 import { buildProjectBrainContext, serializeBrainForPrompt } from "../services/projectBrain.js";
 import { broadcastDecisionUpdate, broadcastResearchUpdate, broadcastArchitectureUpdate, broadcastGuidanceUpdate, broadcastRiskUpdate, broadcastHealthUpdate, broadcastRetrospectiveUpdate, broadcastOpinionUpdate } from "../socket/projectSyncHandlers.js";
 
+// V4 Waterfall Requirement & Plan Services
+import {
+  calculateRequirementScore,
+  sortRequirementsMergeSort,
+  extractRequirementsFromArtifacts,
+} from "../services/requirementService.js";
+
+// V4 Waterfall Phase Gates, Change Impact, Reactive Engine, Events
+import {
+  evaluateProjectPhaseGate,
+  advanceProjectPhase,
+  overrideProjectPhaseGate,
+} from "../services/phaseGateService.js";
+import { simulateChangeImpact } from "../services/changeImpactService.js";
+import { handleProjectMutation } from "../services/reactiveEngine.js";
+import { recordProjectEvent, getProjectEvents } from "../services/eventService.js";
+
 const router = Router();
 
 // ── Helper: verify project exists, check authorization, and return it ────────
@@ -198,6 +215,7 @@ router.post("/projects", requireAuth, async (req, res) => {
       teamId, title, description = "", originalPrompt = "",
       domain = "", projectType = "", academicContext = "",
       teamSize, sprintWeeks, context = {}, status = "ideation",
+      methodology = "WATERFALL",
     } = req.body ?? {};
 
     if (!teamId || !mongoose.isValidObjectId(teamId)) {
@@ -231,6 +249,11 @@ router.post("/projects", requireAuth, async (req, res) => {
       return res.status(403).json({ error: "Forbidden: You are not a member of this team." });
     }
 
+    const validMethodologies = ["WATERFALL", "SCRUM", "KANBAN", "HYBRID"];
+    const normalizedMethodology = typeof methodology === "string" && validMethodologies.includes(methodology.toUpperCase().trim())
+      ? methodology.toUpperCase().trim()
+      : "WATERFALL";
+
     // Create the project document
     const project = await Project.create({
       teamId,
@@ -240,6 +263,7 @@ router.post("/projects", requireAuth, async (req, res) => {
       domain:         String(domain).trim(),
       projectType:    String(projectType).trim(),
       academicContext: String(academicContext).trim(),
+      methodology:    normalizedMethodology,
       teamSize:       teamSize  ? Number(teamSize)  : null,
       sprintWeeks:    sprintWeeks ? Number(sprintWeeks) : null,
       status,
@@ -280,10 +304,20 @@ router.patch("/projects/:projectId", requireAuth, async (req, res) => {
     const ALLOWED = [
       "title", "description", "originalPrompt", "domain", "projectType",
       "academicContext", "teamSize", "sprintWeeks", "status", "currentPhase",
+      "methodology",
     ];
     const update = {};
     for (const k of ALLOWED) {
-      if (req.body[k] !== undefined) update[k] = req.body[k];
+      if (req.body[k] !== undefined) {
+        if (k === "methodology") {
+          const val = String(req.body[k]).toUpperCase().trim();
+          if (["WATERFALL", "SCRUM", "KANBAN", "HYBRID"].includes(val)) {
+            update[k] = val;
+          }
+        } else {
+          update[k] = req.body[k];
+        }
+      }
     }
     if (!Object.keys(update).length) {
       return res.status(400).json({ error: "No valid fields to update." });
@@ -400,6 +434,304 @@ router.patch("/projects/:projectId/context", requireAuth, async (req, res) => {
       { new: true, lean: true }
     );
     res.json(updated);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// V4 WATERFALL PLAN & REQUIREMENTS WORKSPACE
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── GET /api/projects/:projectId/plan ─────────────────────────────────────────
+// Fetch project plan data: uploaded artifacts, structured requirements, and context.
+router.get("/projects/:projectId/plan", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const requirements = sortRequirementsMergeSort(project.requirements || []);
+    res.json({
+      success: true,
+      artifacts: project.artifacts || [],
+      requirements,
+      context: project.context || {},
+      goals: project.context?.goals || [],
+      constraints: project.context?.constraints || [],
+      deliverables: project.context?.expectedOutputs || [],
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/projects/:projectId/artifacts ──────────────────────────────────
+// Upload or save project artifact (persistent or temporary).
+router.post("/projects/:projectId/artifacts", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const { name, artifactType = "document", content = "", scope = "persistent", summary = "" } = req.body || {};
+    if (!name) return res.status(400).json({ error: "Artifact name is required" });
+
+    const newArtifact = {
+      name: String(name).trim(),
+      artifactType,
+      content: String(content || ""),
+      scope: scope === "temporary" ? "temporary" : "persistent",
+      fileSize: Buffer.byteLength(content || "", "utf8"),
+      summary: String(summary || ""),
+      uploadedAt: new Date(),
+    };
+
+    const updated = await Project.findByIdAndUpdate(
+      req.params.projectId,
+      { $push: { artifacts: newArtifact } },
+      { new: true, lean: true }
+    );
+
+    res.status(201).json({
+      success: true,
+      artifact: updated.artifacts[updated.artifacts.length - 1],
+      artifacts: updated.artifacts,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── DELETE /api/projects/:projectId/artifacts/:artifactId ────────────────────
+// Remove an uploaded artifact.
+router.delete("/projects/:projectId/artifacts/:artifactId", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const updated = await Project.findByIdAndUpdate(
+      req.params.projectId,
+      { $pull: { artifacts: { _id: req.params.artifactId } } },
+      { new: true, lean: true }
+    );
+
+    res.json({ success: true, artifacts: updated.artifacts || [] });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/projects/:projectId/plan/extract ───────────────────────────────
+// Extract draft requirements, goals, and deliverables via Project AI under $0 policy.
+// Does NOT silently commit; returns draft items for human review.
+router.post("/projects/:projectId/plan/extract", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const artifacts = project.artifacts || [];
+    const extracted = await extractRequirementsFromArtifacts({
+      artifacts,
+      projectTitle: project.title,
+      projectDescription: project.description || project.originalPrompt,
+      domain: project.domain || "General Software",
+    });
+
+    res.json({
+      success: true,
+      extracted,
+      message: "Draft plan extracted successfully. Review and approve before persisting.",
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/projects/:projectId/requirements ────────────────────────────────
+// Manually create or batch approve requirements.
+router.post("/projects/:projectId/requirements", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const {
+      reqId,
+      title,
+      description = "",
+      phase = "requirements",
+      businessValue = 7,
+      academicValue = 8,
+      criticality = 7,
+      teacherImportance = 8,
+      estimatedHours = 12,
+      requiredSkills = [],
+      dependencies = [],
+      acceptanceCriteria = [],
+      status = "draft",
+    } = req.body || {};
+
+    if (!title) return res.status(400).json({ error: "Requirement title is required" });
+
+    const scored = calculateRequirementScore({
+      academicValue,
+      teacherImportance,
+      criticality,
+      businessValue,
+      dependencies,
+    });
+
+    const nextId = reqId || `REQ-${String((project.requirements?.length || 0) + 1).padStart(3, "0")}`;
+
+    const newReq = {
+      reqId: nextId,
+      title: String(title).trim(),
+      description: String(description).trim(),
+      phase,
+      businessValue: Number(businessValue),
+      academicValue: Number(academicValue),
+      criticality: Number(criticality),
+      teacherImportance: Number(teacherImportance),
+      estimatedHours: Number(estimatedHours),
+      requiredSkills: Array.isArray(requiredSkills) ? requiredSkills : [],
+      dependencies: Array.isArray(dependencies) ? dependencies : [],
+      acceptanceCriteria: Array.isArray(acceptanceCriteria) ? acceptanceCriteria : [],
+      status,
+      priorityScore: scored.priorityScore,
+      scoreExplanation: scored.scoreExplanation,
+      createdAt: new Date(),
+    };
+
+    const updated = await Project.findByIdAndUpdate(
+      req.params.projectId,
+      { $push: { requirements: newReq } },
+      { new: true, lean: true }
+    );
+
+    res.status(201).json({
+      success: true,
+      requirement: updated.requirements[updated.requirements.length - 1],
+      requirements: sortRequirementsMergeSort(updated.requirements),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── PATCH /api/projects/:projectId/requirements/:reqId ───────────────────────
+// Update a requirement (triggers dynamic DAA priority recalculation).
+router.patch("/projects/:projectId/requirements/:reqId", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const existingIndex = (project.requirements || []).findIndex(
+      (r) => r.reqId === req.params.reqId || r._id?.toString() === req.params.reqId
+    );
+    if (existingIndex === -1) {
+      return res.status(404).json({ error: "Requirement not found" });
+    }
+
+    const current = project.requirements[existingIndex];
+    const merged = {
+      ...current,
+      ...req.body,
+    };
+
+    // Recalculate deterministic score
+    const scored = calculateRequirementScore(merged);
+    merged.priorityScore = scored.priorityScore;
+    merged.scoreExplanation = scored.scoreExplanation;
+
+    project.requirements[existingIndex] = merged;
+
+    const updated = await Project.findByIdAndUpdate(
+      req.params.projectId,
+      { $set: { requirements: project.requirements } },
+      { new: true, lean: true }
+    );
+
+    res.json({
+      success: true,
+      requirement: merged,
+      requirements: sortRequirementsMergeSort(updated.requirements),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── DELETE /api/projects/:projectId/requirements/:reqId ──────────────────────
+// Delete a requirement.
+router.delete("/projects/:projectId/requirements/:reqId", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const updated = await Project.findByIdAndUpdate(
+      req.params.projectId,
+      {
+        $pull: {
+          requirements: {
+            $or: [{ reqId: req.params.reqId }, { _id: req.params.reqId }],
+          },
+        },
+      },
+      { new: true, lean: true }
+    );
+
+    res.json({
+      success: true,
+      requirements: sortRequirementsMergeSort(updated.requirements || []),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/projects/:projectId/requirements/:reqId/convert-to-task ────────
+// Convert an approved requirement into an active Task with phase and Greedy priority.
+router.post("/projects/:projectId/requirements/:reqId/convert-to-task", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const reqItem = (project.requirements || []).find(
+      (r) => r.reqId === req.params.reqId || r._id?.toString() === req.params.reqId
+    );
+    if (!reqItem) return res.status(404).json({ error: "Requirement not found" });
+
+    // Map requirement attributes to Task
+    const urgency = Math.min(5, Math.max(1, Math.round(reqItem.criticality / 2)));
+    const impact = Math.min(5, Math.max(1, Math.round(reqItem.businessValue / 2)));
+
+    const task = await Task.create({
+      teamId: project.teamId,
+      projectId: project._id,
+      title: reqItem.title,
+      description: reqItem.description,
+      phase: reqItem.phase || "requirements",
+      requirementId: reqItem.reqId,
+      category: reqItem.phase || "Requirements",
+      urgency,
+      impact,
+      estimatedHours: reqItem.estimatedHours || 12,
+      businessValue: reqItem.businessValue || 7,
+      requiredSkills: reqItem.requiredSkills || [],
+      source: "manual",
+      status: "todo",
+      createdBy: req.user?._id || req.user?.id,
+    });
+
+    // Mark requirement as in_progress or approved
+    await Project.updateOne(
+      { _id: project._id, "requirements.reqId": reqItem.reqId },
+      { $set: { "requirements.$.status": "in_progress" } }
+    );
+
+    res.status(201).json({
+      success: true,
+      task,
+      message: `Requirement ${reqItem.reqId} converted into an active task.`,
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1801,6 +2133,137 @@ router.get("/projects/:projectId/brain", requireAuth, async (req, res) => {
     if (!brain) return res.status(404).json({ error: "project_not_found" });
     const serialized = serializeBrainForPrompt(brain);
     res.json({ brain, serialized });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// =============================================================================
+// NEXUSFLOW V4.0 — PROMPTS 14, 15, 17: PHASE GATES, CHANGE IMPACT, EVENTS
+// =============================================================================
+
+// GET /api/projects/:projectId/phase-gates — Evaluate current Waterfall phase gate
+router.get("/projects/:projectId/phase-gates", requireAuth, async (req, res) => {
+  const { projectId } = req.params;
+  const project = await findProject(projectId, res, req.user);
+  if (!project) return;
+  try {
+    const gate = await evaluateProjectPhaseGate(projectId);
+    res.json({ gate });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/projects/:projectId/phase-gates/advance — Advance to next phase
+router.post("/projects/:projectId/phase-gates/advance", requireAuth, async (req, res) => {
+  const { projectId } = req.params;
+  const project = await findProject(projectId, res, req.user);
+  if (!project) return;
+  try {
+    const result = await advanceProjectPhase({
+      projectId,
+      teamId: project.teamId,
+      userId: req.user.id,
+      userName: req.user.name,
+    });
+    // Trigger reactive engine invalidation
+    await handleProjectMutation({
+      projectId,
+      teamId: project.teamId,
+      actorId: req.user.id,
+      actorName: req.user.name,
+      mutationType: "PHASE_ADVANCED",
+      entityId: result.toPhase,
+      payload: result,
+      io: req.app?.get("io") || null,
+    });
+    res.json({ success: true, ...result });
+  } catch (e) {
+    res.status(e.statusCode || 500).json({ error: e.message, blockers: e.blockers || [] });
+  }
+});
+
+// POST /api/projects/:projectId/phase-gates/override — Leader override for blocked gate
+router.post("/projects/:projectId/phase-gates/override", requireAuth, async (req, res) => {
+  const { projectId } = req.params;
+  const project = await findProject(projectId, res, req.user);
+  if (!project) return;
+  const { phase, reason } = req.body;
+  try {
+    const result = await overrideProjectPhaseGate({
+      projectId,
+      teamId: project.teamId,
+      userId: req.user.id,
+      userName: req.user.name,
+      phase,
+      reason,
+    });
+    res.json({ success: true, ...result });
+  } catch (e) {
+    res.status(e.statusCode || 500).json({ error: e.message });
+  }
+});
+
+// POST /api/projects/:projectId/change-impact/simulate — Trace downstream impact
+router.post("/projects/:projectId/change-impact/simulate", requireAuth, async (req, res) => {
+  const { projectId } = req.params;
+  const project = await findProject(projectId, res, req.user);
+  if (!project) return;
+  const { changeType = "requirement_changed", entityId = "", payload = {} } = req.body;
+  try {
+    const impact = await simulateChangeImpact({
+      projectId,
+      changeType,
+      entityId,
+      payload,
+    });
+    res.json({ impact });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/projects/:projectId/events — Query project history & audit trail
+router.get("/projects/:projectId/events", requireAuth, async (req, res) => {
+  const { projectId } = req.params;
+  const project = await findProject(projectId, res, req.user);
+  if (!project) return;
+  const { limit, skip, eventType, entityType } = req.query;
+  try {
+    const result = await getProjectEvents(projectId, {
+      limit: limit ? parseInt(limit, 10) : 50,
+      skip: skip ? parseInt(skip, 10) : 0,
+      eventType,
+      entityType,
+    });
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/projects/:projectId/events — Record manual or external project event
+router.post("/projects/:projectId/events", requireAuth, async (req, res) => {
+  const { projectId } = req.params;
+  const project = await findProject(projectId, res, req.user);
+  if (!project) return;
+  const { eventType, entityType, entityId, title, description, metadata } = req.body;
+  try {
+    const event = await recordProjectEvent({
+      projectId,
+      teamId: project.teamId,
+      actorId: req.user.id,
+      actorName: req.user.name,
+      eventType: eventType || "USER_ACTION",
+      entityType: entityType || "project",
+      entityId: entityId || "",
+      title: title || "User Event",
+      description: description || "",
+      metadata: metadata || {},
+      source: "user",
+    });
+    res.json({ event });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

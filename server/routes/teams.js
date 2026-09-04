@@ -153,6 +153,10 @@ router.post("/teams", requireAuth, async (req, res) => {
       tasks = [],
       projectTitle = "",
       projectDescription = "",
+      domain = "General",
+      methodology = "WATERFALL",
+      deadline = null,
+      clientRequirements = "",
       logo = "",
       creatorImage = "",
       role = "leader",
@@ -220,6 +224,41 @@ router.post("/teams", requireAuth, async (req, res) => {
       members: [creator, ...extraMembers],
       aiGeneratedTasks: seeds,
     });
+
+    // ── NEXUSFLOW V4: Create & link central Project entity ────────────────────
+    const validMethodologies = ["WATERFALL", "SCRUM", "KANBAN", "HYBRID"];
+    const normalizedMethodology = typeof methodology === "string" && validMethodologies.includes(methodology.toUpperCase().trim())
+      ? methodology.toUpperCase().trim()
+      : "WATERFALL";
+
+    const parsedDeadline = deadline ? new Date(deadline) : null;
+    const finalDeadline = parsedDeadline && !isNaN(parsedDeadline.getTime()) ? parsedDeadline : null;
+
+    const project = await Project.create({
+      teamId: team._id,
+      title: String(projectTitle).trim() || team.name,
+      description: String(projectDescription).trim(),
+      domain: String(domain).trim() || "General",
+      methodology: normalizedMethodology,
+      context: {
+        problemStatement: String(projectDescription).trim(),
+        goals: clientRequirements ? [String(clientRequirements).trim()] : [],
+        constraints: finalDeadline ? [`Deadline: ${finalDeadline.toISOString().split("T")[0]}`] : [],
+      },
+    });
+
+    await Team.updateOne(
+      { _id: team._id },
+      {
+        $set: {
+          activeProjectId: project._id,
+          "discoverySettings.domain": String(domain).trim() || "General",
+          "discoverySettings.methodology": normalizedMethodology,
+          "discoverySettings.deadline": finalDeadline,
+          "discoverySettings.expectations": String(clientRequirements).trim(),
+        },
+      }
+    );
 
     // Create the initial AI/starter tasks (source = "ai") + wire phase deps.
     if (seeds.length) {

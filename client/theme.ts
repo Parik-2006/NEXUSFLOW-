@@ -59,6 +59,18 @@ export const colors = {
   boyer:       "#5F9090", // teal
 };
 
+// ── NEXUSFLOW V4: Waterfall Phase Tokens & Meta ──────────────────────────────
+export const WATERFALL_PHASE_META = {
+  requirements:   { label: "1. Requirements",   short: "Reqs",    color: "#4F46E5", bg: "#EEF2FF", border: "#C7D2FE" },
+  design:         { label: "2. System Design",  short: "Design",  color: "#7C3AED", bg: "#F5F3FF", border: "#DDD6FE" },
+  implementation: { label: "3. Implementation", short: "Build",   color: "#2563EB", bg: "#EFF6FF", border: "#BFDBFE" },
+  testing:        { label: "4. Verification",   short: "Testing", color: "#D97706", bg: "#FFFBEB", border: "#FDE68A" },
+  deployment:     { label: "5. Deployment",     short: "Deploy",  color: "#059669", bg: "#ECFDF5", border: "#A7F3D0" },
+  maintenance:    { label: "6. Maintenance",    short: "Review",  color: "#475569", bg: "#F8FAFC", border: "#E2E8F0" },
+} as const;
+
+export type WaterfallPhaseKey = keyof typeof WATERFALL_PHASE_META;
+
 // Priority tiers — consistent Critical=Red / High=Orange / Medium=Yellow /
 // Low=Green semantics across task cards, the graph, sprint, recommendations and
 // analytics. Muted/desaturated so they stay within the warm editorial system.

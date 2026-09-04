@@ -30,6 +30,8 @@ export type Team = {
   projectTitle?: string;
   projectDescription?: string;
   activeProjectId?: string;
+  deadline?: string;
+  methodology?: string;
   taskCount: number;
   doneCount: number;
   members?: TeamMember[];
@@ -65,6 +67,10 @@ export type NewTeamInput = {
   creatorImage?: string;
   projectTitle?: string;
   projectDescription?: string;
+  domain?: string;
+  methodology?: string;
+  deadline?: string;
+  clientRequirements?: string;
   role?: string;
   invitations?: { email: string; role?: string; skills?: any }[];
   members?: { name: string; userId?: string; email?: string; role?: string; skills?: Record<string, number> }[];

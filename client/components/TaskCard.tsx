@@ -133,6 +133,13 @@ export default function TaskCard({
           {!task.priorityLabel && <Text style={[styles.priorityScore, { color: tier.color }]}>{score}</Text>}
         </Pressable>
 
+        {task.requirementId ? (
+          <View style={[styles.tag, { backgroundColor: colors.primarySoft, borderColor: colors.primaryBorder }]}>
+            <Ionicons name="document-text-outline" size={10} color={colors.primary} />
+            <Text style={[styles.tagTxt, { color: colors.primary, fontWeight: "700" }]}>{task.requirementId}</Text>
+          </View>
+        ) : null}
+
         {showMeta && task.source ? (
           <View style={[styles.tag, task.source === "ai" ? styles.tagAi : styles.tagManual]}>
             <Ionicons name={task.source === "ai" ? "sparkles" : "create-outline"} size={10} color={task.source === "ai" ? colors.accentDark : colors.textMuted} />
@@ -151,6 +158,7 @@ export default function TaskCard({
 
       {showMeta ? (
         <View style={styles.metaRow}>
+          {task.phase ? <Meta icon="git-commit-outline" text={task.phase.toUpperCase()} color={colors.primary} /> : null}
           {task.category && task.category !== "General" ? <Meta icon="layers-outline" text={task.category} /> : null}
           {task.estimatedHours ? <Meta icon="time-outline" text={`${task.estimatedHours}h`} /> : null}
           {task.businessValue ? <Meta icon="trending-up-outline" text={`value ${task.businessValue}`} /> : null}

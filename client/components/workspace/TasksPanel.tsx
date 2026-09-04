@@ -24,10 +24,11 @@ import AiTaskAssistant from "@/components/AiTaskAssistant";
 import { searchTasks } from "@/utils/boyerMoore";
 import { SearchBar, Chip, FAB, EmptyState, Badge, Field, Button, Stepper, Skeleton } from "@/components/ui";
 import { ModalSheet, useToast, useConfirm } from "@/components/feedback";
-import { colors, spacing, radius, PRIORITY_META, PriorityKey, taskPriorityKey, deadlineMeta, deadlineScore, greedyBreakdown } from "@/theme";
+import { colors, spacing, radius, font, PRIORITY_META, PriorityKey, taskPriorityKey, deadlineMeta, deadlineScore, greedyBreakdown, WATERFALL_PHASE_META } from "@/theme";
 
-type TaskView = "all" | "priority" | "deadline" | "progress";
+type TaskView = "phases" | "all" | "priority" | "deadline" | "progress";
 const VIEWS: { key: TaskView; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+  { key: "phases", label: "Phases", icon: "git-commit" },
   { key: "all", label: "All Tasks", icon: "list" },
   { key: "priority", label: "Priority", icon: "flag" },
   { key: "deadline", label: "Deadline", icon: "calendar" },
@@ -41,12 +42,14 @@ type Draft = {
   urgency: number; impact: number; hours: number; value: number;
   startDate: string; dueDate: string; assignedTo: string | null;
   status: Task["status"]; reminderDate: string; reminderTime: string; category: string;
+  phase: string; requirementId: string;
 };
 const EMPTY_DRAFT: Draft = {
   title: "", description: "", priorityLabel: "medium",
   urgency: 3, impact: 3, hours: 4, value: 6,
   startDate: "", dueDate: "", assignedTo: null,
   status: "todo", reminderDate: "", reminderTime: "09:00", category: "",
+  phase: "requirements", requirementId: "",
 };
 
 const STATUS_ORDER: Task["status"][] = ["todo", "in_progress", "done"];
@@ -103,6 +106,8 @@ export default function TasksPanel({ teamId, onGenerateAI }: { teamId: string; o
       assignedTo: t.assignedTo ?? null,
       status: t.status, reminderDate: rp.date, reminderTime: rp.time,
       category: t.category ?? "",
+      phase: t.phase ?? "requirements",
+      requirementId: t.requirementId ?? "",
     });
     setShowForm(true);
   };
@@ -124,6 +129,8 @@ export default function TasksPanel({ teamId, onGenerateAI }: { teamId: string; o
       reminderDate: rp.date || d.reminderDate,
       reminderTime: rp.time || d.reminderTime,
       category: t.category ?? d.category,
+      phase: t.phase ?? d.phase,
+      requirementId: t.requirementId ?? d.requirementId,
     }));
   };
 
@@ -136,6 +143,9 @@ export default function TasksPanel({ teamId, onGenerateAI }: { teamId: string; o
         priorityLabel: draft.priorityLabel, estimatedHours: draft.hours, businessValue: draft.value,
         startDate: toIso(draft.startDate), dueDate: toIso(draft.dueDate), assignedTo: draft.assignedTo,
         status: draft.status, reminderAt: toReminderIso(draft.reminderDate, draft.reminderTime),
+        category: draft.category || undefined,
+        phase: draft.phase,
+        requirementId: draft.requirementId || undefined,
       };
       const { error } = await updateTask(editId, fields);
       setBusy(false);
@@ -149,6 +159,8 @@ export default function TasksPanel({ teamId, onGenerateAI }: { teamId: string; o
         status: draft.status, assignedTo: draft.assignedTo,
         reminderAt: toReminderIso(draft.reminderDate, draft.reminderTime),
         category: draft.category || undefined,
+        phase: draft.phase,
+        requirementId: draft.requirementId || undefined,
       });
       setBusy(false);
       if (error) return toast(error, "error");
@@ -234,6 +246,62 @@ export default function TasksPanel({ teamId, onGenerateAI }: { teamId: string; o
               }])} />
             </View>
           )}
+          {/* ── Waterfall Phases (V4 Methodology Engine) ── */}
+          {view === "phases" && (
+            <View style={{ gap: spacing.md }}>
+              <View style={s.algoNote}>
+                <Text style={s.algoNoteTxt}>Waterfall Phase Gates · Tasks grouped by sequential lifecycle gates & Greedy priority</Text>
+                <WhyButton onPress={() => setExplain([{
+                  algo: "topo",
+                  input: "6 sequential engineering phases: Requirements → Design → Implementation → Testing → Deployment → Maintenance",
+                  output: "Ordered phase stages with dynamic DAA priority ranking within each stage",
+                  reason: "Tasks are bound to their respective Waterfall phase. Within each phase, DAA Greedy scheduling orders execution by urgency × impact + dependency fan-in.",
+                }])} />
+              </View>
+
+              {Object.keys(WATERFALL_PHASE_META).map((pKey) => {
+                const pMeta = WATERFALL_PHASE_META[pKey as keyof typeof WATERFALL_PHASE_META];
+                const phaseTasks = visible.filter((t) => (t.phase || "requirements") === pKey);
+                const doneCount = phaseTasks.filter((t) => t.status === "done").length;
+                const totalCount = phaseTasks.length;
+                const pct = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
+
+                return (
+                  <View key={pKey} style={{ gap: spacing.xs, backgroundColor: colors.surface, padding: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border }}>
+                    <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.xs }}>
+                        <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: pMeta.color }} />
+                        <Text style={[font.h3, { color: pMeta.color }]}>{pMeta.label}</Text>
+                        <Badge label={`${doneCount}/${totalCount} Done`} color={pMeta.color} bg={pMeta.bg} />
+                      </View>
+                      <Text style={[font.caption, { color: colors.textFaint }]}>{pct}%</Text>
+                    </View>
+
+                    {/* Progress Track */}
+                    <View style={{ height: 4, backgroundColor: colors.surfaceAlt, borderRadius: 2, overflow: "hidden", marginVertical: 4 }}>
+                      <View style={{ height: "100%", width: `${pct}%`, backgroundColor: pMeta.color }} />
+                    </View>
+
+                    {totalCount === 0 ? (
+                      <Text style={[font.caption, { color: colors.textFaint, fontStyle: "italic", paddingVertical: 4 }]}>
+                        No tasks currently planned in this phase.
+                      </Text>
+                    ) : (
+                      <View style={{ gap: 6, marginTop: 4 }}>
+                        {phaseTasks.map((t) => (
+                          <View key={t._id} style={{ gap: 4 }}>
+                            {renderCard(t)}
+                            <GreedyBar task={t} />
+                          </View>
+                        ))}
+                      </View>
+                    )}
+                  </View>
+                );
+              })}
+            </View>
+          )}
+
           {view === "priority" && PRIORITY_ORDER.map((key) => {
             const group = visible.filter((t) => taskPriorityKey(t) === key);
             if (!group.length) return null;
@@ -310,6 +378,31 @@ export default function TasksPanel({ teamId, onGenerateAI }: { teamId: string; o
         <Field label="Title" placeholder="e.g. Build payment webhook" value={draft.title} onChangeText={(v) => setDraft((d) => ({ ...d, title: v }))} />
         {!editId && <AiTaskAssistant tasks={rawTasks} suggest={aiSuggest} onApply={applyAiTask} />}
         <Field label="Description" placeholder="What needs to happen and why." value={draft.description} onChangeText={(v) => setDraft((d) => ({ ...d, description: v }))} multiline />
+
+        <View style={{ gap: 8 }}>
+          <Text style={s.formLabel}>Waterfall Phase</Text>
+          <View style={s.chipRow}>
+            {Object.keys(WATERFALL_PHASE_META).map((pKey) => {
+              const pMeta = WATERFALL_PHASE_META[pKey as keyof typeof WATERFALL_PHASE_META];
+              return (
+                <Chip
+                  key={pKey}
+                  label={pMeta.label}
+                  color={pMeta.color}
+                  active={draft.phase === pKey}
+                  onPress={() => setDraft((d) => ({ ...d, phase: pKey }))}
+                />
+              );
+            })}
+          </View>
+        </View>
+
+        <Field
+          label="SRS Requirement Link (Optional)"
+          placeholder="e.g. REQ-001"
+          value={draft.requirementId}
+          onChangeText={(v) => setDraft((d) => ({ ...d, requirementId: v }))}
+        />
 
         <View style={{ gap: 8 }}>
           <Text style={s.formLabel}>Priority</Text>

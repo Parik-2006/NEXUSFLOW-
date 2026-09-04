@@ -176,6 +176,55 @@ const ProjectSchema = new mongoose.Schema(
     // e.g. "Final year project", "Hackathon", "Startup prototype", "Learning"
     academicContext: { type: String, default: "" },
 
+    // ── Methodology (V4 Methodology Engine) ──────────────────────────────────
+    // Controls workflow states, planning rules, DAA scheduling, and UI presentation
+    // Supported: WATERFALL, SCRUM, KANBAN, HYBRID, CLASSIC (NexusFlow Classic V3)
+    methodology: {
+      type:      String,
+      enum:      ["WATERFALL", "SCRUM", "KANBAN", "HYBRID", "CLASSIC", "NEXUSFLOW"],
+      default:   "WATERFALL",
+      uppercase: true,
+      index:     true,
+    },
+
+    // ── Waterfall Phase Gate Lifecycle (V4) ───────────────────────────────────
+    // Current sequential phase gate for Waterfall methodology
+    waterfallPhase: {
+      type:    String,
+      enum:    ["requirements", "design", "implementation", "testing", "deployment", "maintenance"],
+      default: "requirements",
+      index:   true,
+    },
+
+    // Derived intelligence cache version (for reactive invalidation)
+    derivedVersion: { type: Number, default: 1 },
+    lastCalculatedAt: { type: Date, default: Date.now },
+
+    // Phase gate overrides recorded by team leader
+    phaseGateOverrides: [
+      {
+        phase:          { type: String, required: true },
+        overriddenBy:   { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        overriddenAt:   { type: Date, default: Date.now },
+        reason:         { type: String, required: true },
+        previousStatus: { type: String, default: "BLOCKED" },
+      },
+    ],
+
+    // Phase gate transition & audit history
+    phaseGateHistory: [
+      {
+        action:       { type: String, required: true }, // "EVALUATED" | "APPROVED" | "OVERRIDDEN" | "ADVANCED"
+        fromPhase:    { type: String, required: true },
+        toPhase:      { type: String, default: null },
+        actorId:      { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+        actorName:    { type: String, default: "System" },
+        reason:       { type: String, default: "" },
+        snapshot:     { type: mongoose.Schema.Types.Mixed, default: null },
+        timestamp:    { type: Date, default: Date.now },
+      },
+    ],
+
     // ── Project Status & Phase ───────────────────────────────────────────────
     // Current lifecycle status of the project
     // Starts as "ideation", progresses to "active" when team starts tasks
@@ -225,6 +274,51 @@ const ProjectSchema = new mongoose.Schema(
         source:     { type: String, default: "conversation" },
         confidence: { type: Number, default: 1.0 },
         createdAt:  { type: Date, default: Date.now },
+      },
+    ],
+
+    // ── V4 Plan & Requirements Workspace ─────────────────────────────────────
+    // Uploaded project artifacts (SRS, rubric, architecture, instructions)
+    artifacts: [
+      {
+        name:             { type: String, required: true },
+        artifactType:     { type: String, default: "document" }, // "srs", "teacher_instructions", "diagram", "spec", "notes", "other"
+        content:          { type: String, default: "" },
+        scope:            { type: String, enum: ["persistent", "temporary"], default: "persistent" },
+        fileSize:         { type: Number, default: 0 },
+        summary:          { type: String, default: "" },
+        uploadedAt:       { type: Date, default: Date.now },
+      },
+    ],
+
+    // Structured SRS Requirements extracted or manually created
+    requirements: [
+      {
+        reqId:            { type: String, default: "" }, // e.g. "REQ-001"
+        title:            { type: String, required: true },
+        description:      { type: String, default: "" },
+        phase:            {
+          type:    String,
+          enum:    ["requirements", "design", "implementation", "testing", "deployment", "maintenance"],
+          default: "requirements",
+        },
+        businessValue:    { type: Number, default: 7, min: 1, max: 10 },
+        academicValue:    { type: Number, default: 8, min: 1, max: 10 },
+        criticality:      { type: Number, default: 7, min: 1, max: 10 },
+        teacherImportance:{ type: Number, default: 8, min: 1, max: 10 },
+        estimatedHours:   { type: Number, default: 12, min: 1 },
+        requiredSkills:   { type: [String], default: [] },
+        dependencies:     { type: [String], default: [] },
+        acceptanceCriteria:{ type: [String], default: [] },
+        status:           {
+          type:    String,
+          enum:    ["draft", "approved", "in_progress", "verified", "rejected"],
+          default: "draft",
+        },
+        assignedTo:       { type: String, default: null },
+        priorityScore:    { type: Number, default: 0 },
+        scoreExplanation: { type: String, default: "" },
+        createdAt:        { type: Date, default: Date.now },
       },
     ],
 

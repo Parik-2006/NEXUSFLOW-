@@ -48,12 +48,15 @@ export type Task = {
   source?: "ai" | "manual";
   priorityLabel?: "critical" | "high" | "medium" | "low" | null;
   category?: string;
+  phase?: string;
+  requirementId?: string;
+  requiredSkills?: string[];
   reminderAt?: string | null;
 };
 
 export type TaskFields = Partial<
   Pick<Task, "title" | "description" | "progress" | "deadline" | "startDate" | "dueDate"
-    | "priorityLabel" | "estimatedHours" | "businessValue" | "assignedTo" | "category" | "reminderAt" | "status">
+    | "priorityLabel" | "estimatedHours" | "businessValue" | "assignedTo" | "category" | "phase" | "requirementId" | "requiredSkills" | "reminderAt" | "status">
 >;
 
 export type DependencyEdge = { from: string; to: string };
@@ -315,6 +318,8 @@ export function useTeamTasks(teamId: string) {
     dueDate?: string | null; priorityLabel?: Task["priorityLabel"];
     reminderAt?: string | null; status?: Task["status"]; assignedTo?: string | null;
     category?: string;
+    phase?: string;
+    requirementId?: string;
   };
   const createTask = useCallback(
     (title: string, opts?: CreateOpts) => {
@@ -331,6 +336,8 @@ export function useTeamTasks(teamId: string) {
             startDate: opts?.startDate, dueDate: opts?.dueDate, priorityLabel: opts?.priorityLabel,
             reminderAt: opts?.reminderAt, status: opts?.status, assignedTo: opts?.assignedTo,
             category: opts?.category,
+            phase: opts?.phase,
+            requirementId: opts?.requirementId,
           },
           (ack: { ok: boolean; task?: Task; error?: string }) =>
             resolve(ack?.ok ? {} : { error: ack?.error ?? "Failed to create task" })
