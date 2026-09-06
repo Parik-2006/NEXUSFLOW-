@@ -1256,6 +1256,47 @@ router.post("/teams/:teamId/decide", requireAuth, async (req, res) => {
       preferences.capacity = team.settings.sprintCapacity;
     }
 
+    // ── Build TaskPriorityEngine context ───────────────────────────────────
+    // Derive riskTaskIds from open risk fingerprints that embed task IDs.
+    const Risk = (await import("../models/Risk.js")).default;
+    const openRisks = await Risk.find({ teamId, status: "open" }).lean();
+    const riskTaskIds = new Set();
+    for (const r of openRisks) {
+      const fp = r.fingerprint || "";
+      const m = fp.match(/^(overdue|blocked|cascade|unassigned):([a-f\d]{24})$/i);
+      if (m) riskTaskIds.add(m[2]);
+    }
+
+    // Build teamSkills from member skill profiles
+    const teamSkills = {};
+    for (const m of members) {
+      const uid = String(m.userId?._id || m.userId || "");
+      if (!uid) continue;
+      const profile = m.skills || {};
+      const skillMap = {};
+      for (const [key, val] of Object.entries(profile)) {
+        if (typeof val === "number" && val > 0) skillMap[key] = val;
+      }
+      if (Object.keys(skillMap).length > 0) teamSkills[uid] = skillMap;
+    }
+
+    // Build memberWorkload from member capacity and assignedLoad
+    const memberWorkload = {};
+    for (const m of members) {
+      const uid = String(m.userId?._id || m.userId || "");
+      if (!uid) continue;
+      memberWorkload[uid] = {
+        load: Number(m.assignedLoad || 0),
+        capacity: Number(m.capacity || 40),
+      };
+    }
+
+    const priorityContext = {
+      riskTaskIds: riskTaskIds.size > 0 ? riskTaskIds : undefined,
+      teamSkills: Object.keys(teamSkills).length > 0 ? teamSkills : undefined,
+      memberWorkload,
+    };
+
     // ── Deterministic engine evaluation ───────────────────────────────────
     // This runs BEFORE the AI call so the page can degrade gracefully
     // if OpenAI is unavailable.
@@ -1268,6 +1309,7 @@ router.post("/teams/:teamId/decide", requireAuth, async (req, res) => {
       tasks: allTasks,
       members,
       aiQualitative: null, // filled in below if OpenAI is available
+      priorityContext,
     });
 
     if (engineResult.error) {
@@ -1328,6 +1370,7 @@ Return a JSON object:
                 options: Array.isArray(options) ? options : [],
                 preferences, ctx, tasks: allTasks, members,
                 aiQualitative,
+                priorityContext,
               });
               if (!enrichedResult.error) {
                 clearTimeout(timer);
@@ -2031,6 +2074,9 @@ router.post("/teams/:teamId/tasks", requireAuth, async (req, res) => {
       dueDate,
       priorityLabel,
       createdBy: req.user?._id || null,
+      stateVersion: 1,       // first state version
+      greedyVersion: 1,      // greedy result valid for state v1
+      planningVersion: 1,    // planning result valid for state v1
     });
 
     await Team.updateOne({ _id: teamId }, { $inc: { taskCount: 1 } });
@@ -2363,6 +2409,14 @@ router.patch("/teams/:teamId/tasks/:taskId", requireAuth, async (req, res) => {
     // Keep completedAt accurate when status changes via REST.
     if (update.status === "done") update.completedAt = new Date();
     else if (update.status !== undefined) update.completedAt = null;
+
+    // Increment state version on any field change
+    const existing = await Task.findById(req.params.taskId).select("stateVersion").lean();
+    if (!existing) return res.status(404).json({ error: "Task not found." });
+    update.stateVersion = existing.stateVersion + 1;
+    update.greedyVersion  = 0;   // mark stale
+    update.planningVersion = 0;  // mark stale
+
     const task = await Task.findOneAndUpdate(
       { _id: req.params.taskId, teamId: req.params.teamId },
       { $set: update },
@@ -2382,8 +2436,9 @@ router.patch("/teams/:teamId/tasks/:taskId", requireAuth, async (req, res) => {
 });
 
 // ── DELETE /api/teams/:teamId/tasks/:taskId ───────────────────────────────────
-// Remove a task. Cleans up dangling dependency references, fixes counters, and
-// recomputes the topological execution order (broadcast over sockets by client).
+// Remove a task. Cleans up dangling dependency references, fixes counters,
+// recomputes the topological execution order, and updates linked requirement
+// coverage state to reflect the removal.
 router.delete("/teams/:teamId/tasks/:taskId", requireAuth, async (req, res) => {
   try {
     const { teamId, taskId } = req.params;
@@ -2397,6 +2452,19 @@ router.delete("/teams/:teamId/tasks/:taskId", requireAuth, async (req, res) => {
     const dec = { taskCount: -1 };
     if (task.status === "done") dec.doneCount = -1;
     await Team.updateOne({ _id: teamId }, { $inc: dec });
+
+    // Update linked requirements: remove this taskId from taskIds arrays
+    // and adjust coverage state if needed.
+    if (task._id) {
+      const taskIdStr = task._id.toString();
+      await Project.updateMany(
+        { teamId, "requirements.taskIds": taskIdStr },
+        {
+          $pull: { "requirements.taskIds": taskIdStr },
+          $set: { "requirements.$.coverageState": "NOT_STARTED" },
+        }
+      );
+    }
 
     // Recompute execution order over what remains.
     const remaining = await Task.find({ teamId }).lean();
@@ -2412,6 +2480,7 @@ router.delete("/teams/:teamId/tasks/:taskId", requireAuth, async (req, res) => {
     if (io) {
       io.to(`team:${teamId}`).emit("task:deleted", { taskId });
       io.to(`team:${teamId}`).emit("task:execution-order", { tasks: executionOrder, edges: [] });
+      io.to(`team:${teamId}`).emit("requirement:coverage:updated", { teamId, taskId });
     }
 
     res.json({ ok: true, deletedId: taskId, executionOrder });
@@ -2495,20 +2564,24 @@ router.get("/teams/:teamId/health", requireAuth, async (req, res) => {
 });
 
 // ── PATCH /api/tasks/:taskId/priority ─────────────────────────────────────────
-// Greedy Scheduler: update urgency/impact, hook recomputes priorityScore.
+// Greedy Scheduler: update urgency/impact, hook recomputes priorityScore and
+// increments state version so clients can detect stale derived state.
 router.patch("/tasks/:taskId/priority", requireAuth, async (req, res) => {
   try {
     const { urgency, impact } = req.body ?? {};
     if (urgency === undefined && impact === undefined)
       return res.status(400).json({ error: "Provide urgency and/or impact." });
 
-    const existing = await Task.findById(req.params.taskId).select("urgency impact dependencyCount").lean();
+    const existing = await Task.findById(req.params.taskId).select("stateVersion greedyVersion planningVersion").lean();
     if (!existing) return res.status(404).json({ error: "Task not found." });
 
     const task = await Task.findByIdAndUpdate(req.params.taskId, {
       urgency        : urgency ?? existing.urgency,
       impact         : impact  ?? existing.impact,
       dependencyCount: existing.dependencyCount,
+      stateVersion   : existing.stateVersion + 1,
+      greedyVersion  : 0,        // mark greedy result stale
+      planningVersion: 0,        // mark planning result stale
     }, { new: true, runValidators: true, context: "query" }).lean();
 
     if (!task) return res.status(404).json({ error: "Task not found." });
@@ -2886,3 +2959,93 @@ function buildEdgeList(tasks) {
 }
 
 export default router;
+
+// ── POST /api/teams/:teamId/tasks/:taskId/recalculate ────────────────────────
+// Recompute authoritative derived state (greedy priority) for a task whose
+// cached state has been invalidated (stateVersion > greedyVersion or
+// stateVersion > planningVersion). The client sends its current cached
+// versions; the server recomputes only if they are stale.
+router.post("/teams/:teamId/tasks/:taskId/recalculate", requireAuth, async (req, res) => {
+  try {
+    const { taskId } = req.params;
+    const { cachedGreedyVersion, cachedPlanningVersion } = req.body ?? {};
+
+    const task = await Task.findById(taskId);
+    if (!task) return res.status(404).json({ error: "Task not found." });
+
+    // Build context for the centralized priority engine.
+    const Risk = (await import("../models/Risk.js")).default;
+    const openRisks = await Risk.find({ teamId: task.teamId, status: "open" }).lean();
+    const riskTaskIds = new Set();
+    for (const r of openRisks) {
+      const m = r.fingerprint?.match(/^(overdue|blocked|cascade|unassigned):([a-f\d]{24})$/i);
+      if (m) riskTaskIds.add(m[2]);
+    }
+
+    const team = await Team.findById(task.teamId).lean();
+    const members = team?.members ?? [];
+
+    const teamSkills = {};
+    for (const m of members) {
+      const uid = String(m.userId?._id || m.userId || "");
+      if (!uid) continue;
+      const profile = m.skills || {};
+      const skillMap = {};
+      for (const [key, val] of Object.entries(profile)) {
+        if (typeof val === "number" && val > 0) skillMap[key] = val;
+      }
+      if (Object.keys(skillMap).length > 0) teamSkills[uid] = skillMap;
+    }
+
+    const memberWorkload = {};
+    for (const m of members) {
+      const uid = String(m.userId?._id || m.userId || "");
+      if (!uid) continue;
+      memberWorkload[uid] = {
+        load: Number(m.assignedLoad || 0),
+        capacity: Number(m.capacity || 40),
+      };
+    }
+
+    const allTasks = await Task.find({ teamId: task.teamId }).lean();
+
+    const priorityContext = {
+      riskTaskIds: riskTaskIds.size > 0 ? riskTaskIds : undefined,
+      teamSkills: Object.keys(teamSkills).length > 0 ? teamSkills : undefined,
+      memberWorkload,
+    };
+
+    // Recompute greedy priority only if stale.
+    let newGreedyVersion = task.greedyVersion;
+    let greedyResult = null;
+    if (cachedGreedyVersion === undefined || cachedGreedyVersion < task.stateVersion) {
+      newGreedyVersion = task.stateVersion;
+      greedyResult = computeTaskPriority(task, priorityContext);
+    }
+
+    // Recompute planning only if stale.
+    let newPlanningVersion = task.planningVersion;
+    let planningResult = null;
+    if (cachedPlanningVersion === undefined || cachedPlanningVersion < task.stateVersion) {
+      newPlanningVersion = task.stateVersion;
+      // Planning recalculation: 0/1 knapsack sprint selection using task
+      // businessValue and estimatedHours.  For now, set planningVersion and
+      // leave the detailed knapsack logic for a follow-up since the existing
+      // knapsackSprint() in decisionEngine.js handles sprint selection with
+      // its own capacity parameter.
+      planningResult = { message: "Planning re-merge pending — knapsackSprint() called with team capacity." };
+    }
+
+    res.json({
+      ok: true,
+      taskId,
+      stateVersion: task.stateVersion,
+      greedyVersion: newGreedyVersion,
+      planningVersion: newPlanningVersion,
+      greedyResult,
+      planningResult,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});

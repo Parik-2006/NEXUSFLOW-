@@ -19,6 +19,7 @@
 
 import Team from "../models/Team.js";
 import Task from "../models/Task.js";
+import { getPersistentContext } from "../services/projectMemoryContext.js";
 
 // Domain signal detection (mirrors keyword signals in projectDecomposer.js)
 const DOMAIN_SIGNALS = [
@@ -106,4 +107,24 @@ export async function buildCompactProjectContext(teamId) {
     // Raw tasks retained for Boyer-Moore dedup in the calling route
     _rawTasks:          allTasks,
   };
+}
+
+/**
+ * buildProjectMemoryContext(teamId)
+ * Attempts to load persistent memory context for the team's active project.
+ * Returns null if no project or memory context is available.
+ *
+ * @param {string} teamId - MongoDB ObjectId string
+ * @returns {Promise<object|null>} Memory context object or null
+ */
+export async function buildProjectMemoryContext(teamId) {
+  try {
+    const team = await Team.findById(teamId).lean();
+    if (!team || !team.activeProjectId) return null;
+
+    const memoryContext = await getPersistentContext(team.activeProjectId);
+    return memoryContext;
+  } catch {
+    return null;
+  }
 }

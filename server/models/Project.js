@@ -297,11 +297,26 @@ const ProjectSchema = new mongoose.Schema(
         reqId:            { type: String, default: "" }, // e.g. "REQ-001"
         title:            { type: String, required: true },
         description:      { type: String, default: "" },
+        source:           { type: String, enum: ["teacher", "faculty", "client", "team", "project"], default: "teacher" },
+        mandatory:        { type: Boolean, default: false },
+        priority:         { type: String, enum: ["critical", "high", "medium", "low"], default: "medium" },
         phase:            {
           type:    String,
           enum:    ["requirements", "design", "implementation", "testing", "deployment", "maintenance"],
           default: "requirements",
         },
+        // Coverage state tracking
+        coverageState:    {
+          type:    String,
+          enum:    ["NOT_STARTED", "PLANNED", "IN_PROGRESS", "IMPLEMENTED", "TESTED", "EVIDENCE_ATTACHED", "COMPLETED"],
+          default: "NOT_STARTED",
+        },
+        // Links to tasks (IDs only, not duplicating objects)
+        taskIds:          { type: [String], default: [] },
+        // Evidence: implementation, test, and artifact/deliverable links
+        implementationEvidence: { type: [String], default: [] }, // URLs or references to implementation artifacts
+        testEvidence:          { type: [String], default: [] }, // URLs or references to test artifacts
+        artifactEvidence:      { type: [String], default: [] }, // URLs or references to deliverable artifacts
         businessValue:    { type: Number, default: 7, min: 1, max: 10 },
         academicValue:    { type: Number, default: 8, min: 1, max: 10 },
         criticality:      { type: Number, default: 7, min: 1, max: 10 },

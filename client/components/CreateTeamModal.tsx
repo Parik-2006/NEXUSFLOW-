@@ -126,7 +126,7 @@ export const ROLE_CAPABILITIES: Record<
   string,
   {
     primarySkill: string;
-    requiredSkills: string[];
+    recommendedSkills: string[];
     title: string;
     description: string;
     whyQuiz: string;
@@ -134,21 +134,21 @@ export const ROLE_CAPABILITIES: Record<
 > = {
   leader: {
     primarySkill: "DevOps",
-    requiredSkills: ["DevOps", "Docker", "JavaScript", "Testing"],
+    recommendedSkills: ["DevOps", "Docker", "JavaScript", "Testing"],
     title: "Delivery & Architecture Capability",
     description: "Team Leaders drive project architecture, delivery velocity, and engineering unblocking.",
     whyQuiz: "NexusFlow connects team leaders to verified DevOps and delivery skills so algorithmic project decomposition and capacity scheduling can trust lead assignments.",
   },
   manager: {
     primarySkill: "Testing",
-    requiredSkills: ["Testing", "SQL", "Docker", "JavaScript"],
+    recommendedSkills: ["Testing", "SQL", "Docker", "JavaScript"],
     title: "Quality & Process Capability",
     description: "Project Managers coordinate sprint schedules, quality metrics, and stakeholder deliverables.",
     whyQuiz: "NexusFlow connects project managers to verified quality and testing skills to ensure reliable sprint scope planning.",
   },
   member: {
     primarySkill: "Frontend",
-    requiredSkills: ["Frontend", "JavaScript", "TypeScript", "React", "Node.js", "Python"],
+    recommendedSkills: ["Frontend", "JavaScript", "TypeScript", "React", "Node.js", "Python"],
     title: "Core Engineering Capability",
     description: "Team Members implement tasks and ship features across the software stack.",
     whyQuiz: "NexusFlow verifies engineering execution skills so Branch & Bound can assign tasks to members with verified competencies.",
@@ -586,7 +586,7 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
           {/* Role Capability Requirement & Skill Verification */}
           {ROLE_CAPABILITIES[role] && (() => {
             const cap = ROLE_CAPABILITIES[role];
-            const hasVerified = cap.requiredSkills.some(
+            const hasVerified = cap.recommendedSkills.some(
               (sk) => userVerifications.includes(sk.toLowerCase().trim()) || (user?.skills || []).some((s) => s.toLowerCase() === sk.toLowerCase())
             );
             return (
@@ -600,9 +600,9 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
                 </View>
 
                 <View style={s.capSkillsRow}>
-                  <Text style={s.capSkillsLabel}>Role-required capabilities:</Text>
+                  <Text style={s.capSkillsLabel}>Recommended capabilities:</Text>
                   <View style={s.capChipGrid}>
-                    {cap.requiredSkills.map((sk) => {
+                    {cap.recommendedSkills.map((sk) => {
                       const isVer = userVerifications.includes(sk.toLowerCase().trim()) || (user?.skills || []).some((s) => s.toLowerCase() === sk.toLowerCase());
                       return (
                         <Pressable
