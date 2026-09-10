@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import { computePriorityScore } from "../algorithms/greedyScheduler.js";
+import { computeTaskPriority } from "../algorithms/taskPriorityEngine.js";
 
 // ── Branch & Bound: skill demand profile ─────────────────────────────────────
 const SkillWeightsSchema = new mongoose.Schema(
@@ -55,6 +56,14 @@ const TaskSchema = new mongoose.Schema(
     urgency:         { type: Number, min: 1, max: 5, default: 1 },
     impact:          { type: Number, min: 1, max: 5, default: 1 },
     dependencyCount: { type: Number, min: 0, default: 0 },
+
+    // ── Derived state versioning (Fix 3) ──────────────────────────────────────
+    // StateVersion: increments on any task mutation. Clients use this to detect
+    // stale derived state (Greedy Result, Planning Result). Updating to n+1
+    // invalidates cached results; server recomputes on next read.
+    stateVersion:    { type: Number, default: 0, min: 0 },
+    greedyVersion:  { type: Number, default: 0, min: 0 },
+    planningVersion:{ type: Number, default: 0, min: 0 },
 
     // ── Greedy Scheduler output (auto-computed by pre-save hook) ─────────────
     priorityScore: { type: Number, min: 0, max: 100, default: 0, index: true },
@@ -127,5 +136,12 @@ TaskSchema.pre("findOneAndUpdate", function (next) {
   }
   next();
 });
+
+// ── Optional enrichment: compute full TaskPriorityEngine result ───────────────
+// Call from routes when team-level context (risks, skills, workload) is available.
+TaskSchema.statics.enrichPriority = function enrichPriority(taskDoc, context = {}) {
+  if (!taskDoc) return null;
+  return computeTaskPriority(taskDoc, context);
+};
 
 export default mongoose.model("Task", TaskSchema);

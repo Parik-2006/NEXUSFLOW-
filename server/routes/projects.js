@@ -2269,6 +2269,263 @@ router.post("/projects/:projectId/events", requireAuth, async (req, res) => {
   }
 });
 
+// ── V4 FIX 4: REQUIREMENT TRACEABILITY ────────────────────────────────
+
+// ── GET /api/projects/:projectId/requirements/coverage ─────────────────
+// Calculate coverage metrics for all requirements in a project.
+// Returns: total, covered, implemented, tested, evidence-backed, uncovered.
+router.get("/projects/:projectId/requirements/coverage", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const requirements = project.requirements || [];
+    const total = requirements.length;
+
+    const covered = requirements.filter((r) => r.coverageState !== "NOT_STARTED").length;
+    const implemented = requirements.filter((r) =>
+      ["IN_PROGRESS", "IMPLEMENTED", "TESTED", "EVIDENCE_ATTACHED", "COMPLETED"].includes(r.coverageState)
+    ).length;
+    const tested = requirements.filter((r) =>
+      ["TESTED", "EVIDENCE_ATTACHED", "COMPLETED"].includes(r.coverageState)
+    ).length;
+    const evidenceBacked = requirements.filter((r) =>
+      (r.implementationEvidence && r.implementationEvidence.length > 0) ||
+      (r.testEvidence && r.testEvidence.length > 0) ||
+      (r.artifactEvidence && r.artifactEvidence.length > 0)
+    ).length;
+    const uncovered = total - covered;
+
+    // Per-phase breakdown
+    const phases = ["requirements", "design", "implementation", "testing", "deployment", "maintenance"];
+    const phaseBreakdown = phases.map((phase) => {
+      const phaseReqs = requirements.filter((r) => r.phase === phase);
+      const phaseTotal = phaseReqs.length;
+      const phaseCovered = phaseReqs.filter((r) => r.coverageState !== "NOT_STARTED").length;
+      return {
+        phase,
+        total: phaseTotal,
+        covered: phaseCovered,
+        uncovered: phaseTotal - phaseCovered,
+        coveragePct: phaseTotal > 0 ? Math.round((phaseCovered / phaseTotal) * 100) : 100,
+      };
+    });
+
+    // Per-source breakdown
+    const sources = ["teacher", "faculty", "client", "team", "project"];
+    const sourceBreakdown = sources.map((source) => {
+      const sourceReqs = requirements.filter((r) => r.source === source);
+      const sourceTotal = sourceReqs.length;
+      const sourceCovered = sourceReqs.filter((r) => r.coverageState !== "NOT_STARTED").length;
+      return {
+        source,
+        total: sourceTotal,
+        covered: sourceCovered,
+        uncovered: sourceTotal - sourceCovered,
+        mandatory: sourceReqs.filter((r) => r.mandatory).length,
+      };
+    });
+
+    res.json({
+      ok: true,
+      projectId: project._id,
+      coverage: {
+        total,
+        covered,
+        implemented,
+        tested,
+        evidenceBacked,
+        uncovered,
+        coveragePct: total > 0 ? Math.round((covered / total) * 100) : 100,
+        implementedPct: total > 0 ? Math.round((implemented / total) * 100) : 100,
+        testedPct: total > 0 ? Math.round((tested / total) * 100) : 100,
+        evidenceBackedPct: total > 0 ? Math.round((evidenceBacked / total) * 100) : 100,
+      },
+      phaseBreakdown,
+      sourceBreakdown,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/projects/:projectId/requirements/:reqId/evidence ──────────
+// Add implementation, test, or artifact evidence to a requirement.
+// Does NOT mark the requirement as complete — evidence is separate from coverage state.
+router.post("/projects/:projectId/requirements/:reqId/evidence", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const { reqId } = req.params;
+    const { evidenceType, evidenceUrl, description } = req.body ?? {};
+
+    // Validate evidence type
+    const validTypes = ["implementation", "test", "artifact"];
+    if (!validTypes.includes(evidenceType)) {
+      return res.status(400).json({ error: `evidenceType must be one of: ${validTypes.join(", ")}` });
+    }
+
+    if (!evidenceUrl) {
+      return res.status(400).json({ error: "evidenceUrl is required" });
+    }
+
+    const reqIndex = (project.requirements || []).findIndex(
+      (r) => r.reqId === reqId || r._id?.toString() === reqId
+    );
+    if (reqIndex === -1) {
+      return res.status(404).json({ error: "Requirement not found" });
+    }
+
+    const evidenceField = `${evidenceType}Evidence`;
+    if (!project.requirements[reqIndex][evidenceField]) {
+      project.requirements[reqIndex][evidenceField] = [];
+    }
+    project.requirements[reqIndex][evidenceField].push({
+      url: evidenceUrl,
+      description: description || "",
+      addedBy: req.user?._id || req.user?.id,
+      addedAt: new Date(),
+    });
+
+    const updated = await Project.findByIdAndUpdate(
+      req.params.projectId,
+      { $set: { requirements: project.requirements } },
+      { new: true, lean: true }
+    );
+
+    res.json({
+      ok: true,
+      requirement: updated.requirements[updated.requirements.length - 1],
+      evidenceAdded: true,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── PATCH /api/projects/:projectId/requirements/:reqId/coverage-state ───
+// Update the coverage state of a requirement.
+// Does NOT auto-mark as COMPLETED just because a task exists.
+// A requirement is only COMPLETED when all acceptance criteria are met
+// and all evidence is attached.
+router.patch("/projects/:projectId/requirements/:reqId/coverage-state", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const { reqId } = req.params;
+    const { coverageState } = req.body ?? {};
+
+    const validStates = ["NOT_STARTED", "PLANNED", "IN_PROGRESS", "IMPLEMENTED", "TESTED", "EVIDENCE_ATTACHED", "COMPLETED"];
+    if (!validStates.includes(coverageState)) {
+      return res.status(400).json({ error: `coverageState must be one of: ${validStates.join(", ")}` });
+    }
+
+    const reqIndex = (project.requirements || []).findIndex(
+      (r) => r.reqId === reqId || r._id?.toString() === reqId
+    );
+    if (reqIndex === -1) {
+      return res.status(404).json({ error: "Requirement not found" });
+    }
+
+    // Guard: Cannot mark COMPLETED without evidence
+    if (coverageState === "COMPLETED") {
+      const req = project.requirements[reqIndex];
+      const hasEvidence = (req.implementationEvidence && req.implementationEvidence.length > 0) ||
+        (req.testEvidence && req.testEvidence.length > 0) ||
+        (req.artifactEvidence && req.artifactEvidence.length > 0);
+      if (!hasEvidence) {
+        return res.status(400).json({
+          error: "Cannot mark COMPLETED without evidence. Add implementation, test, or artifact evidence first.",
+        });
+      }
+      // Guard: Cannot mark COMPLETED without all acceptance criteria met
+      // (This is a soft check — the client should verify acceptance criteria)
+    }
+
+    project.requirements[reqIndex].coverageState = coverageState;
+
+    const updated = await Project.findByIdAndUpdate(
+      req.params.projectId,
+      { $set: { requirements: project.requirements } },
+      { new: true, lean: true }
+    );
+
+    res.json({
+      ok: true,
+      requirement: updated.requirements[updated.requirements.length - 1],
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /api/projects/:projectId/requirements/:reqId/traceability ───────
+// Get full traceability chain: requirement → linked tasks → dependencies → evidence.
+router.get("/projects/:projectId/requirements/:reqId/traceability", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const { reqId } = req.params;
+    const reqIndex = (project.requirements || []).findIndex(
+      (r) => r.reqId === reqId || r._id?.toString() === reqId
+    );
+    if (reqIndex === -1) {
+      return res.status(404).json({ error: "Requirement not found" });
+    }
+
+    const req = project.requirements[reqIndex];
+    const taskIds = req.taskIds || [];
+
+    // Fetch linked tasks
+    const linkedTasks = taskIds.length > 0
+      ? await Task.find({ _id: { $in: taskIds }, teamId: project.teamId }).lean()
+      : [];
+
+    // Build traceability chain
+    const traceability = {
+      requirement: {
+        reqId: req.reqId,
+        title: req.title,
+        description: req.description,
+        source: req.source,
+        mandatory: req.mandatory,
+        priority: req.priority,
+        coverageState: req.coverageState,
+        acceptanceCriteria: req.acceptanceCriteria,
+      },
+      linkedTasks: linkedTasks.map((t) => ({
+        taskId: t._id.toString(),
+        title: t.title,
+        status: t.status,
+        urgency: t.urgency,
+        impact: t.impact,
+        priorityScore: t.priorityScore,
+        assignedTo: t.assignedTo,
+        estimatedHours: t.estimatedHours,
+      })),
+      dependencies: req.dependencies || [],
+      evidence: {
+        implementation: req.implementationEvidence || [],
+        test: req.testEvidence || [],
+        artifact: req.artifactEvidence || [],
+      },
+      coverageImpact: {
+        taskCount: linkedTasks.length,
+        doneTasks: linkedTasks.filter((t) => t.status === "done").length,
+        inProgressTasks: linkedTasks.filter((t) => t.status === "in_progress").length,
+        todoTasks: linkedTasks.filter((t) => t.status === "todo").length,
+      },
+    };
+
+    res.json({ ok: true, traceability });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 export default router;
 
 

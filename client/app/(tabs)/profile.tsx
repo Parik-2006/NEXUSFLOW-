@@ -11,7 +11,18 @@ import FloatingBackground from "@/components/FloatingBackground";
 import { ModalSheet, useConfirm, useToast } from "@/components/feedback";
 import { colors, spacing, radius, font, layout, glass, shadow } from "@/theme";
 
-const SKILL_OPTIONS = ["Frontend", "Backend", "DevOps", "Design", "AI/ML", "Testing", "Product", "QA"];
+const SKILL_OPTIONS = [
+  "Frontend", "Backend", "Full Stack",
+  "JavaScript", "TypeScript", "React", "Node.js", "Python", "Java", "C++",
+  "SQL", "PostgreSQL", "MongoDB", "Database Design",
+  "Docker", "Kubernetes", "CI/CD", "AWS", "Azure",
+  "Testing", "Automation", "UI/UX",
+  "AI/ML", "Deep Learning", "Generative AI", "LLMs", "RAG", "AI Agents",
+  "Prompt Engineering", "LLMOps", "Context Engineering", "Multimodal AI", "Model Evaluation",
+  "Cyber Security", "Network Security", "Secure Coding", "Authentication", "Cryptography",
+  "Blockchain", "Web3", "Smart Contracts",
+  "Requirements Engineering", "Documentation",
+];
 const EXPERIENCE = ["Junior", "Mid-level", "Senior", "Lead", "Principal"];
 
 type ProfileDraft = {

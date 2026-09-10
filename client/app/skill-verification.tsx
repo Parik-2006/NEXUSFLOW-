@@ -9,9 +9,16 @@ import { API_BASE_URL } from "@/utils/api";
 import { colors, spacing, radius, font } from "@/theme";
 
 const SKILLS = [
-  "Frontend", "Backend", "JavaScript", "TypeScript", "Python", "Java",
-  "React", "Angular", "Vue", "Node.js", "SQL", "Docker", "Kubernetes",
-  "AWS", "Figma", "TensorFlow", "PyTorch", "DevOps", "Testing", "Design",
+  "Frontend", "Backend", "Full Stack",
+  "JavaScript", "TypeScript", "React", "Node.js", "Python", "Java", "C++",
+  "SQL", "PostgreSQL", "MongoDB", "Database Design",
+  "Docker", "Kubernetes", "CI/CD", "AWS", "Azure",
+  "Testing", "Automation", "UI/UX",
+  "AI/ML", "Deep Learning", "Generative AI", "LLMs", "RAG", "AI Agents",
+  "Prompt Engineering", "LLMOps", "Context Engineering", "Multimodal AI", "Model Evaluation",
+  "Cyber Security", "Network Security", "Secure Coding", "Authentication", "Cryptography",
+  "Blockchain", "Web3", "Smart Contracts",
+  "Requirements Engineering", "Documentation",
 ];
 
 type QuizQuestion = {

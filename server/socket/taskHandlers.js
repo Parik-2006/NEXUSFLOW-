@@ -100,6 +100,9 @@ export function registerTaskHandlers(io, socket) {
         ...(reminderAt      !== undefined ? { reminderAt } : {}),
         ...(assignedTo      !== undefined ? { assignedTo } : {}),
         ...(status === "done" ? { completedAt: new Date() } : {}),
+        stateVersion: 1,
+        greedyVersion: 1,
+        planningVersion: 1,
       });
 
       await Team.updateOne({ _id: teamId }, { $inc: { taskCount: 1 } });
@@ -155,11 +158,14 @@ export function registerTaskHandlers(io, socket) {
 
       const priorityChanging = urgency !== undefined || impact !== undefined;
       if (priorityChanging) {
-        const existing = await Task.findById(taskId).select("urgency impact dependencyCount").lean();
+        const existing = await Task.findById(taskId).select("stateVersion greedyVersion planningVersion").lean();
         if (!existing) return ack?.({ ok: false, error: "not_found" });
         updatePayload.urgency         = urgency ?? existing.urgency;
         updatePayload.impact          = impact  ?? existing.impact;
         updatePayload.dependencyCount = existing.dependencyCount;
+        updatePayload.stateVersion    = existing.stateVersion + 1;
+        updatePayload.greedyVersion   = 0;   // mark greedy result stale
+        updatePayload.planningVersion = 0;   // mark planning result stale
       }
 
       // Effective status transition (status may arrive top-level OR via fields).
