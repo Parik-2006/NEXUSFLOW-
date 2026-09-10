@@ -9,6 +9,8 @@ import { useAuth } from "@/context/AuthContext";
 import { Avatar, AvatarStack } from "@/components/ui";
 import NotificationCenter from "@/components/NotificationCenter";
 import FloatingBackground from "@/components/FloatingBackground";
+
+// Waterfall Panels
 import OverviewPanel from "@/components/workspace/OverviewPanel";
 import PlanPanel from "@/components/workspace/PlanPanel";
 import TasksPanel from "@/components/workspace/TasksPanel";
@@ -24,6 +26,16 @@ import GitHubPanel from "@/components/workspace/GitHubPanel";
 import RiskPanel from "@/components/workspace/RiskPanel";
 import RetroPanel from "@/components/workspace/RetroPanel";
 import TeamHealthPanel from "@/components/workspace/TeamHealthPanel";
+
+// Scrum Panels (Prompt 3 & 4)
+import ScrumOverviewPanel from "@/components/workspace/ScrumOverviewPanel";
+import ScrumPlanPanel from "@/components/workspace/ScrumPlanPanel";
+import ScrumTasksPanel from "@/components/workspace/ScrumTasksPanel";
+import ScrumTimelinePanel from "@/components/workspace/ScrumTimelinePanel";
+import ScrumTeamPanel from "@/components/workspace/ScrumTeamPanel";
+import ScrumInsightsPanel from "@/components/workspace/ScrumInsightsPanel";
+import ScrumRetroPanel from "@/components/workspace/ScrumRetroPanel";
+
 import MethodologyWipBanner from "@/components/MethodologyWipBanner";
 import { colors, spacing, radius, font } from "@/theme";
 
@@ -56,12 +68,26 @@ const PRIMARY_TABS: { key: TabKey; label: string; icon: keyof typeof Ionicons.gl
   { key: "chat",      label: "Chat",       icon: "chatbubbles",         color: colors.info },
 ];
 
-function normalizeTab(rawTab?: string): TabKey {
+const SCRUM_PRIMARY_TABS: { key: TabKey; label: string; icon: keyof typeof Ionicons.glyphMap; color: string }[] = [
+  { key: "overview",  label: "Overview",       icon: "rocket",              color: "#4F46E5" },
+  { key: "plan",      label: "Plan",           icon: "document-text",       color: "#6366F1" },
+  { key: "tasks",     label: "Tasks",          icon: "list",                color: colors.greedy },
+  { key: "timeline",  label: "Timeline",       icon: "calendar",            color: colors.topo },
+  { key: "team",      label: "Team",           icon: "people",              color: colors.branch },
+  { key: "insights",  label: "Insights",       icon: "analytics",           color: colors.merge },
+  { key: "retro",     label: "Retrospective",  icon: "refresh-circle",      color: "#059669" },
+  { key: "advisor",   label: "Project AI",     icon: "sparkles",            color: colors.accent },
+  { key: "chat",      label: "Chat",           icon: "chatbubbles",         color: colors.info },
+];
+
+function normalizeTab(rawTab?: string, isScrum: boolean = false): TabKey {
   if (!rawTab) return "overview";
-  if (rawTab === "sprint") return "timeline";
+  if (rawTab === "sprint") return isScrum ? "tasks" : "timeline";
   if (rawTab === "members") return "team";
+  if (rawTab === "retro" && isScrum) return "retro";
   if (["graph", "analytics", "health", "risks", "retro"].includes(rawTab)) return "insights";
   if (PRIMARY_TABS.some((t) => t.key === rawTab)) return rawTab as TabKey;
+  if (SCRUM_PRIMARY_TABS.some((t) => t.key === rawTab)) return rawTab as TabKey;
   return "overview";
 }
 
@@ -71,7 +97,12 @@ export default function Workspace() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { team, loading: teamLoading, notFound, refetch: refetchTeam } = useTeam(teamId);
-  const [active, setActive] = useState<TabKey>(normalizeTab(tab));
+
+  const methodology = team?.methodology || "WATERFALL";
+  const isWaterfall = methodology === "WATERFALL";
+  const isScrum = methodology === "SCRUM" || methodology === "Scrum";
+
+  const [active, setActive] = useState<TabKey>(normalizeTab(tab, isScrum));
 
   // If the team was deleted (server returns 404) bounce safely to the dashboard.
   useEffect(() => {
@@ -99,8 +130,7 @@ export default function Workspace() {
   const otherNames = otherMembers.map((m) => m.name || "Member");
   const otherImages = otherMembers.map((m) => m.avatar || null);
 
-  const methodology = team?.methodology || "WATERFALL";
-  const isWaterfall = methodology === "WATERFALL";
+  const currentTabs = isScrum ? SCRUM_PRIMARY_TABS : PRIMARY_TABS;
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -120,20 +150,20 @@ export default function Workspace() {
                 style={[
                   s.methodologyBadge,
                   {
-                    backgroundColor: (isWaterfall ? colors.primary : colors.warning) + "18",
-                    borderColor: (isWaterfall ? colors.primary : colors.warning) + "44",
+                    backgroundColor: (isWaterfall ? colors.primary : isScrum ? "#4F46E5" : colors.warning) + "18",
+                    borderColor: (isWaterfall ? colors.primary : isScrum ? "#4F46E5" : colors.warning) + "44",
                   },
                 ]}
               >
                 <Ionicons
-                  name={isWaterfall ? "git-network" : "construct"}
+                  name={isWaterfall ? "git-network" : isScrum ? "rocket-outline" : "construct"}
                   size={10}
-                  color={isWaterfall ? colors.primary : colors.warning}
+                  color={isWaterfall ? colors.primary : isScrum ? "#4F46E5" : colors.warning}
                 />
                 <Text
                   style={[
                     s.methodologyText,
-                    { color: isWaterfall ? colors.primary : colors.warning },
+                    { color: isWaterfall ? colors.primary : isScrum ? "#4F46E5" : colors.warning },
                   ]}
                 >
                   {methodology}
@@ -181,8 +211,8 @@ export default function Workspace() {
         </View>
       </View>
 
-      {/* Methodology WIP Banner for non-waterfall projects */}
-      {!isWaterfall && (
+      {/* Methodology WIP Banner for non-waterfall & non-scrum projects */}
+      {!isWaterfall && !isScrum && (
         <View style={{ paddingHorizontal: spacing.lg, paddingTop: spacing.sm }}>
           <MethodologyWipBanner methodology={methodology} />
         </View>
@@ -191,7 +221,7 @@ export default function Workspace() {
       {/* Tab bar */}
       <View style={s.tabBarWrap}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.tabBar}>
-          {PRIMARY_TABS.map((t) => {
+          {currentTabs.map((t) => {
             const on = active === t.key;
             return (
               <Pressable
@@ -216,22 +246,53 @@ export default function Workspace() {
       {/* Panel */}
       <View style={{ flex: 1 }}>
         {teamId && active === "overview" && (
-          <OverviewPanel teamId={teamId} onNavigate={(t) => setActive(normalizeTab(t))} />
+          isScrum ? (
+            <ScrumOverviewPanel teamId={teamId} onNavigate={(t) => setActive(normalizeTab(t, isScrum))} />
+          ) : (
+            <OverviewPanel teamId={teamId} onNavigate={(t) => setActive(normalizeTab(t, isScrum))} />
+          )
         )}
         {teamId && active === "plan" && (
-          <PlanPanel teamId={teamId} projectId={team?.activeProjectId || teamId} />
+          isScrum ? (
+            <ScrumPlanPanel teamId={teamId} projectId={team?.activeProjectId || teamId} />
+          ) : (
+            <PlanPanel teamId={teamId} projectId={team?.activeProjectId || teamId} />
+          )
         )}
         {teamId && active === "tasks" && (
-          <TasksPanel teamId={teamId} onGenerateAI={() => setActive("advisor")} />
+          isScrum ? (
+            <ScrumTasksPanel teamId={teamId} onNavigatePlan={() => setActive("plan")} />
+          ) : (
+            <TasksPanel teamId={teamId} onGenerateAI={() => setActive("advisor")} />
+          )
         )}
         {teamId && active === "timeline" && (
-          <WaterfallTimelinePanel teamId={teamId} />
+          isScrum ? (
+            <ScrumTimelinePanel teamId={teamId} />
+          ) : (
+            <WaterfallTimelinePanel teamId={teamId} />
+          )
         )}
         {teamId && active === "team" && (
-          <AssignmentBoard teamId={teamId} />
+          isScrum ? (
+            <ScrumTeamPanel teamId={teamId} />
+          ) : (
+            <AssignmentBoard teamId={teamId} />
+          )
         )}
         {teamId && active === "insights" && (
-          <WaterfallInsightsPanel teamId={teamId} projectId={team?.activeProjectId || teamId} />
+          isScrum ? (
+            <ScrumInsightsPanel teamId={teamId} />
+          ) : (
+            <WaterfallInsightsPanel teamId={teamId} projectId={team?.activeProjectId || teamId} />
+          )
+        )}
+        {teamId && active === "retro" && (
+          isScrum ? (
+            <ScrumRetroPanel teamId={teamId} />
+          ) : (
+            <RetroPanel teamId={teamId} projectId={team?.activeProjectId || teamId} />
+          )
         )}
         {teamId && active === "advisor" && (
           <ProjectAdvisorPanel teamId={teamId} />
@@ -241,14 +302,15 @@ export default function Workspace() {
         )}
 
         {/* Legacy aliases if directly opened */}
-        {teamId && active === "sprint" && <SprintPanel teamId={teamId} />}
+        {teamId && active === "sprint" && (
+          isScrum ? <ScrumTasksPanel teamId={teamId} /> : <SprintPanel teamId={teamId} />
+        )}
         {teamId && active === "members" && <AssignmentBoard teamId={teamId} />}
         {teamId && active === "graph" && <GraphPanel teamId={teamId} />}
         {teamId && active === "analytics" && <AnalyticsPanel teamId={teamId} />}
         {teamId && active === "health" && <TeamHealthPanel teamId={teamId} projectId={team?.activeProjectId || teamId} />}
         {teamId && active === "risks" && <RiskPanel teamId={teamId} projectId={team?.activeProjectId || teamId} />}
         {teamId && active === "github" && <GitHubPanel teamId={teamId} projectId={team?.activeProjectId || teamId} />}
-        {teamId && active === "retro" && <RetroPanel teamId={teamId} projectId={team?.activeProjectId || teamId} />}
       </View>
     </View>
   );

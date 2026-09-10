@@ -68,8 +68,8 @@ async function connectMongo() {
 async function runPureTests() {
   console.log("=== Pure Algorithm Tests ===\n");
 
-  // Test 1: MEMORY_CATEGORIES has 11 entries
-  assert(MEMORY_CATEGORIES.length === 11, `MEMORY_CATEGORIES has 11 entries (got ${MEMORY_CATEGORIES.length})`);
+  // Test 1: MEMORY_CATEGORIES has at least 11 entries (plus additive Scrum categories)
+  assert(MEMORY_CATEGORIES.length >= 11, `MEMORY_CATEGORIES has at least 11 entries (got ${MEMORY_CATEGORIES.length})`);
   assert(MEMORY_CATEGORIES.includes("DECISION"), "DECISION category exists");
   assert(MEMORY_CATEGORIES.includes("TEACHER_FEEDBACK"), "TEACHER_FEEDBACK category exists");
   assert(MEMORY_CATEGORIES.includes("REQUIREMENT"), "REQUIREMENT category exists");

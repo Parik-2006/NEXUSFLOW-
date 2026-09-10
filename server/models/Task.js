@@ -86,6 +86,54 @@ const TaskSchema = new mongoose.Schema(
     // Optional list of skill names a task requires. Used by the Risk
     // Intelligence engine to detect skill gaps. Migration-safe default.
     requiredSkills: { type: [String], default: [] },
+
+    // ── NEXUSFLOW V4 SCRUM: Sprint-Aware Task Fields ──────────────────────────
+    // All fields are optional with safe defaults for backward compatibility.
+    // Legacy tasks with no sprintId continue working exactly as before.
+
+    // Which Sprint this task belongs to (null = not in any sprint / backlog item)
+    sprintId: { type: mongoose.Schema.Types.ObjectId, ref: "Sprint", default: null, index: true },
+
+    // Parent story for story→subtask traceability
+    parentStoryId: { type: mongoose.Schema.Types.ObjectId, ref: "Task", default: null },
+
+    // Scrum-specific status (coexists with legacy `status` field for V3 compatibility)
+    // BACKLOG → SELECTED_FOR_SPRINT → TODO → IN_PROGRESS → IN_REVIEW → DONE
+    // Additional: BLOCKED, CARRIED_OVER, CANCELLED
+    scrumStatus: {
+      type:    String,
+      enum:    ["BACKLOG", "SELECTED_FOR_SPRINT", "TODO", "IN_PROGRESS", "IN_REVIEW", "DONE", "BLOCKED", "CARRIED_OVER", "CANCELLED", null],
+      default: null,
+    },
+
+    // User Story format: "As a [user], I want [goal], so that [benefit]"
+    userStory: { type: String, default: "" },
+
+    // Acceptance criteria for Definition of Done
+    acceptanceCriteria: { type: [String], default: [] },
+
+    // Actual hours spent (vs estimatedHours for estimation accuracy tracking)
+    actualHours: { type: Number, default: null, min: 0 },
+
+    // Blocked reason (when scrumStatus = BLOCKED)
+    blockedReason: { type: String, default: "" },
+
+    // Track carry-over history across sprints
+    carryOverHistory: [
+      {
+        fromSprintId: { type: mongoose.Schema.Types.ObjectId, ref: "Sprint" },
+        toSprintId:   { type: mongoose.Schema.Types.ObjectId, ref: "Sprint" },
+        reason:       { type: String, default: "incomplete" },
+        carriedAt:    { type: Date, default: Date.now },
+      },
+    ],
+
+    // Scrum-specific priority factors
+    technicalUncertainty: { type: Number, default: null, min: 1, max: 10 },
+    teacherImportance:    { type: Number, default: null, min: 1, max: 10 },
+    milestoneImportance:  { type: Number, default: null, min: 1, max: 10 },
+    expectedValue:        { type: Number, default: null, min: 1, max: 10 },
+    blockingPotential:    { type: Number, default: null, min: 0, max: 10 }, // how many tasks this blocks
   },
   { timestamps: true }
 );

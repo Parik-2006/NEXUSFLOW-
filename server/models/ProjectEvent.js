@@ -63,6 +63,12 @@ const ProjectEventSchema = new mongoose.Schema(
         "risk",
         "decision",
         "artifact",
+        // V4 SCRUM entity types
+        "sprint",
+        "backlog_item",
+        "sprint_review",
+        "sprint_retrospective",
+        "capacity",
       ],
       required: true,
     },
@@ -92,7 +98,7 @@ const ProjectEventSchema = new mongoose.Schema(
     },
     source: {
       type: String,
-      enum: ["user", "system", "reactive_engine", "daa_engine", "phase_gate_engine", "change_impact_engine"],
+      enum: ["user", "system", "reactive_engine", "daa_engine", "phase_gate_engine", "change_impact_engine", "scrum_engine", "sprint_planning", "sprint_review"],
       default: "system",
     },
     correlationId: {

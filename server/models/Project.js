@@ -200,6 +200,31 @@ const ProjectSchema = new mongoose.Schema(
     derivedVersion: { type: Number, default: 1 },
     lastCalculatedAt: { type: Date, default: Date.now },
 
+    // ── NEXUSFLOW V4 SCRUM: Sprint Configuration ──────────────────────────────
+    // All fields optional — only populated for SCRUM methodology projects.
+    currentSprintId: { type: mongoose.Schema.Types.ObjectId, ref: "Sprint", default: null },
+    scrumConfig: {
+      type: new mongoose.Schema(
+        {
+          sprintDuration:      { type: Number, default: 14, min: 1, max: 42 }, // days
+          defaultSprintLength: { type: Number, default: 14, min: 1, max: 42 },
+          preferredStartDay:   { type: String, enum: ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"], default: "monday" },
+          productOwner:        { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+          scrumMaster:         { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+          defaultCapacityPerMember: { type: Number, default: 30, min: 1 }, // hours per sprint
+          workingDaysPerWeek:  { type: Number, default: 5, min: 1, max: 7 },
+          definitionOfDone:    { type: [String], default: ["Code complete", "Tests passing", "Code reviewed", "Documentation updated"] },
+          estimationUnit:      { type: String, enum: ["hours", "story_points", "both"], default: "both" },
+          velocityHistory:     { type: [Number], default: [] }, // completed story points per sprint
+        },
+        { _id: false }
+      ),
+      default: null,
+    },
+    // ── Sprint history summary (denormalized for performance) ──────────────────
+    sprintCount:         { type: Number, default: 0, min: 0 },
+    completedSprintCount:{ type: Number, default: 0, min: 0 },
+
     // Phase gate overrides recorded by team leader
     phaseGateOverrides: [
       {
@@ -313,10 +338,10 @@ const ProjectSchema = new mongoose.Schema(
         },
         // Links to tasks (IDs only, not duplicating objects)
         taskIds:          { type: [String], default: [] },
-        // Evidence: implementation, test, and artifact/deliverable links
-        implementationEvidence: { type: [String], default: [] }, // URLs or references to implementation artifacts
-        testEvidence:          { type: [String], default: [] }, // URLs or references to test artifacts
-        artifactEvidence:      { type: [String], default: [] }, // URLs or references to deliverable artifacts
+        // Evidence: implementation, test, and artifact/deliverable links (supports string URLs or rich objects)
+        implementationEvidence: { type: [mongoose.Schema.Types.Mixed], default: [] },
+        testEvidence:          { type: [mongoose.Schema.Types.Mixed], default: [] },
+        artifactEvidence:      { type: [mongoose.Schema.Types.Mixed], default: [] },
         businessValue:    { type: Number, default: 7, min: 1, max: 10 },
         academicValue:    { type: Number, default: 8, min: 1, max: 10 },
         criticality:      { type: Number, default: 7, min: 1, max: 10 },

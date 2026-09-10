@@ -221,27 +221,28 @@ export const WATERFALL_CONFIG: MethodologyConfig = {
   },
 };
 
-// ── 2. SCRUM CONFIGURATION (WORK IN PROGRESS) ─────────────────────────────────
+// ── 2. SCRUM CONFIGURATION (ACTIVE & FULLY IMPLEMENTED) ───────────────────────
 export const SCRUM_CONFIG: MethodologyConfig = {
   id: "SCRUM",
   name: "Scrum",
-  tagline: "Time-boxed iterations, sprint backlog burndown, and team velocity",
-  status: "WIP",
+  tagline: "Time-boxed iterations, product backlog burndown, and team velocity",
+  status: "ACTIVE",
   primaryTabs: [
-    { key: "overview", label: "Sprint Overview", icon: "rocket", description: "Sprint goals, burndown summary, and daily standup" },
-    { key: "backlog", label: "Product Backlog", icon: "layers", description: "User stories, story points, and sprint candidate pool" },
-    { key: "sprint_board", label: "Sprint Board", icon: "grid", description: "Active sprint cards by To Do, In Progress, Review, Done" },
-    { key: "velocity", label: "Velocity & Burndown", icon: "trending-up", description: "Sprint burndown charts and story point throughput" },
-    { key: "team", label: "Scrum Team", icon: "people", description: "Scrum Master, Product Owner, Dev team capacity and load" },
-    { key: "insights", label: "Ceremonies & Retro", icon: "clipboard", description: "Sprint Retrospective, demo notes, and improvement items" },
-    { key: "advisor", label: "Scrum AI Copilot", icon: "sparkles", description: "Story point estimation assistant and backlog groomer" },
+    { key: "overview", label: "Overview", icon: "rocket", description: "Sprint goals, burndown summary, and daily standup" },
+    { key: "plan", label: "Plan", icon: "document-text", description: "Product Backlog, user stories, and DAA candidate scoring" },
+    { key: "tasks", label: "Tasks", icon: "list", description: "Sprint Backlog execution board with To Do, In Progress, Review, Done" },
+    { key: "timeline", label: "Timeline", icon: "calendar", description: "Sprint burndown charts, velocity trajectory, and release roadmap" },
+    { key: "team", label: "Team", icon: "people", description: "Scrum Master, Product Owner, Dev team capacity and load balance" },
+    { key: "insights", label: "Insights", icon: "analytics", description: "Scrum DAA health, cross-sprint dependencies, and risk radar" },
+    { key: "retro", label: "Retrospective", icon: "refresh-circle", description: "Current sprint retrospective, root causes, and learning loop" },
+    { key: "advisor", label: "Project AI", icon: "sparkles", description: "Scrum-aware copilot and decision intelligence" },
   ],
   workflowStates: [
-    { id: "backlog", label: "Product Backlog", order: 1, description: "Prioritized user stories" },
-    { id: "sprint_ready", label: "Sprint Ready", order: 2, description: "Estimated and groomed" },
-    { id: "in_progress", label: "In Sprint", order: 3, description: "Active development" },
-    { id: "in_review", label: "Code Review", order: 4, description: "Peer review & QA" },
-    { id: "done", label: "Done", order: 5, description: "Definition of Done satisfied" },
+    { id: "todo", label: "To Do", order: 1, description: "Selected for current Sprint" },
+    { id: "in_progress", label: "In Progress", order: 2, description: "Active development" },
+    { id: "in_review", label: "In Review", order: 3, description: "Peer review & acceptance criteria check" },
+    { id: "done", label: "Done", order: 4, description: "Definition of Done satisfied" },
+    { id: "blocked", label: "Blocked", order: 5, description: "Impeded by dependency or blocker" },
   ],
   planningRules: {
     sequentialPhases: false,
@@ -252,7 +253,7 @@ export const SCRUM_CONFIG: MethodologyConfig = {
   taskBehavior: {
     supportsWbs: false,
     requiresPhase: false,
-    priorityAlgorithm: "0/1 Knapsack Value-to-Effort Optimizer",
+    priorityAlgorithm: "Deterministic 13-Factor Scrum DAA Priority Engine",
     defaultGroupBy: "status",
   },
   dependencyBehavior: {
@@ -261,31 +262,28 @@ export const SCRUM_CONFIG: MethodologyConfig = {
     allowCrossPhaseDependencies: true,
   },
   scheduling: {
-    engineName: "0/1 Knapsack Dynamic Programming Sprint Planner",
+    engineName: "DAA Knapsack Capacity & Dynamic Velocity Engine",
     defaultView: "sprint",
-    supportsCriticalPath: false,
+    supportsCriticalPath: true,
     supportsMilestones: true,
   },
   healthMetrics: {
-    primaryMetricLabel: "Sprint Velocity & Commitment Ratio",
-    components: ["Burndown Adherence", "Story Point Completion", "Carryover Ratio"],
+    primaryMetricLabel: "Sprint Delivery & Commitment Health",
+    components: [
+      "Sprint Completion Probability",
+      "Capacity Load Balance",
+      "Blocked Dependency Ratio",
+      "Carry-over Slippage Risk",
+    ],
   },
   aiContext: {
-    systemRole: "Agile Scrum Master AI",
-    focusAreas: ["User Story Decomposition", "Story Point Estimation", "Sprint Goal Formulation"],
-  },
-  wipDetails: {
-    targetRelease: "NexusFlow V4.1",
-    headline: "Scrum Iterative Environment Under Construction",
-    description:
-      "NexusFlow V4 is establishing the complete Waterfall methodology first. The dedicated Scrum environment with sprint velocity tracking, burndown projections, and ceremony workflows is arriving in V4.1.",
-    previewFeatures: [
-      "Dynamic 2-week and 4-week Sprint Cadences",
-      "0/1 Knapsack Sprint Capacity Optimization",
-      "Realtime Burndown & Burnup Projections",
-      "Integrated Sprint Ceremonies & Backlog Refinement",
+    systemRole: "Agile Scrum Master & Backlog Copilot",
+    focusAreas: [
+      "User Story Definition (INVEST)",
+      "Story Point Estimation",
+      "Sprint Goal Formulation",
+      "Ceremony Facilitation & Blocker Removal",
     ],
-    recommendedMethodology: "WATERFALL",
   },
 };
 

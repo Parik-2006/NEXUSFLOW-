@@ -96,6 +96,13 @@ const TeamSchema = new mongoose.Schema(
     members:   { type: [TeamMemberSchema], default: [] },
     taskCount: { type: Number, default: 0 },
     doneCount: { type: Number, default: 0 },
+    // ── NEXUSFLOW 4.0: Methodology ───────────────────────────────────────────
+    methodology: {
+      type: String,
+      enum: ["WATERFALL", "SCRUM", "KANBAN", "HYBRID", "Agile/Scrum", "CLASSIC", "NEXUSFLOW"],
+      default: "WATERFALL",
+      index: true,
+    },
 
     // ── NEXUSFLOW 4.0: Discovery & Open Roles ─────────────────────────────────
     isDiscoverable:    { type: Boolean, default: false, index: true },

@@ -77,15 +77,22 @@ function buildDeterministicAnalysis(taskStats, memberContributions, sprintName) 
 /**
  * generateRetrospective({ projectId, teamId, sprintName, period })
  */
-export async function generateRetrospective({ projectId: id, teamId: givenTeamId, sprintName, period }) {
+export async function generateRetrospective({ projectId: id, teamId: givenTeamId, sprintName, period, sprintId = null, sprintNumber = null }) {
   const { project, team, projectId, teamId } = await resolveProjectAndTeam(id || givenTeamId);
 
-  // Build task filter for sprint period across both projectId and teamId
-  const taskFilter = {
-    $or: [{ projectId }, { teamId }],
-  };
-  if (period?.start && period?.end) {
-    taskFilter.createdAt = { $gte: new Date(period.start), $lte: new Date(period.end) };
+  // Build task filter — Sprint-scoped for Scrum, project/team-scoped otherwise
+  let taskFilter;
+  if (sprintId) {
+    // SCRUM: Filter by specific Sprint — CRITICAL for current-Sprint analysis
+    taskFilter = { sprintId };
+  } else {
+    // V3/Waterfall: Original behavior — filter by project/team
+    taskFilter = {
+      $or: [{ projectId }, { teamId }],
+    };
+    if (period?.start && period?.end) {
+      taskFilter.createdAt = { $gte: new Date(period.start), $lte: new Date(period.end) };
+    }
   }
   const tasks = await Task.find(taskFilter).lean();
 
@@ -159,6 +166,8 @@ Return ONLY valid JSON with this exact structure:
     projectId,
     teamId,
     sprintName: sprintName || `Sprint Retrospective #${Date.now()}`,
+    sprintId: sprintId || null,
+    sprintNumber: sprintNumber || null,
     period,
     taskStats,
     memberContributions,

@@ -112,6 +112,11 @@ router.get("/teams", requireAuth, async (req, res) => {
 
     const filter = conditions.length > 0 ? { $or: conditions } : { _id: null };
     const teams = await Team.find(filter).sort({ updatedAt: -1 }).lean();
+    for (const t of teams) {
+      if (!t.methodology) {
+        t.methodology = t.discoverySettings?.methodology || "WATERFALL";
+      }
+    }
     res.json(teams);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -126,13 +131,22 @@ router.get("/teams/:teamId", requireAuth, async (req, res) => {
     if (authCheck.error) return res.status(authCheck.status).json({ error: authCheck.error });
     const team = { ...authCheck.team };
 
-    // Dynamically resolve projectTitle from linked active Project if not explicitly populated
-    if (!team.projectTitle && team.activeProjectId) {
-      const proj = await Project.findById(team.activeProjectId).select("title").lean();
-      if (proj?.title) team.projectTitle = proj.title;
-    } else if (!team.projectTitle) {
-      const proj = await Project.findOne({ teamId: team._id }).sort({ updatedAt: -1 }).select("title").lean();
-      if (proj?.title) team.projectTitle = proj.title;
+    // Dynamically resolve projectTitle and methodology from linked active Project if not explicitly populated
+    if (team.activeProjectId) {
+      const proj = await Project.findById(team.activeProjectId).select("title methodology").lean();
+      if (proj?.title && !team.projectTitle) team.projectTitle = proj.title;
+      if (proj?.methodology && !team.methodology) team.methodology = proj.methodology;
+    } else {
+      const proj = await Project.findOne({ teamId: team._id }).sort({ updatedAt: -1 }).select("title methodology").lean();
+      if (proj?.title && !team.projectTitle) team.projectTitle = proj.title;
+      if (proj?.methodology && !team.methodology) team.methodology = proj.methodology;
+    }
+
+    if (!team.methodology && team.discoverySettings?.methodology) {
+      team.methodology = team.discoverySettings.methodology;
+    }
+    if (!team.methodology) {
+      team.methodology = "WATERFALL";
     }
 
     res.json(team);
@@ -215,21 +229,22 @@ router.post("/teams", requireAuth, async (req, res) => {
         priorityLabel: t.priorityLabel ?? null,
       }));
 
+    // ── NEXUSFLOW V4: Create & link central Project entity ────────────────────
+    const validMethodologies = ["WATERFALL", "SCRUM", "KANBAN", "HYBRID"];
+    const normalizedMethodology = typeof methodology === "string" && validMethodologies.includes(methodology.toUpperCase().trim())
+      ? methodology.toUpperCase().trim()
+      : "WATERFALL";
+
     const team = await Team.create({
       name: name.trim(),
       ownerId: creatorId,
       logo: typeof logo === "string" ? logo : "",
       projectTitle: String(projectTitle).trim(),
       projectDescription: String(projectDescription).trim(),
+      methodology: normalizedMethodology,
       members: [creator, ...extraMembers],
       aiGeneratedTasks: seeds,
     });
-
-    // ── NEXUSFLOW V4: Create & link central Project entity ────────────────────
-    const validMethodologies = ["WATERFALL", "SCRUM", "KANBAN", "HYBRID"];
-    const normalizedMethodology = typeof methodology === "string" && validMethodologies.includes(methodology.toUpperCase().trim())
-      ? methodology.toUpperCase().trim()
-      : "WATERFALL";
 
     const parsedDeadline = deadline ? new Date(deadline) : null;
     const finalDeadline = parsedDeadline && !isNaN(parsedDeadline.getTime()) ? parsedDeadline : null;

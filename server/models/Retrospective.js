@@ -35,6 +35,10 @@ const RetrospectiveSchema = new mongoose.Schema(
     projectId: { type: mongoose.Schema.Types.ObjectId, ref: "Project", required: true, index: true },
     teamId:    { type: mongoose.Schema.Types.ObjectId, ref: "Team",    required: true },
 
+    // ── V4 SCRUM: Sprint association for current-Sprint filtering ─────────────
+    sprintId:     { type: mongoose.Schema.Types.ObjectId, ref: "Sprint", default: null, index: true },
+    sprintNumber: { type: Number, default: null },
+
     sprintName: { type: String, required: true },
     period: {
       start: { type: Date },

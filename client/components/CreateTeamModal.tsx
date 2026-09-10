@@ -62,9 +62,8 @@ export const METHODOLOGY_OPTIONS: {
   {
     id: "SCRUM",
     name: "Scrum",
-    badge: "WIP",
-    tagline: "Sprints & burndown velocity",
-    wipNotice: "Scrum environment is under development (NexusFlow V4.1). Selecting Scrum will preview the WIP environment. Waterfall is recommended for active projects.",
+    badge: "ACTIVE",
+    tagline: "Sprints, backlog grooming & velocity",
   },
   {
     id: "KANBAN",
@@ -483,8 +482,23 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
               })}
             </View>
 
-            {/* Non-Waterfall WIP notice */}
-            {methodology !== "WATERFALL" && methodology !== "CLASSIC" && (
+            {/* Scrum Concept Explanation (Prompt 2) */}
+            {methodology === "SCRUM" && (
+              <View style={[s.wipCallout, { backgroundColor: "#eef2ff", borderColor: "#c7d2fe" }]}>
+                <Ionicons name="rocket-outline" size={16} color="#4338ca" />
+                <View style={{ flex: 1 }}>
+                  <Text style={[s.wipCalloutTitle, { color: "#3730a3" }]}>
+                    Scrum Agile Environment (Active)
+                  </Text>
+                  <Text style={[s.wipCalloutTxt, { color: "#4338ca" }]}>
+                    Scrum organizes work into short, fixed-length Sprints. The team selects valuable work from the Product Backlog, works toward a Sprint Goal, reviews the resulting increment, and improves its process through Retrospective.
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            {/* Non-Scrum/Waterfall WIP notice */}
+            {methodology !== "WATERFALL" && methodology !== "CLASSIC" && methodology !== "SCRUM" && (
               <View style={s.wipCallout}>
                 <Ionicons name="construct-outline" size={16} color="#b45309" />
                 <View style={{ flex: 1 }}>

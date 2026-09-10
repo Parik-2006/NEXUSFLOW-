@@ -200,7 +200,7 @@ async function runIntegrationTests() {
   {
     const project = new Project({
       title: "Test Project",
-      teamId: "test-team-id",
+      teamId: new mongoose.Types.ObjectId(),
       requirements: [{
         reqId: "REQ-001",
         title: "Teacher Requirement",
