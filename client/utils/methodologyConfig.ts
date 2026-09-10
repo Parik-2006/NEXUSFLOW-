@@ -287,20 +287,21 @@ export const SCRUM_CONFIG: MethodologyConfig = {
   },
 };
 
-// ── 3. KANBAN CONFIGURATION (WORK IN PROGRESS) ────────────────────────────────
+// ── 3. KANBAN CONFIGURATION (ACTIVE & FULLY IMPLEMENTED) ───────────────────────
 export const KANBAN_CONFIG: MethodologyConfig = {
   id: "KANBAN",
   name: "Kanban",
   tagline: "Continuous flow, explicit WIP limits, and cycle-time optimization",
-  status: "WIP",
+  status: "ACTIVE",
   primaryTabs: [
-    { key: "overview", label: "Flow Overview", icon: "pulse", description: "Lead time, cycle time, and throughput summary" },
-    { key: "board", label: "Kanban Board", icon: "grid", description: "Swimlanes, WIP-limited columns, and pull queues" },
-    { key: "cfd", label: "Cumulative Flow", icon: "analytics", description: "CFD diagram diagnosing bottlenecks and wait states" },
-    { key: "wip_limits", label: "WIP Policies", icon: "shield", description: "Column thresholds and bottleneck warnings" },
-    { key: "team", label: "Flow Team", icon: "people", description: "Member availability and pull capacity" },
-    { key: "insights", label: "Cycle Time Insights", icon: "speedometer", description: "Little's Law throughput analytics" },
-    { key: "advisor", label: "Kanban AI Advisor", icon: "sparkles", description: "Bottleneck identification and flow optimization" },
+    { key: "overview", label: "Overview", icon: "water", description: "Lead time, cycle time, and throughput summary" },
+    { key: "board", label: "Board", icon: "albums", description: "Swimlanes, WIP-limited columns, and pull queues" },
+    { key: "backlog", label: "Backlog", icon: "file-tray-full", description: "Replenishment, commitment point, and triage" },
+    { key: "flow", label: "Flow", icon: "analytics", description: "Cumulative flow diagrams, throughput, and CFD analytics" },
+    { key: "team", label: "Team", icon: "people", description: "Member availability and pull capacity" },
+    { key: "insights", label: "Insights", icon: "bulb", description: "Little's Law throughput analytics & bottleneck diagnostics" },
+    { key: "policies", label: "Policies", icon: "shield-checkmark", description: "Column thresholds, WIP limits, and workflow rules" },
+    { key: "advisor", label: "Project AI", icon: "sparkles", description: "Bottleneck identification and flow optimization" },
   ],
   workflowStates: [
     { id: "ready", label: "Ready to Pull", order: 1, description: "Prioritized work queue" },
@@ -339,19 +340,6 @@ export const KANBAN_CONFIG: MethodologyConfig = {
   aiContext: {
     systemRole: "Continuous Flow Optimization AI",
     focusAreas: ["Bottleneck Detection", "WIP Limit Calibration", "Queue Starvation Prevention"],
-  },
-  wipDetails: {
-    targetRelease: "NexusFlow V4.1",
-    headline: "Kanban Continuous Flow Environment Under Construction",
-    description:
-      "NexusFlow V4 is prioritizing the Waterfall engineering environment. The dedicated Kanban pull-based workspace with strict WIP limits and Cumulative Flow Diagrams is coming in V4.1.",
-    previewFeatures: [
-      "Configurable Per-Column WIP Limits",
-      "Interactive Cumulative Flow Diagram (CFD)",
-      "Little's Law Cycle Time & Lead Time Calculators",
-      "Automated Bottleneck Alerts & Flow Leveling",
-    ],
-    recommendedMethodology: "WATERFALL",
   },
 };
 

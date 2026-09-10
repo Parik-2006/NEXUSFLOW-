@@ -16,6 +16,7 @@ import projectRoutes from "./routes/projects.js";   // NEXUSFLOW 2.0 — Phase 1
 import githubRoutes  from "./routes/github.js";      // NEXUSFLOW 3.0 — Phase 11
 import discoveryRoutes from "./routes/discovery.js"; // NEXUSFLOW 4.0 — Open Team Discovery & Applications
 import scrumRoutes from "./routes/scrum.js";           // NEXUSFLOW 4.0 — Scrum Methodology Engine
+import kanbanRoutes from "./routes/kanban.js";         // NEXUSFLOW 4.0 — Kanban Continuous Flow Engine
 import { registerTaskHandlers } from "./socket/taskHandlers.js";
 import { registerAiOrchestrator } from "./socket/aiOrchestrator.js";
 import { registerProjectSyncHandlers } from "./socket/projectSyncHandlers.js"; // NEXUSFLOW 3.0 — Phase 10
@@ -233,6 +234,7 @@ app.use("/api", projectRoutes);   // NEXUSFLOW 2.0 — Phase 1 project routes
 app.use("/api", githubRoutes);    // NEXUSFLOW 3.0 — Phase 11 GitHub integration
 app.use("/api", discoveryRoutes); // NEXUSFLOW 4.0 — Discovery & Applications
 app.use("/api/scrum", requireAuth, scrumRoutes); // NEXUSFLOW 4.0 — Scrum Methodology
+app.use("/api/kanban", requireAuth, kanbanRoutes); // NEXUSFLOW 4.0 — Kanban Continuous Flow
 
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: [FRONTEND_URL, "http://localhost:8081", "http://localhost:19006"] } });

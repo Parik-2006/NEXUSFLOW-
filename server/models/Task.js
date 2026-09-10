@@ -134,6 +134,69 @@ const TaskSchema = new mongoose.Schema(
     milestoneImportance:  { type: Number, default: null, min: 1, max: 10 },
     expectedValue:        { type: Number, default: null, min: 1, max: 10 },
     blockingPotential:    { type: Number, default: null, min: 0, max: 10 }, // how many tasks this blocks
+
+    // ── NEXUSFLOW V4 KANBAN: Continuous Flow Work Item Fields ─────────────────
+    // Coexists with legacy and Scrum fields for full backward compatibility
+    kanbanStatus: {
+      type:    String,
+      enum:    ["BACKLOG", "READY", "IN_PROGRESS", "IN_REVIEW", "DONE", "BLOCKED", null],
+      default: null,
+      index:   true,
+    },
+    workflowColumn: {
+      type:    String,
+      default: "backlog",
+      index:   true,
+    },
+    classOfService: {
+      type:    String,
+      enum:    ["standard", "fixed_date", "expedite", "improvement"],
+      default: "standard",
+      index:   true,
+    },
+
+    // Precise timestamps for flow metrics (cycle time, lead time, aging)
+    readyAt:           { type: Date, default: null },
+    activeStartedAt:   { type: Date, default: null },
+    reviewStartedAt:   { type: Date, default: null },
+    doneAt:            { type: Date, default: null, index: true },
+    blockedAt:         { type: Date, default: null },
+
+    // Cumulative duration tracking in milliseconds
+    totalBlockedDurationMs: { type: Number, default: 0 },
+    totalActiveDurationMs:  { type: Number, default: 0 },
+    totalWaitingDurationMs: { type: Number, default: 0 },
+    totalReviewDurationMs:  { type: Number, default: 0 },
+
+    // Blocker lifecycle & intelligence
+    isBlocked: { type: Boolean, default: false, index: true },
+    blockers: [
+      {
+        blockerId:       { type: String, required: true },
+        title:           { type: String, required: true },
+        description:     { type: String, default: "" },
+        category:        { type: String, enum: ["technical", "dependency", "external", "review", "resource", "other"], default: "technical" },
+        severity:        { type: String, enum: ["low", "medium", "high", "critical"], default: "medium" },
+        status:          { type: String, enum: ["OPEN", "ACKNOWLEDGED", "IN_PROGRESS", "RESOLVED"], default: "OPEN" },
+        createdBy:       { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        createdByName:   { type: String, default: "Member" },
+        createdAt:       { type: Date, default: Date.now },
+        resolvedAt:      { type: Date, default: null },
+        resolutionNotes: { type: String, default: "" },
+      },
+    ],
+
+    // WIP Override record if pulled beyond limit
+    wipOverride: {
+      overriddenBy:     { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+      overriddenByName: { type: String, default: "" },
+      reason:           { type: String, default: "" },
+      timestamp:        { type: Date, default: null },
+    },
+
+    // Continuous delivery evidence and feedback
+    deliveryEvidence: { type: [String], default: [] },
+    teacherFeedback:  { type: String, default: "" },
   },
   { timestamps: true }
 );
@@ -141,6 +204,9 @@ const TaskSchema = new mongoose.Schema(
 // Compound indexes (existing — teamId-scoped, unchanged)
 TaskSchema.index({ teamId: 1, priorityScore: -1 }); // greedy sort by team
 TaskSchema.index({ teamId: 1, topoOrder: 1 });       // topo sort by team
+TaskSchema.index({ teamId: 1, kanbanStatus: 1 });
+TaskSchema.index({ projectId: 1, kanbanStatus: 1 });
+TaskSchema.index({ projectId: 1, workflowColumn: 1 });
 
 // NEXUSFLOW 2.0: project-scoped equivalents (for when projectId is present)
 // WHY NEEDED: Future endpoints like GET /api/projects/:projectId/tasks

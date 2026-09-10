@@ -225,6 +225,86 @@ const ProjectSchema = new mongoose.Schema(
     sprintCount:         { type: Number, default: 0, min: 0 },
     completedSprintCount:{ type: Number, default: 0, min: 0 },
 
+    // ── NEXUSFLOW V4 KANBAN: Continuous Flow Configuration ─────────────────────
+    // All fields optional — only populated for KANBAN methodology projects.
+    kanbanConfig: {
+      type: new mongoose.Schema(
+        {
+          workflowColumns: [
+            {
+              id:           { type: String, required: true },
+              name:         { type: String, required: true },
+              wipLimit:     { type: Number, default: 0, min: 0 }, // 0 = unlimited
+              isDoneColumn: { type: Boolean, default: false },
+              order:        { type: Number, default: 0 },
+            },
+          ],
+          wipPolicy: {
+            mode:               { type: String, enum: ["advisory", "hard"], default: "advisory" },
+            allowOverride:      { type: Boolean, default: true },
+            personalWipEnabled: { type: Boolean, default: false },
+            defaultPersonalWip: { type: Number, default: 3, min: 1 },
+          },
+          pullPolicies: {
+            requireDoR:           { type: Boolean, default: true },
+            allowPullWhenBlocked: { type: Boolean, default: false },
+          },
+          classesOfService: [
+            {
+              id:                { type: String, required: true },
+              name:              { type: String, required: true },
+              policy:            { type: String, default: "" },
+              expediteWipBypass: { type: Boolean, default: false },
+              priorityWeight:    { type: Number, default: 1.0 },
+            },
+          ],
+          definitionOfReady: {
+            type: [String],
+            default: [
+              "Clear objective & user story",
+              "Acceptance criteria defined",
+              "No unresolved blocker dependencies",
+              "Estimated effort or story points",
+            ],
+          },
+          definitionOfDone: {
+            type: [String],
+            default: [
+              "Code complete & reviewed",
+              "Automated tests pass",
+              "Acceptance criteria verified",
+              "Evidence recorded",
+            ],
+          },
+          serviceLevelExpectation: {
+            targetDays:           { type: Number, default: 4, min: 0.5 },
+            confidencePercentile: { type: Number, default: 85, min: 50, max: 99 },
+          },
+          agingThresholds: {
+            warningDays:  { type: Number, default: 3, min: 0.5 },
+            criticalDays: { type: Number, default: 6, min: 1 },
+          },
+          forecastSettings: {
+            sampleSize:     { type: Number, default: 20, min: 3 },
+            simulationRuns: { type: Number, default: 500, min: 50 },
+          },
+          wipOverridesHistory: [
+            {
+              taskId:           { type: mongoose.Schema.Types.ObjectId, ref: "Task" },
+              fromColumn:       { type: String, default: "" },
+              toColumn:         { type: String, default: "" },
+              overriddenBy:     { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+              overriddenByName: { type: String, default: "User" },
+              reason:           { type: String, required: true },
+              timestamp:        { type: Date, default: Date.now },
+            },
+          ],
+        },
+        { _id: false }
+      ),
+      default: null,
+    },
+
     // Phase gate overrides recorded by team leader
     phaseGateOverrides: [
       {

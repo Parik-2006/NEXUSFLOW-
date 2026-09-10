@@ -68,9 +68,8 @@ export const METHODOLOGY_OPTIONS: {
   {
     id: "KANBAN",
     name: "Kanban",
-    badge: "WIP",
+    badge: "ACTIVE",
     tagline: "Continuous flow & WIP limits",
-    wipNotice: "Kanban environment is under development (NexusFlow V4.1). Selecting Kanban will preview the WIP environment. Waterfall is recommended for active projects.",
   },
   {
     id: "HYBRID",
@@ -497,8 +496,23 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
               </View>
             )}
 
-            {/* Non-Scrum/Waterfall WIP notice */}
-            {methodology !== "WATERFALL" && methodology !== "CLASSIC" && methodology !== "SCRUM" && (
+            {/* Kanban Concept Explanation (Prompt 2) */}
+            {methodology === "KANBAN" && (
+              <View style={[s.wipCallout, { backgroundColor: "#f0fdfa", borderColor: "#99f6e4" }]}>
+                <Ionicons name="water-outline" size={16} color="#0d9488" />
+                <View style={{ flex: 1 }}>
+                  <Text style={[s.wipCalloutTitle, { color: "#0f766e" }]}>
+                    Kanban Continuous-Flow Environment (Active)
+                  </Text>
+                  <Text style={[s.wipCalloutTxt, { color: "#0d9488" }]}>
+                    Kanban optimizes value delivery through continuous pull, column WIP limits, Definition of Ready/Done, and empirical flow metrics. Work is pulled as capacity permits without mandatory fixed-duration sprints.
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            {/* Non-Scrum/Waterfall/Kanban WIP notice */}
+            {methodology !== "WATERFALL" && methodology !== "CLASSIC" && methodology !== "SCRUM" && methodology !== "KANBAN" && (
               <View style={s.wipCallout}>
                 <Ionicons name="construct-outline" size={16} color="#b45309" />
                 <View style={{ flex: 1 }}>
