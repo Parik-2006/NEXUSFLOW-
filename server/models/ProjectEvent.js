@@ -69,6 +69,12 @@ const ProjectEventSchema = new mongoose.Schema(
         "sprint_review",
         "sprint_retrospective",
         "capacity",
+        // V4 Prompts 6-10 entity types
+        "hybrid_config",
+        "methodology_recommendation",
+        "methodology_drift",
+        "simulation",
+        "digital_twin",
       ],
       required: true,
     },
@@ -98,7 +104,7 @@ const ProjectEventSchema = new mongoose.Schema(
     },
     source: {
       type: String,
-      enum: ["user", "system", "reactive_engine", "daa_engine", "phase_gate_engine", "change_impact_engine", "scrum_engine", "sprint_planning", "sprint_review"],
+      enum: ["user", "system", "reactive_engine", "daa_engine", "phase_gate_engine", "change_impact_engine", "scrum_engine", "sprint_planning", "sprint_review", "hybrid_engine", "methodology_advisor", "drift_engine", "simulation_engine", "digital_twin_engine"],
       default: "system",
     },
     correlationId: {

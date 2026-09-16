@@ -305,6 +305,39 @@ const ProjectSchema = new mongoose.Schema(
       default: null,
     },
 
+    // ── NEXUSFLOW V4 HYBRID: Multi-Methodology Configuration ──────────────────
+    // Only populated for HYBRID methodology projects.
+    // Defines which methodology controls each project concern.
+    hybridConfig: {
+      type: new mongoose.Schema(
+        {
+          planningMethodology:    { type: String, enum: ["WATERFALL", "SCRUM", "KANBAN"], default: "WATERFALL" },
+          executionMethodology:   { type: String, enum: ["WATERFALL", "SCRUM", "KANBAN"], default: "SCRUM" },
+          governanceMethodology:  { type: String, enum: ["WATERFALL", "SCRUM", "KANBAN"], default: "WATERFALL" },
+          backlogBehavior:        { type: String, enum: ["sprint_based", "continuous_flow", "phase_based"], default: "sprint_based" },
+          phaseBehavior:          { type: String, enum: ["sequential_gates", "iterative", "continuous", "none"], default: "sequential_gates" },
+          wipBehavior:            { type: String, enum: ["kanban_wip", "sprint_capacity", "phase_capacity", "none"], default: "sprint_capacity" },
+          reviewBehavior:         { type: String, enum: ["sprint_review", "phase_gate_review", "continuous_review", "none"], default: "sprint_review" },
+          deliveryBehavior:       { type: String, enum: ["incremental", "phase_delivery", "continuous", "big_bang"], default: "incremental" },
+          milestoneBehavior:      { type: String, enum: ["phase_milestones", "sprint_milestones", "flow_milestones", "none"], default: "phase_milestones" },
+          dependencyBehavior:     { type: String, enum: ["strict_sequential", "sprint_scoped", "flow_based", "flexible"], default: "flexible" },
+          // Tracks which combination template was chosen (or "custom")
+          templateName:           { type: String, default: "waterfall_planning_scrum_execution" },
+          validatedAt:            { type: Date, default: null },
+          configuredBy:           { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+        },
+        { _id: false }
+      ),
+      default: null,
+    },
+
+    // ── Methodology Advisor metadata ─────────────────────────────────────────
+    recommendedMethodology:  { type: String, default: null },
+    recommendationReasons:   { type: [String], default: [] },
+    recommendationScore:     { type: Number, default: null },
+    methodologySelectedAt:   { type: Date, default: null },
+    userOverrodeRecommendation: { type: Boolean, default: false },
+
     // Phase gate overrides recorded by team leader
     phaseGateOverrides: [
       {

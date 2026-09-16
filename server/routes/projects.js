@@ -2828,7 +2828,185 @@ router.get(
   }
 );
 
+// ─────────────────────────────────────────────────────────────────────────────
+// V4 PROMPT 7 — METHODOLOGY RECOMMENDATION
+// ─────────────────────────────────────────────────────────────────────────────
+
+import { generateRecommendation, recommendMethodology, selectMethodology } from "../services/methodologyAdvisor.js";
+
+// GET /api/projects/:projectId/methodology-recommendation
+router.get(
+  "/projects/:projectId/methodology-recommendation",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      // Pure deterministic recommendation — no DB mutation
+      const result = generateRecommendation(project, req.query);
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// POST /api/projects/:projectId/methodology-recommendation
+router.post(
+  "/projects/:projectId/methodology-recommendation",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const userId = (req.user?._id || req.user?.id)?.toString();
+      const result = await recommendMethodology(req.params.projectId, req.body, userId, req.user?.name);
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// POST /api/projects/:projectId/methodology-select
+router.post(
+  "/projects/:projectId/methodology-select",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const { methodology } = req.body;
+      if (!methodology) return res.status(400).json({ error: "methodology is required" });
+      const userId = (req.user?._id || req.user?.id)?.toString();
+      const result = await selectMethodology(req.params.projectId, methodology, userId, req.user?.name);
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// V4 PROMPT 8 — ADAPTIVE METHODOLOGY DRIFT
+// ─────────────────────────────────────────────────────────────────────────────
+
+import { analyzeMethodologyDrift } from "../services/methodologyDriftService.js";
+
+// GET /api/projects/:projectId/methodology-drift
+router.get(
+  "/projects/:projectId/methodology-drift",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const result = await analyzeMethodologyDrift(req.params.projectId);
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// POST /api/projects/:projectId/methodology-drift/analyze
+router.post(
+  "/projects/:projectId/methodology-drift/analyze",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const result = await analyzeMethodologyDrift(req.params.projectId);
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// V4 PROMPT 9 — WHAT-IF SIMULATION
+// ─────────────────────────────────────────────────────────────────────────────
+
+import { getSimulationBaseline, runSimulation } from "../services/simulationEngine.js";
+
+// GET /api/projects/:projectId/simulation/baseline
+router.get(
+  "/projects/:projectId/simulation/baseline",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const baseline = await getSimulationBaseline(req.params.projectId);
+      res.json(baseline);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// POST /api/projects/:projectId/simulation/run
+router.post(
+  "/projects/:projectId/simulation/run",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const params = {
+        capacityChange: Number(req.body.capacityChange) || 0,
+        timelineCompression: Number(req.body.timelineCompression) || 0,
+        scopeShock: Number(req.body.scopeShock) || 0,
+        scopeShockHoursPerTask: Number(req.body.scopeShockHoursPerTask) || 8,
+        includeMonteCarlo: req.body.includeMonteCarlo !== false,
+        monteCarloIterations: Number(req.body.monteCarloIterations) || 500,
+      };
+      const result = await runSimulation(req.params.projectId, params);
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// V4 PROMPT 10 — DIGITAL TWIN
+// ─────────────────────────────────────────────────────────────────────────────
+
+import { getDigitalTwinState, getDigitalTwinDelta } from "../services/digitalTwinService.js";
+
+// GET /api/projects/:projectId/digital-twin
+router.get(
+  "/projects/:projectId/digital-twin",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const state = await getDigitalTwinState(req.params.projectId);
+      res.json(state);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// GET /api/projects/:projectId/digital-twin/delta
+router.get(
+  "/projects/:projectId/digital-twin/delta",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const delta = await getDigitalTwinDelta(req.params.projectId);
+      res.json(delta);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
 export default router;
-
-
-
