@@ -3009,4 +3009,350 @@ router.get(
   }
 );
 
+// ─────────────────────────────────────────────────────────────────────────────
+// V4 PROMPT 11 — PROCESS MINING ENGINE
+// ─────────────────────────────────────────────────────────────────────────────
+
+import { analyzeProjectProcess } from "../services/processMiningEngine.js";
+
+// GET /api/projects/:projectId/process-mining
+router.get(
+  "/projects/:projectId/process-mining",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const result = await analyzeProjectProcess(req.params.projectId, req.query);
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// V4 PROMPT 12 — WORKFLOW CONFORMANCE ENGINE
+// ─────────────────────────────────────────────────────────────────────────────
+
+import { analyzeWorkflowConformance } from "../services/workflowConformanceEngine.js";
+
+// GET /api/projects/:projectId/workflow-conformance
+router.get(
+  "/projects/:projectId/workflow-conformance",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const result = await analyzeWorkflowConformance(req.params.projectId, req.query);
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// V4 PROMPT 13 — TEACHER REVIEW & FACULTY PORTAL
+// ─────────────────────────────────────────────────────────────────────────────
+
+import {
+  createTeacherReview,
+  addReviewComment,
+  updateReviewStatus,
+  getProjectTeacherReviews,
+  getFacultyAssignedProjects,
+  assignFacultyToProject,
+} from "../services/teacherReviewService.js";
+
+// GET /api/faculty/assigned-projects
+router.get(
+  "/faculty/assigned-projects",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const userId = (req.user?._id || req.user?.id)?.toString();
+      const projects = await getFacultyAssignedProjects(userId);
+      res.json({ projects });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// GET /api/projects/:projectId/teacher-reviews
+router.get(
+  "/projects/:projectId/teacher-reviews",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const userId = (req.user?._id || req.user?.id)?.toString();
+      const isFaculty = req.user?.role === "teacher" || req.user?.role === "faculty" ||
+        (project.assignedFacultyIds || []).some(id => id.toString() === userId);
+
+      const reviews = await getProjectTeacherReviews(req.params.projectId, isFaculty);
+      res.json({ reviews });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// POST /api/projects/:projectId/teacher-reviews
+router.post(
+  "/projects/:projectId/teacher-reviews",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const userId = (req.user?._id || req.user?.id)?.toString();
+      const review = await createTeacherReview({
+        projectId: req.params.projectId,
+        teamId: project.teamId,
+        teacherId: userId,
+        teacherName: req.user?.name || "Faculty",
+        targetType: req.body.targetType,
+        targetId: req.body.targetId,
+        targetTitle: req.body.targetTitle,
+        initialComment: req.body.initialComment,
+        isPrivateNote: req.body.isPrivateNote,
+      });
+      res.status(201).json(review);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// POST /api/projects/:projectId/teacher-reviews/:reviewId/comments
+router.post(
+  "/projects/:projectId/teacher-reviews/:reviewId/comments",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const userId = (req.user?._id || req.user?.id)?.toString();
+      const role = (req.user?.role === "teacher" || req.user?.role === "faculty") ? "teacher" : "student";
+      const updated = await addReviewComment({
+        reviewId: req.params.reviewId,
+        authorId: userId,
+        authorName: req.user?.name || "User",
+        authorRole: role,
+        text: req.body.text,
+        isPrivateNote: req.body.isPrivateNote,
+      });
+      res.json(updated);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// PATCH /api/projects/:projectId/teacher-reviews/:reviewId/status
+router.patch(
+  "/projects/:projectId/teacher-reviews/:reviewId/status",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const userId = (req.user?._id || req.user?.id)?.toString();
+      const updated = await updateReviewStatus({
+        reviewId: req.params.reviewId,
+        status: req.body.status,
+        actorId: userId,
+        actorName: req.user?.name || "User",
+        actorRole: req.user?.role || "user",
+      });
+      res.json(updated);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// V4 PROMPT 14 — ACADEMIC EVALUATION MODE
+// ─────────────────────────────────────────────────────────────────────────────
+
+import {
+  getAcademicEvaluation,
+  upsertAcademicRubric,
+  evaluateRubricCriterion,
+  submitAcademicEvaluation,
+} from "../services/academicEvaluationService.js";
+
+// GET /api/projects/:projectId/academic-evaluation
+router.get(
+  "/projects/:projectId/academic-evaluation",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const evaluation = await getAcademicEvaluation(req.params.projectId);
+      res.json(evaluation);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// POST /api/projects/:projectId/academic-evaluation/rubric
+router.post(
+  "/projects/:projectId/academic-evaluation/rubric",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const userId = (req.user?._id || req.user?.id)?.toString();
+      const rubric = await upsertAcademicRubric(req.params.projectId, req.body, userId, req.user?.name);
+      res.json(rubric);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// PATCH /api/projects/:projectId/academic-evaluation/criterion/:criterionId
+router.patch(
+  "/projects/:projectId/academic-evaluation/criterion/:criterionId",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const userId = (req.user?._id || req.user?.id)?.toString();
+      const crit = await evaluateRubricCriterion(
+        req.params.projectId,
+        req.params.criterionId,
+        req.body,
+        userId,
+        req.user?.name
+      );
+      res.json(crit);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// POST /api/projects/:projectId/academic-evaluation/evaluate
+router.post(
+  "/projects/:projectId/academic-evaluation/evaluate",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const userId = (req.user?._id || req.user?.id)?.toString();
+      const result = await submitAcademicEvaluation(
+        req.params.projectId,
+        req.body,
+        userId,
+        req.user?.name
+      );
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// V4 PROMPT 15 — FAIR CONTRIBUTION ANALYSIS
+// ─────────────────────────────────────────────────────────────────────────────
+
+import {
+  calculateProjectContribution,
+  getStudentContributionView,
+  createContributionDispute,
+  resolveContributionDispute,
+} from "../services/fairContributionService.js";
+
+// GET /api/projects/:projectId/contribution-analysis
+router.get(
+  "/projects/:projectId/contribution-analysis",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const result = await calculateProjectContribution(req.params.projectId, req.query);
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// GET /api/projects/:projectId/contribution-analysis/me
+router.get(
+  "/projects/:projectId/contribution-analysis/me",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const userId = (req.user?._id || req.user?.id)?.toString();
+      const result = await getStudentContributionView(req.params.projectId, userId);
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// POST /api/projects/:projectId/contribution-disputes
+router.post(
+  "/projects/:projectId/contribution-disputes",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const userId = (req.user?._id || req.user?.id)?.toString();
+      const dispute = await createContributionDispute({
+        projectId: req.params.projectId,
+        studentId: userId,
+        studentName: req.user?.name || "Student",
+        disputeCategory: req.body.disputeCategory,
+        description: req.body.description,
+        evidenceUrls: req.body.evidenceUrls,
+      });
+      res.status(201).json(dispute);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// PATCH /api/projects/:projectId/contribution-disputes/:disputeId
+router.patch(
+  "/projects/:projectId/contribution-disputes/:disputeId",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const userId = (req.user?._id || req.user?.id)?.toString();
+      const resolved = await resolveContributionDispute(
+        req.params.disputeId,
+        req.body,
+        userId,
+        req.user?.name || "Faculty"
+      );
+      res.json(resolved);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
 export default router;

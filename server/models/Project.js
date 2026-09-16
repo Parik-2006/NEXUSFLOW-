@@ -338,6 +338,9 @@ const ProjectSchema = new mongoose.Schema(
     methodologySelectedAt:   { type: Date, default: null },
     userOverrodeRecommendation: { type: Boolean, default: false },
 
+    // ── Academic Faculty / Teacher Assignment ────────────────────────────────
+    assignedFacultyIds: [{ type: mongoose.Schema.Types.ObjectId, ref: "User", index: true }],
+
     // Phase gate overrides recorded by team leader
     phaseGateOverrides: [
       {
