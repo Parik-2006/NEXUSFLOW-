@@ -167,6 +167,7 @@ const ProjectSchema = new mongoose.Schema(
     // e.g. "IoT", "Web Application", "Mobile App", "AI/ML System"
     // Drives which specialist advisors are activated in Phase 2+
     domain: { type: String, default: "" },
+    subdomain: { type: String, default: "" },
 
     // More specific project type (within the domain)
     // e.g. "Smart Agriculture", "E-Commerce", "Health Monitoring"

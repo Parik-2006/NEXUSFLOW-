@@ -3355,4 +3355,202 @@ router.patch(
   }
 );
 
+// ─────────────────────────────────────────────────────────────────────────────
+// V4 WORKSTREAMS 16–20 — PROCESS INTELLIGENCE & DOMAIN COPILOT
+// ─────────────────────────────────────────────────────────────────────────────
+
+import {
+  ingestAttachment,
+  getProjectTemporaryContexts,
+  promoteAttachmentToMemory,
+  deleteTemporaryContext,
+  buildAugmentedCopilotContext,
+} from "../services/copilotAttachmentService.js";
+import {
+  answerMultimodalQuery,
+  analyzeVisualArtifact,
+} from "../services/multimodalCopilotService.js";
+import {
+  evaluateDomainIntelligence,
+  setProjectDomain,
+  getDomainProfile,
+  CANONICAL_DOMAINS,
+} from "../services/domainIntelligenceService.js";
+import { resolveEnvironment } from "../services/domainMethodologyResolver.js";
+import { LOCAL_MODEL_REGISTRY } from "../services/aiProviderAbstraction.js";
+
+// POST /api/projects/:projectId/attachments
+router.post(
+  "/projects/:projectId/attachments",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const userId = (req.user?._id || req.user?.id)?.toString();
+      const { filename, mimeType, content, size } = req.body;
+      const attachment = await ingestAttachment({
+        projectId: req.params.projectId,
+        userId,
+        filename,
+        mimeType,
+        content,
+        size,
+      });
+      res.status(201).json(attachment);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// GET /api/projects/:projectId/temporary-contexts
+router.get(
+  "/projects/:projectId/temporary-contexts",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const userId = (req.user?._id || req.user?.id)?.toString();
+      const contexts = await getProjectTemporaryContexts(req.params.projectId, userId);
+      res.json({ contexts });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// DELETE /api/projects/:projectId/temporary-contexts/:contextId
+router.delete(
+  "/projects/:projectId/temporary-contexts/:contextId",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const userId = (req.user?._id || req.user?.id)?.toString();
+      const deleted = await deleteTemporaryContext(req.params.contextId, userId);
+      res.json(deleted);
+    } catch (e) {
+      res.status(403).json({ error: e.message });
+    }
+  }
+);
+
+// POST /api/projects/:projectId/temporary-contexts/:contextId/promote
+router.post(
+  "/projects/:projectId/temporary-contexts/:contextId/promote",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const userId = (req.user?._id || req.user?.id)?.toString();
+      const memory = await promoteAttachmentToMemory(
+        req.params.contextId,
+        userId,
+        req.body,
+        req.user?.name || "Team Member"
+      );
+      res.status(201).json(memory);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// POST /api/projects/:projectId/copilot/query
+router.post(
+  "/projects/:projectId/copilot/query",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const userId = (req.user?._id || req.user?.id)?.toString();
+      const answer = await answerMultimodalQuery({
+        projectId: req.params.projectId,
+        userId,
+        query: req.body.query,
+        attachmentIds: req.body.attachmentIds || [],
+      });
+      res.json(answer);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// GET /api/projects/:projectId/domain-intelligence
+router.get(
+  "/projects/:projectId/domain-intelligence",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const intelligence = await evaluateDomainIntelligence(req.params.projectId);
+      res.json(intelligence);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// PATCH /api/projects/:projectId/domain
+router.patch(
+  "/projects/:projectId/domain",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const updated = await setProjectDomain(req.params.projectId, req.body);
+      res.json(updated);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// GET /api/projects/:projectId/resolved-environment
+router.get(
+  "/projects/:projectId/resolved-environment",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const project = await findProject(req.params.projectId, res, req.user);
+      if (!project) return;
+      const resolved = resolveEnvironment({
+        domain: project.domain,
+        subdomain: project.subdomain,
+        methodology: project.methodology,
+        hybridConfig: project.hybridConfig,
+      });
+      res.json(resolved);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// GET /api/ai/local-models
+router.get(
+  "/ai/local-models",
+  requireAuth,
+  async (req, res) => {
+    try {
+      res.json({
+        models: LOCAL_MODEL_REGISTRY,
+        productionPolicy: "$0 Free Whitelist (Gemini -> Groq -> OpenRouter)",
+        localAiStatus: "RESEARCH_AND_INTEGRATION_FOUNDATION",
+      });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
 export default router;
+
