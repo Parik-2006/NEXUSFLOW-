@@ -232,7 +232,7 @@ async function runMasterTestSuite() {
       `Copilot generated project-aware greeting for "hi" (Provider: ${copilotGreeting.provider})`
     );
     assert(
-      copilotGreeting.provider === "gemini" || copilotGreeting.provider === "openrouter" || copilotGreeting.provider === "deterministic",
+      ["gemini", "groq", "openrouter", "deterministic"].includes(copilotGreeting.provider),
       `Copilot used verified $0 free tier provider: "${copilotGreeting.provider}"`
     );
 

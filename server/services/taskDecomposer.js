@@ -537,7 +537,9 @@ CRITICAL RULES:
 - Respect all accepted decisions (e.g. if MongoDB is accepted, do not generate PostgreSQL tasks).
 - Return ONLY the JSON object.`;
 
-      const userMessage = `Generate ${mode} tasks for "${context.title}". ${prompt ? `User instruction: ${prompt}` : ""}`;
+      const userMessage = mode === "subtasks" && focusedTask
+        ? `Break down this specific task into 3-5 concrete engineering subtasks: "${focusedTask.title}". Description: "${focusedTask.description || ""}". Each subtask must have a distinct actionable title.`
+        : `Generate ${mode} tasks for "${context.title}". ${prompt ? `User instruction: ${prompt}` : ""}`;
 
       const omniResult = await omniRouteGenerate({
         systemPrompt,
@@ -574,8 +576,13 @@ CRITICAL RULES:
     };
   }
 
-  // Persist to MongoDB
-  return persistGeneratedTasks(context.teamId, context.projectId, rawTasks, { user });
+  // Persist to MongoDB with full context options for idempotency & subtask wiring
+  return persistGeneratedTasks(context.teamId, context.projectId, rawTasks, {
+    user,
+    mode,
+    taskId,
+    focusedTaskId: context.focusedTaskId || taskId,
+  });
 }
 
 // ── 5. Duplicate Detection & Persistence Engine ───────────────────────────────
@@ -589,14 +596,92 @@ export function normalizeTaskTitle(title) {
     .trim();
 }
 
+/**
+ * Checks whether a proposed task is a duplicate of an existing task.
+ * Considers normalized exact match, substring containment, Boyer-Moore match,
+ * and domain token overlap within the same category.
+ */
+export function isDuplicateTask(proposedTask, existingTasks) {
+  const normProposed = normalizeTaskTitle(proposedTask.title);
+  if (!normProposed) return { isDup: true };
+
+  const stopWords = new Set([
+    "and", "the", "for", "with", "from", "into", "that", "this", "over",
+    "build", "create", "implement", "develop", "setup", "configure",
+    "design", "prepare", "conduct", "define", "write", "test", "verify"
+  ]);
+
+  const pTokens = new Set(
+    normProposed.split(/\s+/).filter((w) => w.length > 2 && !stopWords.has(w))
+  );
+
+  for (const eTask of existingTasks) {
+    const normExisting = normalizeTaskTitle(eTask.title);
+    if (normProposed === normExisting) {
+      return { isDup: true, existingId: eTask._id };
+    }
+
+    // Substring containment if sufficiently specific
+    if (normProposed.length > 12 && normExisting.length > 12) {
+      if (normProposed.includes(normExisting) || normExisting.includes(normProposed)) {
+        return { isDup: true, existingId: eTask._id };
+      }
+    }
+
+    // Boyer-Moore match
+    const bmMatches = boyerMooreSearch([eTask], proposedTask.title);
+    if (bmMatches.length > 0 && bmMatches[0].title.toLowerCase() === proposedTask.title.toLowerCase()) {
+      return { isDup: true, existingId: eTask._id };
+    }
+
+    // Category check
+    const pCat = (proposedTask.category || "General").toLowerCase();
+    const eCat = (eTask.category || "General").toLowerCase();
+    const sameCat = pCat === eCat || pCat === "general" || eCat === "general";
+
+    // Token overlap comparison
+    if (sameCat && pTokens.size > 0) {
+      const eTokens = new Set(
+        normExisting.split(/\s+/).filter((w) => w.length > 2 && !stopWords.has(w))
+      );
+      if (eTokens.size > 0) {
+        let common = 0;
+        for (const tok of pTokens) {
+          if (eTokens.has(tok)) common++;
+        }
+        const sim1 = common / pTokens.size;
+        const sim2 = common / eTokens.size;
+        // If >= 40% of domain keywords match in same category, it's the same logical task
+        if (sim1 >= 0.4 || sim2 >= 0.4 || (common >= 2 && pTokens.size <= 4)) {
+          return { isDup: true, existingId: eTask._id };
+        }
+      }
+    }
+  }
+
+  return { isDup: false, existingId: null };
+}
+
 export async function persistGeneratedTasks(teamId, projectId, proposedTasks, options = {}) {
   if (!teamId || !mongoose.isValidObjectId(teamId)) {
     throw new Error("Valid teamId is required for task persistence");
   }
 
-  const existingTasks = await Task.find({ teamId }).lean();
-  const existingNormalizedMap = new Map();
+  const query = projectId && mongoose.isValidObjectId(projectId)
+    ? { $or: [{ teamId }, { projectId }] }
+    : { teamId };
+  const existingTasks = await Task.find(query).lean();
 
+  const focusedId = options.focusedTaskId ? String(options.focusedTaskId) : null;
+  const isSubtasksMode = options.mode === "subtasks";
+  const isProjectReRun = options.mode === "project" && (!options.prompt || !options.prompt.trim()) && existingTasks.length >= 3;
+
+  // If decomposing subtasks, exclude the parent task from duplicate matching against child subtasks
+  const candidateExisting = isSubtasksMode && focusedId
+    ? existingTasks.filter((t) => String(t._id) !== focusedId)
+    : existingTasks;
+
+  const existingNormalizedMap = new Map();
   for (const t of existingTasks) {
     existingNormalizedMap.set(normalizeTaskTitle(t.title), t._id);
   }
@@ -606,19 +691,26 @@ export async function persistGeneratedTasks(teamId, projectId, proposedTasks, op
 
   for (const pTask of proposedTasks) {
     const norm = normalizeTaskTitle(pTask.title);
+    if (!norm) continue;
+
+    // If this is a repeated decomposition for the same project with already established backlog
+    if (isProjectReRun) {
+      duplicatesSkipped++;
+      continue;
+    }
+
     if (existingNormalizedMap.has(norm)) {
       duplicatesSkipped++;
       continue;
     }
 
-    // Check Boyer-Moore match against existing titles
-    const bmMatches = boyerMooreSearch(existingTasks, pTask.title);
-    if (bmMatches.length > 0 && bmMatches[0].title.toLowerCase() === pTask.title.toLowerCase()) {
+    const { isDup } = isDuplicateTask(pTask, candidateExisting);
+    if (isDup) {
       duplicatesSkipped++;
       continue;
     }
 
-    existingNormalizedMap.set(norm, null); // mark as reserved
+    existingNormalizedMap.set(norm, null); // mark as reserved in this batch
     tasksToCreate.push(pTask);
   }
 

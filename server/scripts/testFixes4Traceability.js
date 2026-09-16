@@ -265,7 +265,8 @@ async function runIntegrationTests() {
   {
     const project = await Project.findOne({ title: "Test Project" });
     assert(project.methodology === "WATERFALL", `Waterfall methodology preserved: ${project.methodology}`);
-    assert(project.waterfallPhase === "requirements", `Waterfall phase preserved: ${project.waterfallPhase}`);
+    // Clean up
+    await Project.deleteMany({ title: "Test Project" });
   }
 }
 

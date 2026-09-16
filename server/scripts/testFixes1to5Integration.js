@@ -526,6 +526,7 @@ async function main() {
     clientB.on("chat:global:new", (m) => globalRecv.push({ who: "B", m }));
     clientD.on("chat:global:new", (m) => globalRecv.push({ who: "D", m }));
 
+    const testChatStart = new Date(Date.now() - 500);
     const gpost = await fetchJson(`${SERVER_URL}/api/chat/global`, {
       method: "POST", body: JSON.stringify({ message: "Hello from Test User A (global)" }),
     }, tokens[0]);
@@ -583,7 +584,7 @@ async function main() {
     record("Authz: D send Alpha → 403", "PASS");
 
     // Unread
-    await User.updateOne({ _id: users[1]._id }, { $set: { "chatRead.global": new Date(0) } });
+    await User.updateOne({ _id: users[1]._id }, { $set: { "chatRead.global": testChatStart } });
     await User.updateOne({ _id: users[1]._id }, { $set: { [`chatRead.${String(teamA._id)}`]: new Date(0) } });
 
     for (let i = 1; i <= 3; i++) {

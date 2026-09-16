@@ -216,8 +216,20 @@ TaskSchema.index({ projectId: 1, workflowColumn: 1 });
 TaskSchema.index({ projectId: 1, priorityScore: -1 }); // greedy sort by project
 TaskSchema.index({ projectId: 1, topoOrder: 1 });       // topo sort by project
 
-// ── pre('save'): recompute priorityScore ─────────────────────────────────────
+// ── pre('save'): versioning & recompute priorityScore ─────────────────────────
 TaskSchema.pre("save", function (next) {
+  if (this.isNew) {
+    if (!this.stateVersion || this.stateVersion === 0) this.stateVersion = 1;
+    if (!this.greedyVersion || this.greedyVersion === 0) this.greedyVersion = 1;
+    if (!this.planningVersion || this.planningVersion === 0) this.planningVersion = 1;
+  } else {
+    this.stateVersion = (this.stateVersion || 0) + 1;
+  }
+
+  if (this.status === "done" && !this.completedAt) {
+    this.completedAt = new Date();
+  }
+
   if (this.isNew || this.isModified("urgency") || this.isModified("impact") || this.isModified("dependencyCount")) {
     this.priorityScore = computePriorityScore({
       urgency: this.urgency,
@@ -228,24 +240,71 @@ TaskSchema.pre("save", function (next) {
   next();
 });
 
+// ── pre('updateOne'): versioning ──────────────────────────────────────────────
+TaskSchema.pre("updateOne", function (next) {
+  const update = this.getUpdate();
+  if (update) {
+    if (update.stateVersion !== undefined) {
+      update.$set = update.$set || {};
+      update.$set.stateVersion = update.stateVersion;
+      delete update.stateVersion;
+    }
+    if (update.greedyVersion !== undefined) {
+      update.$set = update.$set || {};
+      update.$set.greedyVersion = update.greedyVersion;
+      delete update.greedyVersion;
+    }
+    if (update.planningVersion !== undefined) {
+      update.$set = update.$set || {};
+      update.$set.planningVersion = update.planningVersion;
+      delete update.planningVersion;
+    }
+
+    const set = update.$set || update;
+    if (set.stateVersion === undefined && !update.$inc?.stateVersion) {
+      if (update.$inc) {
+        update.$inc.stateVersion = 1;
+      } else {
+        update.$inc = { stateVersion: 1 };
+      }
+    }
+  }
+  next();
+});
+
 // ── pre('findOneAndUpdate'): recompute when update touches priority inputs ────
 TaskSchema.pre("findOneAndUpdate", function (next) {
   const update = this.getUpdate();
-  const set = update.$set ?? update;
+  if (update) {
+    if (update.stateVersion !== undefined) {
+      update.$set = update.$set || {};
+      update.$set.stateVersion = update.stateVersion;
+      delete update.stateVersion;
+    }
+    const set = update.$set ?? update;
 
-  if (set.urgency !== undefined || set.impact !== undefined || set.dependencyCount !== undefined) {
-    const urgency = set.urgency ?? 1;
-    const impact  = set.impact  ?? 1;
-    const dependencyCount = set.dependencyCount ?? 0;
-    const newScore = computePriorityScore({ urgency, impact, dependencyCount });
+    if (set.stateVersion === undefined && !update.$inc?.stateVersion) {
+      if (update.$inc) {
+        update.$inc.stateVersion = 1;
+      } else {
+        update.$inc = { stateVersion: 1 };
+      }
+    }
 
-    if (update.$set) {
-      update.$set.priorityScore = newScore;
-    } else {
-      update.$set = { priorityScore: newScore };
-      delete update.urgency;
-      delete update.impact;
-      delete update.dependencyCount;
+    if (set.urgency !== undefined || set.impact !== undefined || set.dependencyCount !== undefined) {
+      const urgency = set.urgency ?? 1;
+      const impact  = set.impact  ?? 1;
+      const dependencyCount = set.dependencyCount ?? 0;
+      const newScore = computePriorityScore({ urgency, impact, dependencyCount });
+
+      if (update.$set) {
+        update.$set.priorityScore = newScore;
+      } else {
+        update.$set = { priorityScore: newScore };
+        delete update.urgency;
+        delete update.impact;
+        delete update.dependencyCount;
+      }
     }
   }
   next();

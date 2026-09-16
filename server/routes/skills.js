@@ -5,8 +5,35 @@ import User from "../models/User.js";
 import Team from "../models/Team.js";
 import { requireAuth } from "../auth.js";
 import { resolveAuthUser } from "./teams.js";
+import {
+  CANONICAL_SKILLS,
+  CANONICAL_SKILL_IDS,
+  SKILL_CATEGORIES,
+  getRecommendedSkillsForRole,
+  findCanonicalSkill,
+} from "../constants/skills.js";
 
 const router = Router();
+
+// ── GET /api/skills/canonical & /api/skills/taxonomy ───────────────────────────
+// Returns canonical skill taxonomy. Roles recommend skills, but do not restrict selection.
+const getTaxonomyHandler = (req, res) => {
+  const { role, category } = req.query;
+  let skills = [...CANONICAL_SKILLS];
+  if (category) {
+    skills = skills.filter((s) => s.category.toLowerCase() === String(category).trim().toLowerCase());
+  }
+  const recommended = role ? getRecommendedSkillsForRole(String(role)) : [];
+  res.json({
+    categories: SKILL_CATEGORIES,
+    skills,
+    total: skills.length,
+    recommendedForRole: recommended,
+  });
+};
+
+router.get("/skills/canonical", getTaxonomyHandler);
+router.get("/skills/taxonomy", getTaxonomyHandler);
 
 // ── POST /api/skills/verify ────────────────────────────────────────────────────
 // FIX 5F: Verification threshold = score >= 3 of totalQuestions AND
@@ -147,7 +174,15 @@ router.get("/skills/team/:teamId/graph", requireAuth, async (req, res) => {
       };
     });
 
-    const allSkills = ["frontend", "backend", "devops", "design", "ml", "testing"];
+    const presentSkills = new Set(["frontend", "backend", "devops", "design", "ml", "testing"]);
+    for (const m of team.members) {
+      if (m.skills && typeof m.skills === "object") {
+        for (const k of Object.keys(m.skills)) {
+          presentSkills.add(k.toLowerCase().trim());
+        }
+      }
+    }
+    const allSkills = Array.from(presentSkills);
     const teamCoverage = {};
     for (const skill of allSkills) {
       const levels = skillGraph.map((m) => m.skills[skill]?.level ?? 0);
@@ -191,7 +226,15 @@ router.get("/skills/team/:teamId/gaps", requireAuth, async (req, res) => {
       return res.status(403).json({ error: "Forbidden: You are not a member of this team." });
     }
 
-    const allSkills = ["frontend", "backend", "devops", "design", "ml", "testing"];
+    const presentSkills = new Set(["frontend", "backend", "devops", "design", "ml", "testing"]);
+    for (const m of team.members) {
+      if (m.skills && typeof m.skills === "object") {
+        for (const k of Object.keys(m.skills)) {
+          presentSkills.add(k.toLowerCase().trim());
+        }
+      }
+    }
+    const allSkills = Array.from(presentSkills);
     const skillGraph = team.members.map((m) => {
       const memberSkills = m.skills || { frontend: 5, backend: 5, devops: 5, design: 5, ml: 5, testing: 5 };
       return Object.fromEntries(

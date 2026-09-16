@@ -196,8 +196,8 @@ router.post("/teams", requireAuth, async (req, res) => {
     const directList = Array.isArray(members) ? members : [];
     for (const m of directList) {
       if (!m || !m.name?.trim()) continue;
-      // If member has no email and is explicitly passed as direct member
-      if (!m.email && m.userId && mongoose.isValidObjectId(m.userId)) {
+      // If member is explicitly passed as direct member with a valid userId
+      if (m.userId && mongoose.isValidObjectId(m.userId)) {
         extraMembers.push({
           userId: new mongoose.Types.ObjectId(m.userId),
           name: m.name.trim(),
@@ -285,7 +285,7 @@ router.post("/teams", requireAuth, async (req, res) => {
     const rawInvites = Array.isArray(invitations) && invitations.length > 0
       ? invitations
       : Array.isArray(members)
-        ? members.filter((m) => m && m.email)
+        ? members.filter((m) => m && m.email && !m.userId)
         : [];
 
     const invitationsSent = [];

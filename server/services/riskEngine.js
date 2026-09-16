@@ -108,6 +108,18 @@ export async function scanProjectRisks(id) {
       recommendation: `Prioritize these tasks immediately or negotiate deadline extensions.`,
       fingerprint: fp("approaching_deadline"),
     });
+    detected.push({
+      title: `${approaching.length} task(s) approaching deadline`,
+      explanation:
+        `These tasks are due soon and have not been completed yet. ` +
+        `There may not be enough time left to finish them.`,
+      evidence: `Tasks: ${sample}${approaching.length > 3 ? "…" : ""}`,
+      affectedArea: "Sprint deadlines",
+      category: "deadline",
+      severity: approaching.length >= 3 ? "high" : "medium",
+      recommendation: `Prioritize these tasks immediately or negotiate deadline extensions.`,
+      fingerprint: fp("deadline"),
+    });
   }
 
   // ── 3. Blocked tasks ───────────────────────────────────────────────────────
@@ -220,6 +232,18 @@ export async function scanProjectRisks(id) {
         severity: m.assigned > m.capacity * 1.5 ? "critical" : "high",
         recommendation: `Redistribute tasks or reduce sprint scope for this member.`,
         fingerprint: fp(`overload:${uid}`),
+      });
+      detected.push({
+        title: `${m.name} workload overload (${m.assigned}h vs ${m.capacity}h)`,
+        explanation:
+          `Member is assigned ${m.assigned}h of work against a ${m.capacity}h ` +
+          `capacity. This could create a bottleneck.`,
+        evidence: `Active tasks: ${memberTasks.slice(0, 3).map((t) => `"${t.title}"`).join(", ")}.`,
+        affectedArea: m.name,
+        category: "overload",
+        severity: m.assigned > m.capacity * 1.5 ? "critical" : "high",
+        recommendation: `Redistribute tasks or reduce sprint scope for this member.`,
+        fingerprint: fp(`overload_canonical:${uid}`),
       });
     }
   }

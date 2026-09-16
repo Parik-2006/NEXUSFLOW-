@@ -164,93 +164,98 @@ async function runIntegrationTests() {
   console.log("── Integration Tests (MongoDB) ──\n");
 
   const { default: Task } = await import("../models/Task.js");
+  const testTeamId = new mongoose.Types.ObjectId();
 
-  // Test 1: State version increments on task creation
-  {
-    const task = new Task({ title: "Task A" });
-    await task.save();
-    assert(task.stateVersion === 1, `Creation: stateVersion = 1 (got ${task.stateVersion})`);
-    assert(task.greedyVersion === 1, `Creation: greedyVersion = 1 (got ${task.greedyVersion})`);
-    assert(task.planningVersion === 1, `Creation: planningVersion = 1 (got ${task.planningVersion})`);
-  }
+  try {
+    // Test 1: State version increments on task creation
+    {
+      const task = new Task({ title: "Task A", teamId: testTeamId });
+      await task.save();
+      assert(task.stateVersion === 1, `Creation: stateVersion = 1 (got ${task.stateVersion})`);
+      assert(task.greedyVersion === 1, `Creation: greedyVersion = 1 (got ${task.greedyVersion})`);
+      assert(task.planningVersion === 1, `Creation: planningVersion = 1 (got ${task.planningVersion})`);
+    }
 
-  // Test 2: State version increments on general update
-  {
-    const task = await Task.findOne({ title: "Task A" });
-    const oldStateVersion = task.stateVersion;
-    await Task.updateOne({ _id: task._id }, { $set: { urgency: 3 } });
-    const updated = await Task.findById(task._id);
-    assert(updated.stateVersion === oldStateVersion + 1,
-      `General update: stateVersion incremented (old=${oldStateVersion}, new=${updated.stateVersion})`);
-  }
+    // Test 2: State version increments on general update
+    {
+      const task = await Task.findOne({ title: "Task A", teamId: testTeamId });
+      const oldStateVersion = task.stateVersion;
+      await Task.updateOne({ _id: task._id }, { $set: { urgency: 3 } });
+      const updated = await Task.findById(task._id);
+      assert(updated.stateVersion === oldStateVersion + 1,
+        `General update: stateVersion incremented (old=${oldStateVersion}, new=${updated.stateVersion})`);
+    }
 
-  // Test 3: State version increments on priority update
-  {
-    const task = await Task.findOne({ title: "Task A" });
-    const oldStateVersion = task.stateVersion;
-    await Task.updateOne({ _id: task._id }, {
-      urgency: 5, impact: 5,
-      stateVersion: task.stateVersion + 1,
-      greedyVersion: 0, planningVersion: 0,
-    });
-    const updated = await Task.findById(task._id);
-    assert(updated.stateVersion === oldStateVersion + 1,
-      `Priority update: stateVersion incremented (old=${oldStateVersion}, new=${updated.stateVersion})`);
-    assert(updated.greedyVersion === 0, "Priority update: greedyVersion reset to 0 (stale)");
-    assert(updated.planningVersion === 0, "Priority update: planningVersion reset to 0 (stale)");
-  }
+    // Test 3: State version increments on priority update
+    {
+      const task = await Task.findOne({ title: "Task A", teamId: testTeamId });
+      const oldStateVersion = task.stateVersion;
+      await Task.updateOne({ _id: task._id }, {
+        urgency: 5, impact: 5,
+        stateVersion: task.stateVersion + 1,
+        greedyVersion: 0, planningVersion: 0,
+      });
+      const updated = await Task.findById(task._id);
+      assert(updated.stateVersion === oldStateVersion + 1,
+        `Priority update: stateVersion incremented (old=${oldStateVersion}, new=${updated.stateVersion})`);
+      assert(updated.greedyVersion === 0, "Priority update: greedyVersion reset to 0 (stale)");
+      assert(updated.planningVersion === 0, "Priority update: planningVersion reset to 0 (stale)");
+    }
 
-  // Test 4: Stale derived state is detectable
-  {
-    const task = await Task.findOne({ title: "Task A" });
-    assert(task.greedyVersion < task.stateVersion,
-      `Stale detection: cached greedyVersion (${task.greedyVersion}) < stateVersion (${task.stateVersion}) → STALE`);
-  }
+    // Test 4: Stale derived state is detectable
+    {
+      const task = await Task.findOne({ title: "Task A", teamId: testTeamId });
+      assert(task.greedyVersion < task.stateVersion,
+        `Stale detection: cached greedyVersion (${task.greedyVersion}) < stateVersion (${task.stateVersion}) → STALE`);
+    }
 
-  // Test 5: DONE history is protected
-  {
-    const task = new Task({ title: "Done Task", status: "done", completedAt: new Date(Date.UTC(2024, 1, 15)) });
-    await task.save();
-    const saved = await Task.findById(task._id);
-    assert(saved.completedAt && saved.completedAt.getTime() === new Date(Date.UTC(2024, 1, 15)).getTime(),
-      `DONE history protected: completedAt preserved (${saved.completedAt})`);
-  }
+    // Test 5: DONE history is protected
+    {
+      const task = new Task({ title: "Done Task", status: "done", completedAt: new Date(Date.UTC(2024, 1, 15)), teamId: testTeamId });
+      await task.save();
+      const saved = await Task.findById(task._id);
+      assert(saved.completedAt && saved.completedAt.getTime() === new Date(Date.UTC(2024, 1, 15)).getTime(),
+        `DONE history protected: completedAt preserved (${saved.completedAt})`);
+    }
 
-  // Test 6: TODO/PLANNED work can be re-ranked/reallocated
-  {
-    const todo1 = new Task({ title: "Todo High", urgency: 5, impact: 5, status: "todo" });
-    const todo2 = new Task({ title: "Todo Low", urgency: 1, impact: 1, status: "todo" });
-    await todo1.save();
-    await todo2.save();
-    const tasks = await Task.find({ status: "todo" }).sort({ priorityScore: -1 });
-    assert(tasks[0].title === "Todo High", `TODO re-ranking: highest priority first (got ${tasks[0].title})`);
-    assert(tasks[1].title === "Todo Low", `TODO re-ranking: lowest priority second (got ${tasks[1].title})`);
-  }
+    // Test 6: TODO/PLANNED work can be re-ranked/reallocated
+    {
+      const todo1 = new Task({ title: "Todo High", urgency: 5, impact: 5, status: "todo", teamId: testTeamId });
+      const todo2 = new Task({ title: "Todo Low", urgency: 1, impact: 1, status: "todo", teamId: testTeamId });
+      await todo1.save();
+      await todo2.save();
+      const tasks = await Task.find({ status: "todo", teamId: testTeamId, title: { $in: ["Todo High", "Todo Low"] } }).sort({ priorityScore: -1 });
+      assert(tasks[0].title === "Todo High", `TODO re-ranking: highest priority first (got ${tasks[0].title})`);
+      assert(tasks[1].title === "Todo Low", `TODO re-ranking: lowest priority second (got ${tasks[1].title})`);
+    }
 
-  // Test 7: Concurrency: higher stateVersion wins
-  {
-    const task = new Task({ title: "Concurrent Task", urgency: 3, impact: 3 });
-    await task.save();
-    const initialVersion = task.stateVersion;
-    await Task.updateOne({ _id: task._id }, { $set: { urgency: 5 }, stateVersion: initialVersion + 1 });
-    const afterFirst = await Task.findById(task._id);
-    assert(afterFirst.stateVersion === initialVersion + 1,
-      `Concurrent update 1: stateVersion = ${afterFirst.stateVersion}`);
-    await Task.updateOne({ _id: task._id }, { $set: { impact: 5 }, stateVersion: afterFirst.stateVersion + 1 });
-    const afterSecond = await Task.findById(task._id);
-    assert(afterSecond.stateVersion === initialVersion + 2,
-      `Concurrent update 2: stateVersion = ${afterSecond.stateVersion} (higher wins)`);
-    assert(afterSecond.urgency === 5, "Concurrent update 2: urgency preserved as 5");
-    assert(afterSecond.impact === 5, "Concurrent update 2: impact preserved as 5");
-  }
+    // Test 7: Concurrency: higher stateVersion wins
+    {
+      const task = new Task({ title: "Concurrent Task", urgency: 3, impact: 3, teamId: testTeamId });
+      await task.save();
+      const initialVersion = task.stateVersion;
+      await Task.updateOne({ _id: task._id }, { $set: { urgency: 5 }, stateVersion: initialVersion + 1 });
+      const afterFirst = await Task.findById(task._id);
+      assert(afterFirst.stateVersion === initialVersion + 1,
+        `Concurrent update 1: stateVersion = ${afterFirst.stateVersion}`);
+      await Task.updateOne({ _id: task._id }, { $set: { impact: 5 }, stateVersion: afterFirst.stateVersion + 1 });
+      const afterSecond = await Task.findById(task._id);
+      assert(afterSecond.stateVersion === initialVersion + 2,
+        `Concurrent update 2: stateVersion = ${afterSecond.stateVersion} (higher wins)`);
+      assert(afterSecond.urgency === 5, "Concurrent update 2: urgency preserved as 5");
+      assert(afterSecond.impact === 5, "Concurrent update 2: impact preserved as 5");
+    }
 
-  // Test 8: Socket event version info in toObject
-  {
-    const task = new Task({ title: "Socket Task" });
-    const obj = task.toObject();
-    assert('stateVersion' in obj, "toObject() includes stateVersion");
-    assert('greedyVersion' in obj, "toObject() includes greedyVersion");
-    assert('planningVersion' in obj, "toObject() includes planningVersion");
+    // Test 8: Socket event version info in toObject
+    {
+      const task = new Task({ title: "Socket Task", teamId: testTeamId });
+      const obj = task.toObject();
+      assert('stateVersion' in obj, "toObject() includes stateVersion");
+      assert('greedyVersion' in obj, "toObject() includes greedyVersion");
+      assert('planningVersion' in obj, "toObject() includes planningVersion");
+    }
+  } finally {
+    await Task.deleteMany({ teamId: testTeamId });
   }
 }
 

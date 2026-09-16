@@ -18,13 +18,10 @@
  * ============================================================================
  */
 
-import mongoose from "mongoose";
 import dotenv from "dotenv";
 dotenv.config({ override: true });
 
 import { computeTaskPriority, rankTasks, DEFAULT_WEIGHTS, TIER_CRITICAL, TIER_HIGH, TIER_MEDIUM } from "../algorithms/taskPriorityEngine.js";
-
-const MONGO_URI = process.env.MONGO_URI || "mongodb://localhost:27017/nexusflow";
 
 let passed = 0;
 let failed = 0;
@@ -62,12 +59,6 @@ function task(overrides = {}) {
 }
 
 async function main() {
-  try {
-    await mongoose.connect(MONGO_URI);
-    console.log("MongoDB connected.\n");
-  } catch (e) {
-    console.log("MongoDB not available — running pure algorithm tests only.\n");
-  }
 
   // ── 1. High impact boosts score ──────────────────────────────────────────
   {
@@ -226,7 +217,6 @@ async function main() {
     assert(low.tier === "low", `Low task scores ${low.score} → low (need < 30)`);
   }
 
-  await mongoose.disconnect();
   console.log(`\nTaskPriorityEngine: ${passed} passed, ${failed} failed`);
   if (failed > 0) process.exit(1);
 }

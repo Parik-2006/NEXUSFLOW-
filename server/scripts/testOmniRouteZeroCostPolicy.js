@@ -209,7 +209,7 @@ async function runCostPolicyTests() {
       `Copilot generated grounded response for intent "${t.intent}"`
     );
     assert(
-      res.provider === "gemini" || res.provider === "openrouter" || res.provider === "deterministic",
+      ["gemini", "groq", "openrouter", "deterministic"].includes(res.provider),
       `Copilot response provider is strictly verified free: "${res.provider}" ($0.00 cost)`
     );
     assert(
