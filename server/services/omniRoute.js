@@ -6,17 +6,23 @@
  * STRICT FINANCIAL SAFETY POLICY:
  * Total Allowed API Spending: $0.00
  *
- * ALLOWED PROVIDERS & ROUTES:
- * 1. Google Gemini Free Tier:
- *    - gemini-1.5-flash  ($0 input / $0 output on Google AI Studio Free Tier)
- *    - gemini-2.0-flash  ($0 input / $0 output on Google AI Studio Free Tier)
- *    - gemini-1.5-flash-8b ($0 input / $0 output on Google AI Studio Free Tier)
- * 2. OpenRouter Free Models:
+ * ALLOWED PROVIDERS & ROUTES (PRIORITY ORDER):
+ * 1. Google Gemini Free Tier (PRIMARY):
+ *    - gemini-2.5-flash, gemini-2.5-flash-lite, gemini-2.0-flash,
+ *      gemini-1.5-flash, gemini-1.5-flash-8b
+ *    ($0 input / $0 output on Google AI Studio Free Tier)
+ * 2. Groq Free Tier (FIRST FALLBACK):
+ *    - llama-3.3-70b-versatile, llama-3.1-8b-instant, gemma2-9b-it,
+ *      mixtral-8x7b-32768, llama-3.1-70b-versatile
+ *    ($0 on Groq Free Tier — rate-limited, no billing required)
+ * 3. OpenRouter Free Models (SECOND FALLBACK):
  *    - openrouter/free   (OpenRouter's official $0 Free Models Router)
  *    - Explicitly free models whose model ID ends with ":free"
  *      (e.g., meta-llama/llama-3.3-70b-instruct:free, deepseek/deepseek-r1:free)
- * 3. Local Deterministic Guidance Engine:
- *    - $0 local CPU execution (zero external API calls)
+ *
+ * IF ALL THREE AI PROVIDERS FAIL OR EXHAUST QUOTA:
+ * -> Returns graceful AI-unavailable response ($0.00).
+ * -> DAA deterministic engine is NEVER treated as an AI provider or AI fallback.
  *
  * FORBIDDEN (FAIL-CLOSED):
  * - Any model requiring paid billing, prepaid credits, or trials that expire
@@ -40,6 +46,18 @@ export const FREE_GEMINI_MODELS = Object.freeze([
   "gemini-1.5-flash",
   "gemini-1.5-flash-8b",
 ]);
+
+export const FREE_GROQ_MODELS = Object.freeze([
+  "qwen/qwen3.8-27b",
+  "openai/gpt-oss-20b",
+  "openai/gpt-oss-120b",
+  "llama-3.3-70b-versatile",
+  "llama-3.1-8b-instant",
+  "gemma2-9b-it",
+  "mixtral-8x7b-32768",
+  "llama-3.1-70b-versatile",
+]);
+
 
 export const FREE_OPENROUTER_FALLBACK_MODELS = Object.freeze([
   "openrouter/free",
@@ -82,6 +100,18 @@ export function validateZeroCostRoute(provider, model) {
     return { provider: "gemini", model: m, cost: "$0.00" };
   }
 
+  if (p === "groq") {
+    const isFree = FREE_GROQ_MODELS.some(
+      (freeId) => m.toLowerCase() === freeId.toLowerCase()
+    );
+    if (!isFree) {
+      throw new ZeroCostViolationError(
+        `Groq model "${m}" is NOT in the verified Free Tier whitelist. Allowed models: ${FREE_GROQ_MODELS.join(", ")}`
+      );
+    }
+    return { provider: "groq", model: m, cost: "$0.00" };
+  }
+
   if (p === "openrouter") {
     // Must be "openrouter/free" or end with ":free"
     const isFreeRouter = m.toLowerCase() === "openrouter/free";
@@ -97,7 +127,7 @@ export function validateZeroCostRoute(provider, model) {
 
   // Any other provider is BLOCKED under the hard $0 rule
   throw new ZeroCostViolationError(
-    `Provider "${provider}" is not an approved $0 free-tier provider. Only verified Gemini Free Tier and OpenRouter Free models are permitted.`
+    `Provider "${provider}" is not an approved $0 free-tier provider. Only verified Gemini Free Tier, Groq Free Tier, and OpenRouter Free models are permitted.`
   );
 }
 
@@ -107,6 +137,14 @@ function getGeminiKey() {
     process.env.GEMINI_API_KEY ||
     process.env.GOOGLE_API_KEY ||
     process.env.GEMINI_KEY ||
+    ""
+  );
+}
+
+function getGroqKey() {
+  return (
+    process.env.GROQ_API_KEY ||
+    process.env.GROQ_KEY ||
     ""
   );
 }
@@ -217,7 +255,100 @@ export async function executeGeminiFree({
   };
 }
 
-// ── 2. OmniRoute Provider: OpenRouter Free Models ────────────────────────────
+// ── 2. OmniRoute Provider: Groq Free Tier (FIRST FALLBACK) ───────────────────
+export async function executeGroqFree({
+  model = "llama-3.3-70b-versatile",
+  systemPrompt,
+  systemInstruction,
+  prompt,
+  messages = [],
+  responseFormat = null,
+  temperature = 0.3,
+  maxTokens = 1200,
+  timeoutMs = 15000,
+}) {
+  // Validate $0 cost policy before making outbound call
+  validateZeroCostRoute("groq", model);
+
+  const apiKey = getGroqKey();
+  if (!apiKey) {
+    throw new Error("GROQ_API_KEY is not configured in server environment.");
+  }
+
+  console.log(`[OmniRoute] Provider: Groq | Model: ${model} | Cost Policy: $0.00 (FREE_ONLY)`);
+
+  const effectiveSystemPrompt = systemPrompt || systemInstruction;
+  const formattedMessages = [];
+  if (effectiveSystemPrompt) {
+    formattedMessages.push({ role: "system", content: effectiveSystemPrompt });
+  }
+
+  let effectiveMessages = Array.isArray(messages) && messages.length > 0 ? [...messages] : [];
+  if (effectiveMessages.length === 0 && prompt) {
+    effectiveMessages = [{ role: "user", content: String(prompt) }];
+  }
+  if (effectiveMessages.length === 0) {
+    effectiveMessages = [{ role: "user", content: "Hello" }];
+  }
+
+  for (const m of effectiveMessages) {
+    formattedMessages.push({
+      role: m.role === "assistant" || m.role === "model" ? "assistant" : m.role === "system" ? "system" : "user",
+      content: String(m.content || "").trim(),
+    });
+  }
+
+  const body = {
+    model,
+    messages: formattedMessages,
+    temperature,
+    max_tokens: maxTokens,
+  };
+
+  if (responseFormat === "json_object") {
+    body.response_format = { type: "json_object" };
+  }
+
+  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    if (res.status === 429) {
+      console.warn(`[OmniRoute] Groq ${model} free rate limit reached (HTTP 429).`);
+    }
+    throw new Error(`Groq ${model} HTTP ${res.status}: ${errText.slice(0, 200)}`);
+  }
+
+  const data = await res.json();
+  const content = data.choices?.[0]?.message?.content?.trim();
+
+  if (!content) {
+    throw new Error(`Groq ${model} returned empty completion`);
+  }
+
+  console.log(`[OmniRoute] Groq ${model} generation succeeded ($0 cost).`);
+
+  return {
+    content,
+    provider: "groq",
+    model,
+    tokensUsed: {
+      prompt: data.usage?.prompt_tokens ?? null,
+      completion: data.usage?.completion_tokens ?? null,
+      total: data.usage?.total_tokens ?? null,
+    },
+  };
+}
+
+// ── 3. OmniRoute Provider: OpenRouter Free Models (SECOND FALLBACK) ──────────
 export async function executeOpenRouterFree({
   model = "openrouter/free",
   systemPrompt,
@@ -292,11 +423,13 @@ export async function executeOpenRouterFree({
   }
 
   const data = await res.json();
-  const content = data.choices?.[0]?.message?.content?.trim();
+  const choice = data.choices?.[0]?.message;
+  const content = (choice?.content || choice?.reasoning || "").trim();
 
   if (!content) {
     throw new Error(`OpenRouter ${model} returned empty completion`);
   }
+
 
   console.log(`[OmniRoute] OpenRouter ${model} generation succeeded ($0 cost).`);
 
@@ -312,15 +445,18 @@ export async function executeOpenRouterFree({
   };
 }
 
-// ── 3. OmniRoute Main Multi-Tier $0 Orchestration ────────────────────────────
+// ── 4. OmniRoute Main Multi-Tier $0 Orchestration ────────────────────────────
 /**
- * Primary OmniRoute execution function enforcing:
- * Tier 1: Gemini Free Tier (gemini-2.5-flash / gemini-2.5-flash-lite / gemini-2.0-flash / gemini-1.5-flash)
+ * Primary OmniRoute execution function enforcing the exact 3-tier AI chain:
+ * Tier 1: Gemini Free Tier (PRIMARY) — gemini-2.5-flash → gemini-2.5-flash-lite → gemini-2.0-flash → gemini-1.5-flash → gemini-1.5-flash-8b
  *   ↓ fail / quota exhausted
- * Tier 2: OpenRouter Free Models (openrouter/free / :free models)
+ * Tier 2: Groq Free Tier (FIRST FALLBACK) — qwen/qwen3.8-27b → openai/gpt-oss-20b → llama-3.3-70b-versatile → llama-3.1-8b-instant
  *   ↓ fail / quota exhausted
- * Tier 3: Local Deterministic / Safe Failure ($0 local compute)
+ * Tier 3: OpenRouter Free Models (SECOND FALLBACK) — openrouter/free / :free models
+ *   ↓ fail / quota exhausted
+ * Graceful AI Failure: Clear AI-unavailable response ($0.00).
  *
+ * NOTE: DAA is completely independent and is NEVER treated as an AI provider or AI fallback.
  * NO PAID FALLBACK IS EVER CONFIGURED OR SELECTED.
  */
 export async function omniRouteGenerate({
@@ -334,7 +470,7 @@ export async function omniRouteGenerate({
 }) {
   const errors = [];
 
-  // ── Tier 1: Gemini Free Tier ───────────────────────────────────────────────
+  // ── Tier 1: Gemini Free Tier (PRIMARY) ─────────────────────────────────────
   if (getGeminiKey()) {
     for (const model of FREE_GEMINI_MODELS) {
       try {
@@ -364,7 +500,37 @@ export async function omniRouteGenerate({
     console.log("[OmniRoute] GEMINI_API_KEY not configured, skipping Tier 1.");
   }
 
-  // ── Tier 2: OpenRouter Free Tier ───────────────────────────────────────────
+  // ── Tier 2: Groq Free Tier (FIRST FALLBACK) ────────────────────────────────
+  if (getGroqKey()) {
+    for (const model of FREE_GROQ_MODELS) {
+      try {
+        const result = await executeGroqFree({
+          model,
+          systemPrompt,
+          systemInstruction,
+          prompt,
+          messages,
+          responseFormat,
+          temperature,
+          maxTokens,
+          timeoutMs: 15000,
+        });
+        if (result && result.content) {
+          return {
+            ...result,
+            tier: "tier_2_groq_free",
+          };
+        }
+      } catch (err) {
+        errors.push(`Groq [${model}]: ${err.message}`);
+        console.warn(`[OmniRoute] Tier 2 Groq ${model} failed: ${err.message}. Trying next $0 option.`);
+      }
+    }
+  } else {
+    console.log("[OmniRoute] GROQ_API_KEY not configured, skipping Tier 2.");
+  }
+
+  // ── Tier 3: OpenRouter Free Tier (SECOND FALLBACK) ─────────────────────────
   if (getOpenRouterKey()) {
     for (const model of FREE_OPENROUTER_FALLBACK_MODELS) {
       try {
@@ -382,29 +548,32 @@ export async function omniRouteGenerate({
         if (result && result.content) {
           return {
             ...result,
-            tier: "tier_2_openrouter_free",
+            tier: "tier_3_openrouter_free",
           };
         }
       } catch (err) {
         errors.push(`OpenRouter [${model}]: ${err.message}`);
-        console.warn(`[OmniRoute] Tier 2 OpenRouter ${model} failed: ${err.message}. Trying next $0 option.`);
+        console.warn(`[OmniRoute] Tier 3 OpenRouter ${model} failed: ${err.message}. Trying next $0 option.`);
       }
     }
   } else {
-    console.log("[OmniRoute] OPENROUTER_API_KEY not configured, skipping Tier 2.");
+    console.log("[OmniRoute] OPENROUTER_API_KEY not configured, skipping Tier 3.");
   }
 
-  // ── Tier 3: Deterministic Local Safe Fallback ($0 Local Execution) ─────────
-  console.log(
-    "[OmniRoute] All free-tier LLM providers exhausted or unavailable. Fails closed to local deterministic engine ($0.00 cost guaranteed)."
+  // ── Graceful AI Failure ($0 Cost Policy Enforced) ──────────────────────────
+  console.warn(
+    "[OmniRoute] All free-tier AI providers (Gemini, Groq, OpenRouter) are unavailable or exhausted. Graceful AI failure returned."
   );
 
   return {
     content: null,
-    provider: "deterministic",
-    model: "deterministic-heuristic-engine",
+    provider: "none",
+    model: "none",
     cost: "$0.00",
-    tier: "tier_3_deterministic_local",
+    tier: "tier_ai_unavailable",
+    available: false,
+    message: "AI services are currently unavailable across all configured free providers (Gemini, Groq, OpenRouter). Please try again later.",
     errors,
   };
 }
+

@@ -4,9 +4,12 @@
  * AI ORCHESTRATOR — Central multi-provider orchestration for NEXUSFLOW 2.0.
  *
  * HARD $0 LLM COST POLICY ENFORCED VIA OMNIROUTE:
- *   Tier 1: Google Gemini Free Tier (gemini-2.0-flash / gemini-1.5-flash)
- *   Tier 2: OpenRouter Free Models (openrouter/free / :free models)
- *   Tier 3: Existing Deterministic / Hardcoded Fallback Engine ($0 local CPU)
+ *   Tier 1: Google Gemini Free Tier (PRIMARY)
+ *   Tier 2: Groq Free Tier (FIRST FALLBACK)
+ *   Tier 3: OpenRouter Free Models (SECOND FALLBACK)
+ *   Failure: Graceful AI-unavailable response ($0.00).
+ *
+ * NOTE: DAA is completely independent and is NEVER treated as an AI provider or AI fallback.
  *
  * DESIGN PRINCIPLES:
  * 1. HARD $0 SPENDING LIMIT: Total allowed API spending is $0.00.
@@ -14,15 +17,15 @@
  * 3. ZERO HARDCODED KEYS: All credentials read from environment variables.
  * 4. SERVER-SIDE ONLY: Keys are never exposed to React/Expo clients.
  * 5. GRACEFUL DEGRADATION: If any free tier fails, rate-limits (429), or is exhausted,
- *    the orchestrator cascades to the next verified free provider, ending in the local
- *    deterministic engine.
+ *    the orchestrator cascades to the next verified free provider, returning a graceful
+ *    AI-unavailable response if all free AI providers fail.
  * ============================================================================
  */
 
-import { generateDeterministicCopilotAnswer } from "./projectIntelligence.js";
 import {
   omniRouteGenerate,
   executeGeminiFree,
+  executeGroqFree,
   executeOpenRouterFree,
   validateZeroCostRoute,
   ZeroCostViolationError,
@@ -32,6 +35,7 @@ import {
 export {
   omniRouteGenerate,
   executeGeminiFree,
+  executeGroqFree,
   executeOpenRouterFree,
   validateZeroCostRoute,
   ZeroCostViolationError,
@@ -148,20 +152,16 @@ export async function orchestrateCopilotChat({
     };
   }
 
-  // Fallback to local deterministic engine ($0.00 local compute)
-  console.log(`[aiOrchestrator] Tier 3 (Deterministic Engine) executing for intent: ${detectedIntent}`);
-  const fallbackText = generateDeterministicCopilotAnswer(
-    detectedIntent,
-    userMessage,
-    projectContext,
-    conversationHistory,
-    guidanceSnapshot
+  // Graceful AI-unavailable response (DAA engine is NEVER an AI fallback)
+  console.warn(
+    `[aiOrchestrator] All free-tier AI providers (Gemini, Groq, OpenRouter) unavailable for intent: ${detectedIntent}. Returning graceful AI failure.`
   );
 
   return {
-    replyText: fallbackText,
-    provider: "deterministic",
-    model: "local_heuristic_engine",
+    replyText: "AI assistance is currently unavailable as all configured free providers (Gemini, Groq, OpenRouter) are unreachable or rate-limited. Please try again in a few moments.",
+    provider: "none",
+    model: "none",
+    available: false,
     tokensUsed: { prompt: null, completion: null, total: null },
   };
 }
@@ -197,7 +197,7 @@ export async function orchestrateProjectAnalysis({
     }
   }
 
-  // Tier 3: Deterministic heuristic engine in projectIntelligence.js will handle fallback
+  // Graceful AI failure: returns null to indicate AI analysis is unavailable ($0.00)
   return null;
 }
 
