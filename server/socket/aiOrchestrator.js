@@ -4,6 +4,7 @@ import { assignTasksToMembers } from "../algorithms/branchAndBound.js";
 import { computeRecommendation, boyerMooreSearch } from "../algorithms/taskOptimiser.js";
 import { decomposeProject } from "../algorithms/projectDecomposer.js";
 import { recomputeAndBroadcast } from "./taskHandlers.js";
+import { verifyTeamAccess } from "../routes/teams.js";
 
 // Map existing schema fields → the {value, effort, priority} shape the
 // recommendation engine expects.
@@ -139,6 +140,10 @@ export function toActionableTitle(raw) {
 
 export function registerAiOrchestrator(io, socket) {
   socket.on("chat:message", async ({ teamId, text }) => {
+    if (!teamId) return;
+    const auth = await verifyTeamAccess(teamId, socket.data.user);
+    if (auth.error) return;
+
     const human = {
       _id      : `m_${Date.now()}`,
       text,
@@ -172,12 +177,19 @@ export function registerAiOrchestrator(io, socket) {
 
   // Manual assignment trigger from client.
   socket.on("tasks:assign", async ({ teamId, taskIds }) => {
+    if (!teamId) return;
+    const auth = await verifyTeamAccess(teamId, socket.data.user);
+    if (auth.error) return;
     await runAutoAssignment(io, teamId, taskIds ?? []);
   });
 
   // ── DAA Recommendation Engine (BFS → Greedy → Knapsack → MergeSort → Topo) ──
   socket.on("recommend:request", async ({ teamId, sprintCapacity = 20 }, ack) => {
     try {
+      if (!teamId) return ack?.({ ok: false, error: "teamId is required." });
+      const auth = await verifyTeamAccess(teamId, socket.data.user);
+      if (auth.error) return ack?.({ ok: false, error: auth.error });
+
       const raw = await Task.find({ teamId }).lean();
       if (raw.length === 0) {
         const empty = {

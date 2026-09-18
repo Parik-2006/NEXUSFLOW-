@@ -145,13 +145,14 @@ async function findProject(projectId, res, user = null) {
     return null;
   }
 
-  // Security Check: Verify team access if user context is available
-  if (user && project.teamId) {
+  // Security Check: Verify team access if user context is available (from arg or Express req)
+  const effectiveUser = user || res?.req?.user;
+  if (effectiveUser && project.teamId) {
     const team = await Team.findById(project.teamId).lean();
     if (team) {
-      const userIdStr = (user._id || user.id)?.toString() || "";
-      const userEmail = (user.email || "").toLowerCase().trim();
-      const userName = (user.name || "").toLowerCase().trim();
+      const userIdStr = (effectiveUser._id || effectiveUser.id)?.toString() || "";
+      const userEmail = (effectiveUser.email || "").toLowerCase().trim();
+      const userName = (effectiveUser.name || "").toLowerCase().trim();
 
       const isOwner = team.ownerId && team.ownerId.toString() === userIdStr;
       const isMember = Array.isArray(team.members) && team.members.some((m) => {
@@ -166,7 +167,7 @@ async function findProject(projectId, res, user = null) {
 
       const isLegacy = !team.ownerId && (!team.members || team.members.length === 0);
 
-      if (!isOwner && !isMember && !isLegacy && user.role !== "admin") {
+      if (!isOwner && !isMember && !isLegacy && effectiveUser.role !== "admin") {
         res.status(403).json({ error: "Forbidden: You do not have access to this project." });
         return null;
       }

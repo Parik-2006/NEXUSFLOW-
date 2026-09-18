@@ -79,6 +79,10 @@ export function registerTaskHandlers(io, socket) {
         priorityLabel, source = "manual", category, reminderAt, status, assignedTo,
       } = payload ?? {};
 
+      if (!teamId) return ack?.({ ok: false, error: "teamId is required." });
+      const auth = await verifyTeamAccess(teamId, socket.data.user);
+      if (auth.error) return ack?.({ ok: false, error: auth.error });
+
       const task = await Task.create({
         teamId,
         title,
@@ -123,6 +127,10 @@ export function registerTaskHandlers(io, socket) {
   // ── task:delete ──────────────────────────────────────────────────────────────
   socket.on("task:delete", async ({ teamId, taskId }, ack) => {
     try {
+      if (!teamId || !taskId) return ack?.({ ok: false, error: "teamId and taskId are required." });
+      const auth = await verifyTeamAccess(teamId, socket.data.user);
+      if (auth.error) return ack?.({ ok: false, error: auth.error });
+
       const task = await Task.findOneAndDelete({ _id: taskId, teamId });
       if (!task) return ack?.({ ok: false, error: "not_found" });
 
@@ -144,6 +152,10 @@ export function registerTaskHandlers(io, socket) {
   // ── task:update ────────────────────────────────────────────────────────────
   socket.on("task:update", async ({ teamId, taskId, status, prevStatus, urgency, impact, fields }, ack) => {
     try {
+      if (!teamId || !taskId) return ack?.({ ok: false, error: "teamId and taskId are required." });
+      const auth = await verifyTeamAccess(teamId, socket.data.user);
+      if (auth.error) return ack?.({ ok: false, error: auth.error });
+
       let updatePayload = {};
       if (status !== undefined) updatePayload.status = status;
 
@@ -205,6 +217,10 @@ export function registerTaskHandlers(io, socket) {
   // ── task:recompute_team (Greedy bulk refresh) ───────────────────────────────
   socket.on("task:recompute_team", async ({ teamId }, ack) => {
     try {
+      if (!teamId) return ack?.({ ok: false, error: "teamId is required." });
+      const auth = await verifyTeamAccess(teamId, socket.data.user);
+      if (auth.error) return ack?.({ ok: false, error: auth.error });
+
       const tasks = await Task.find({ teamId, status: { $ne: "done" } })
         .select("urgency impact dependencyCount").lean();
       let updated = 0;
@@ -223,6 +239,10 @@ export function registerTaskHandlers(io, socket) {
   // ── task:get-execution-order (Topo Sort) ────────────────────────────────────
   socket.on("task:get-execution-order", async ({ teamId }, ack) => {
     try {
+      if (!teamId) return ack?.({ ok: false, error: "teamId is required." });
+      const auth = await verifyTeamAccess(teamId, socket.data.user);
+      if (auth.error) return ack?.({ ok: false, error: auth.error });
+
       await recomputeAndBroadcast(io, teamId);
       ack?.({ ok: true });
     } catch (e) {

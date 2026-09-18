@@ -374,8 +374,8 @@ router.post("/decisions/:decisionId/ai-summary", requireAuth, async (req, res) =
 // WORKSTREAM 24: PROJECT HEALTH 2.0 & EARLY WARNING SYSTEM
 // ============================================================================
 
-// GET /api/projects/:projectId/health-v2
-router.get("/projects/:projectId/health-v2", requireAuth, async (req, res) => {
+// GET /api/projects/:projectId/health-v2 & /api/projects/:projectId/health2
+router.get(["/projects/:projectId/health-v2", "/projects/:projectId/health2"], requireAuth, async (req, res) => {
   try {
     const auth = await authorizeProjectAccess(req.params.projectId, req, res);
     if (!auth) return;

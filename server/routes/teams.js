@@ -123,6 +123,21 @@ router.get("/teams", requireAuth, async (req, res) => {
   }
 });
 
+// ── Team-Scoped Authorization Guard ──────────────────────────────────────────
+// STRICT IDOR ISOLATION: Verifies user is owner or member of :teamId for ALL subroutes
+router.use("/teams/:teamId", requireAuth, async (req, res, next) => {
+  const { teamId } = req.params;
+  if (!teamId || !mongoose.isValidObjectId(teamId)) {
+    return res.status(400).json({ error: "Invalid team ID." });
+  }
+  const authCheck = await verifyTeamAccess(teamId, req.user);
+  if (authCheck.error) {
+    return res.status(authCheck.status || 403).json({ error: authCheck.error });
+  }
+  req.team = authCheck.team;
+  next();
+});
+
 // ── GET /api/teams/:teamId ────────────────────────────────────────────────────
 // Single team (with members) for the workspace / assignment board.
 router.get("/teams/:teamId", requireAuth, async (req, res) => {

@@ -131,6 +131,7 @@ const EarlyWarningSchema = new mongoose.Schema(
 // Indexes
 EarlyWarningSchema.index({ projectId: 1, status: 1, severity: 1 });
 EarlyWarningSchema.index({ fingerprint: 1, status: 1 });
+EarlyWarningSchema.index({ projectId: 1, fingerprint: 1, status: 1 });
 EarlyWarningSchema.index({ projectId: 1, category: 1, createdAt: -1 });
 
 export default mongoose.model("EarlyWarning", EarlyWarningSchema);

@@ -310,11 +310,11 @@ TaskSchema.pre("findOneAndUpdate", function (next) {
   next();
 });
 
-// ── Optional enrichment: compute full TaskPriorityEngine result ───────────────
-// Call from routes when team-level context (risks, skills, workload) is available.
-TaskSchema.statics.enrichPriority = function enrichPriority(taskDoc, context = {}) {
-  if (!taskDoc) return null;
-  return computeTaskPriority(taskDoc, context);
-};
+// ── Compound indexes for frequent query patterns across methodologies ─────────
+TaskSchema.index({ teamId: 1, status: 1 });
+TaskSchema.index({ projectId: 1, status: 1 });
+TaskSchema.index({ teamId: 1, priorityScore: -1, createdAt: 1 });
+TaskSchema.index({ projectId: 1, priorityScore: -1, createdAt: 1 });
+TaskSchema.index({ sprintId: 1, status: 1 });
 
 export default mongoose.model("Task", TaskSchema);
