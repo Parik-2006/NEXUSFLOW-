@@ -7,9 +7,12 @@ import GraphPanel from "@/components/workspace/GraphPanel";
 import RetroPanel from "@/components/workspace/RetroPanel";
 import AnalyticsPanel from "@/components/workspace/AnalyticsPanel";
 import ProjectEventTimeline from "@/components/workspace/ProjectEventTimeline";
+import ProjectHealth2Panel from "@/components/workspace/ProjectHealth2Panel";
+import ProjectLearningPanel from "@/components/workspace/ProjectLearningPanel";
+import CapabilityIntelligencePanel from "@/components/workspace/CapabilityIntelligencePanel";
 import { colors, spacing, radius, font } from "@/theme";
 
-type InsightSubTab = "health" | "risks" | "dag" | "retro" | "analytics" | "history";
+type InsightSubTab = "health2" | "learning" | "capability" | "health" | "risks" | "dag" | "retro" | "analytics" | "history";
 
 interface InsightTabOption {
   key: InsightSubTab;
@@ -19,6 +22,9 @@ interface InsightTabOption {
 }
 
 const SUB_TABS: InsightTabOption[] = [
+  { key: "health2",   label: "Health 2.0",    icon: "shield-half-outline",  color: colors.primary },
+  { key: "learning",  label: "Learning Loop", icon: "school-outline",       color: colors.greedy },
+  { key: "capability",label: "Capability",    icon: "people-outline",       color: colors.branch },
   { key: "health",    label: "Team Health",   icon: "heart-outline",        color: colors.success },
   { key: "risks",     label: "Risk Radar",    icon: "shield-checkmark-outline", color: colors.warning },
   { key: "dag",       label: "Dependency DAG",icon: "git-network-outline",   color: colors.topo },
@@ -80,6 +86,15 @@ export default function WaterfallInsightsPanel({
 
       {/* Content Area */}
       <View style={s.content}>
+        {activeSubTab === "health2" && (
+          <ProjectHealth2Panel projectId={projectId || teamId} />
+        )}
+        {activeSubTab === "learning" && (
+          <ProjectLearningPanel projectId={projectId || teamId} />
+        )}
+        {activeSubTab === "capability" && (
+          <CapabilityIntelligencePanel projectId={projectId || teamId} />
+        )}
         {activeSubTab === "health" && (
           <TeamHealthPanel teamId={teamId} projectId={projectId} />
         )}

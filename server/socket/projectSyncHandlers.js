@@ -80,3 +80,16 @@ export const broadcastOpinionUpdate       = (io, pid, p) => emit(io, pid, "proje
 export const broadcastRiskUpdate          = (io, pid, p) => emit(io, pid, "project:risk:updated",          p);
 export const broadcastHealthUpdate        = (io, pid, p) => emit(io, pid, "project:health:updated",        p);
 export const broadcastRetrospectiveUpdate = (io, pid, p) => emit(io, pid, "project:retrospective:updated", p);
+
+// ── V4 Workstreams 21–25 Broadcast Helpers ──────────────────────────────────
+export const broadcastLessonCreated        = (io, pid, p) => emit(io, pid, "lesson.created",                 p);
+export const broadcastLessonValidated      = (io, pid, p) => emit(io, pid, "lesson.validated",               p);
+export const broadcastCapabilityUpdated    = (io, pid, p) => emit(io, pid, "capability.updated",             p);
+export const broadcastAssignmentRecommended= (io, pid, p) => emit(io, pid, "assignment.recommended",         p);
+export const broadcastAssignmentAccepted   = (io, pid, p) => emit(io, pid, "assignment.accepted",            p);
+export const broadcastDecisionUpdated      = (io, pid, p) => emit(io, pid, "decision.updated",               p);
+export const broadcastHealth2Updated       = (io, pid, p) => emit(io, pid, "health.updated",                 p);
+export const broadcastWarningOpened        = (io, pid, p) => emit(io, pid, "warning.opened",                 p);
+export const broadcastWarningAcknowledged  = (io, pid, p) => emit(io, pid, "warning.acknowledged",           p);
+export const broadcastWarningResolved      = (io, pid, p) => emit(io, pid, "warning.resolved",               p);
+

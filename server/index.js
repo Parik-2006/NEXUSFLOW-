@@ -18,6 +18,7 @@ import discoveryRoutes from "./routes/discovery.js"; // NEXUSFLOW 4.0 — Open T
 import scrumRoutes from "./routes/scrum.js";           // NEXUSFLOW 4.0 — Scrum Methodology Engine
 import kanbanRoutes from "./routes/kanban.js";         // NEXUSFLOW 4.0 — Kanban Continuous Flow Engine
 import hybridRoutes from "./routes/hybrid.js";         // NEXUSFLOW 4.0 — Hybrid Methodology Engine
+import workstreams21to25Routes from "./routes/workstreams21to25.js"; // NEXUSFLOW 4.0 — Workstreams 21-25
 import { registerTaskHandlers } from "./socket/taskHandlers.js";
 import { registerAiOrchestrator } from "./socket/aiOrchestrator.js";
 import { registerProjectSyncHandlers } from "./socket/projectSyncHandlers.js"; // NEXUSFLOW 3.0 — Phase 10
@@ -237,6 +238,7 @@ app.use("/api", discoveryRoutes); // NEXUSFLOW 4.0 — Discovery & Applications
 app.use("/api/scrum", requireAuth, scrumRoutes); // NEXUSFLOW 4.0 — Scrum Methodology
 app.use("/api/kanban", requireAuth, kanbanRoutes); // NEXUSFLOW 4.0 — Kanban Continuous Flow
 app.use("/api/hybrid", requireAuth, hybridRoutes); // NEXUSFLOW 4.0 — Hybrid Methodology Engine
+app.use("/api", workstreams21to25Routes);          // NEXUSFLOW 4.0 — Workstreams 21–25 Learning, Capability, Decisions, Health
 
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: [FRONTEND_URL, "http://localhost:8081", "http://localhost:19006"] } });

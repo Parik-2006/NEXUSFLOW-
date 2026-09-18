@@ -81,6 +81,13 @@ const ProjectEventSchema = new mongoose.Schema(
         "teacher_review",
         "academic_evaluation",
         "contribution",
+        // V4 Workstreams 21-25 entity types
+        "project_lesson",
+        "lesson",
+        "capability",
+        "decision_record",
+        "early_warning",
+        "warning",
       ],
       required: true,
     },
