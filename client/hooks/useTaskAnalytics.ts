@@ -40,7 +40,10 @@ export function useTaskAnalytics(teamId: string | undefined) {
   const [error, setError] = useState<Error | null>(null);
 
   const fetchAnalytics = useCallback(async () => {
-    if (!teamId) return;
+    if (!teamId || typeof teamId !== "string" || !teamId.trim()) {
+      setLoading(false);
+      return;
+    }
     try {
       setLoading(true);
       const res = await fetch(`${API}/api/teams/${teamId}/tasks/analytics`, {

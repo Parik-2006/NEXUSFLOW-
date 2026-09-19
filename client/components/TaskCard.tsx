@@ -72,6 +72,7 @@ export default function TaskCard({
   onEdit,
   onDelete,
   onDuplicate,
+  locked,
 }: {
   task: Task;
   onCycle: (next: Task["status"]) => void;
@@ -84,6 +85,7 @@ export default function TaskCard({
   onEdit?: () => void;
   onDelete?: () => void;
   onDuplicate?: () => void;
+  locked?: boolean;
 }) {
   const score = task.priorityScore ?? 0;
   const key = taskPriorityKey(task);
@@ -110,6 +112,12 @@ export default function TaskCard({
           query={highlight}
           style={[styles.title, task.status === "done" && styles.done]}
         />
+        {locked && task.status !== "done" && (
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 3, backgroundColor: "#FEF2F2", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: "#FCA5A5", marginRight: 4 }}>
+            <Ionicons name="lock-closed" size={10} color="#DC2626" />
+            <Text style={{ fontSize: 10, fontWeight: "600", color: "#DC2626" }}>LOCKED</Text>
+          </View>
+        )}
         <Text style={[styles.badge, { color: STATUS_COLOR[task.status] }]}>{LABEL[task.status]}</Text>
         {hasActions && (
           <Pressable hitSlop={8} onPress={() => setMenu((m) => !m)} style={styles.kebab}>

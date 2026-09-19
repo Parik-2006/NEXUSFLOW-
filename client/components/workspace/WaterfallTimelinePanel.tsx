@@ -52,6 +52,42 @@ export default function WaterfallTimelinePanel({ teamId, projectId, onSelectTask
     return map;
   }, [members]);
 
+  // ── Sequential Waterfall Phase Gate Evaluation ──────────────────────────────
+  const phaseGateMap = useMemo(() => {
+    const map: Record<string, { status: "CLEARED" | "ACTIVE" | "LOCKED"; lockedReason?: string }> = {};
+    const phases = Object.keys(WATERFALL_PHASE_META);
+    let priorCleared = true;
+    let firstUncleared: string | null = null;
+
+    for (let i = 0; i < phases.length; i++) {
+      const pKey = phases[i];
+      const pTasks = rawTasks.filter((t) => (t.phase || "requirements") === pKey);
+      const doneCount = pTasks.filter((t) => t.status === "done").length;
+      const totalCount = pTasks.length;
+      const isCleared = totalCount > 0 ? doneCount >= totalCount : true;
+
+      if (i === 0) {
+        map[pKey] = { status: isCleared ? "CLEARED" : "ACTIVE" };
+      } else {
+        if (priorCleared) {
+          map[pKey] = { status: isCleared ? "CLEARED" : "ACTIVE" };
+        } else {
+          const prevMeta = WATERFALL_PHASE_META[(firstUncleared || phases[i - 1]) as keyof typeof WATERFALL_PHASE_META];
+          map[pKey] = {
+            status: "LOCKED",
+            lockedReason: `Complete ${prevMeta.label} before starting ${WATERFALL_PHASE_META[pKey as keyof typeof WATERFALL_PHASE_META].label}`,
+          };
+        }
+      }
+
+      if (!isCleared && !firstUncleared) {
+        firstUncleared = pKey;
+        priorCleared = false;
+      }
+    }
+    return map;
+  }, [rawTasks]);
+
   // ── DAA Critical Path Method (CPM) Calculation ──────────────────────────────
   // Computes Early Start (ES), Early Finish (EF), Late Start (LS), Late Finish (LF)
   // and Slack / Float = LF - EF. Zero slack = Critical Path.
@@ -339,6 +375,18 @@ export default function WaterfallTimelinePanel({ teamId, projectId, onSelectTask
                       {doneCount}/{totalCount} Completed ({pct}%)
                     </Text>
                   </View>
+                  {phaseGateMap[pKey]?.status === "LOCKED" && (
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 3, backgroundColor: "#FEF2F2", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: "#FCA5A5" }}>
+                      <Ionicons name="lock-closed" size={10} color="#DC2626" />
+                      <Text style={{ fontSize: 10, fontWeight: "600", color: "#DC2626" }}>LOCKED (PLANNED)</Text>
+                    </View>
+                  )}
+                  {phaseGateMap[pKey]?.status === "CLEARED" && (
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 3, backgroundColor: "#F0FDF4", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: "#BBF7D0" }}>
+                      <Ionicons name="checkmark-circle" size={10} color="#16A34A" />
+                      <Text style={{ fontSize: 10, fontWeight: "600", color: "#16A34A" }}>GATE CLEARED</Text>
+                    </View>
+                  )}
                 </View>
               </View>
 

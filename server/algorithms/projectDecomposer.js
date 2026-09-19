@@ -57,9 +57,89 @@ export function extractFeatures(text) {
 const titleCase = (s) =>
   s.split(/[\s-]+/).filter(Boolean).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
 
+export function mapCategoryOrTitleToWaterfallPhase(category = "", title = "") {
+  const c = String(category || "").toLowerCase();
+  const t = String(title || "").toLowerCase();
+
+  // 1. Requirements
+  if (
+    t.includes("requirement") ||
+    t.includes("srs") ||
+    t.includes("feasibility") ||
+    t.includes("scope") ||
+    t.includes("stakeholder") ||
+    c.includes("requirement") ||
+    c === "planning" && (t.includes("analysis") || t.includes("research") || t.includes("study") || t.includes("requirement")) ||
+    c === "research"
+  ) {
+    return "requirements";
+  }
+
+  // 2. System Design
+  if (
+    t.includes("architecture") ||
+    t.includes("schema") ||
+    t.includes("design") ||
+    t.includes("specification") ||
+    t.includes("uml") ||
+    t.includes("wireframe") ||
+    t.includes("selection") ||
+    c.includes("design") ||
+    c.includes("architecture")
+  ) {
+    return "design";
+  }
+
+  // 4. Verification / Testing
+  if (
+    t.includes("test") ||
+    t.includes("verification") ||
+    t.includes("qa") ||
+    t.includes("audit") ||
+    t.includes("benchmark") ||
+    c.includes("test") ||
+    c.includes("qa") ||
+    c.includes("verification")
+  ) {
+    return "testing";
+  }
+
+  // 5. Deployment
+  if (
+    t.includes("deploy") ||
+    t.includes("ci/cd") ||
+    t.includes("release") ||
+    t.includes("docker") ||
+    t.includes("kubernetes") ||
+    t.includes("staging") ||
+    t.includes("cloud infrastructure") ||
+    c.includes("deployment") ||
+    c.includes("devops")
+  ) {
+    return "deployment";
+  }
+
+  // 6. Maintenance
+  if (
+    t.includes("monitoring") ||
+    t.includes("alerting") ||
+    t.includes("maintenance") ||
+    t.includes("performance tuning") ||
+    t.includes("logging") ||
+    t.includes("runbook") ||
+    t.includes("review") ||
+    c.includes("maintenance")
+  ) {
+    return "maintenance";
+  }
+
+  // 3. Implementation (Default for development/engineering tasks)
+  return "implementation";
+}
+
 /**
- * decomposeProject(title, description) → seed task objects (grouped by category).
- * Deterministic: same input → same backlog.
+ * decomposeProject(title, description) → seed task objects (grouped by category and Waterfall phase).
+ * Deterministic: same input → same backlog distributed across all 6 Waterfall phases.
  */
 export function decomposeProject(projectTitle = "", description = "") {
   const text = `${projectTitle} ${description}`.trim();
@@ -76,69 +156,114 @@ export function decomposeProject(projectTitle = "", description = "") {
   const features = extractFeatures(text);
   const topFeatures = features.slice(0, 3).map(titleCase);
 
-  // Each phase: { category, urgency, impact, hours, tasks: [...] }.
-  const phases = [];
-  const add = (category, urgency, impact, hours, tasks) =>
-    tasks.length && phases.push({ category, urgency, impact, hours, tasks });
+  // Each phase definition: { phase, category, urgency, impact, hours, tasks: [...] }
+  const stages = [];
+  const addStage = (phase, category, urgency, impact, hours, tasks) => {
+    if (tasks && tasks.length) {
+      stages.push({ phase, category, urgency, impact, hours, tasks: [...new Set(tasks)] });
+    }
+  };
 
-  // 1. Planning — always.
-  add("Planning", 5, 4, 4, ["Requirement Analysis", "Technology Selection", "Project Architecture Design"]);
+  // ── 1. REQUIREMENTS (always) ──
+  addStage("requirements", "Requirements", 5, 5, 4, [
+    "Requirement Analysis & Scope Definition",
+    "Domain & Requirement Research",
+    "Feasibility Study & Stakeholder Specifications",
+  ]);
 
-  // 2. Research — always (feeds every downstream phase).
-  add("Research", 4, 3, 3, ["Domain & Requirement Research", "Technology & Feasibility Study"]);
+  // ── 2. SYSTEM DESIGN (always) ──
+  addStage("design", "Design", 4, 5, 5, [
+    "Project Architecture & System Design",
+    "Database Schema & Entity Relationship Design",
+    "Technology Selection & Interface Contracts",
+  ]);
 
-  // 2. Hardware — only for IoT/device projects, specialised by detected nouns.
+  // ── 3. IMPLEMENTATION ──
+  // Hardware (for IoT/device projects)
   if (active.hardware) {
     const specials = HARDWARE_SPECIALS.filter((h) => h.re.test(text)).map((h) => h.task);
-    const tasks = specials.length ? specials : ["Sensor Integration", "Microcontroller Setup", "Actuator Control Wiring"];
-    add("Hardware", 4, 4, 6, [...new Set(tasks)].slice(0, 4));
+    const hwTasks = specials.length ? specials : ["Sensor Integration", "Microcontroller Setup", "Actuator Control Wiring"];
+    addStage("implementation", "Hardware", 4, 4, 6, hwTasks.slice(0, 4));
   }
 
-  // 3. Backend — almost always; enrich with top feature.
-  const backend = ["Database Schema Design", "REST API Development"];
-  if (active.security) backend.push("Authentication & Access Control");
-  if (active.payments) backend.push("Payment & Order Service");
-  if (/\b(cloud|storage|s3|bucket)\b/i.test(text)) backend.push("Cloud Storage Integration");
-  if (topFeatures[0]) backend.push(`${topFeatures[0]} Service Implementation`);
-  add("Backend", 4, 5, 6, [...new Set(backend)].slice(0, 5));
+  // Backend
+  const backendTasks = ["REST API Development"];
+  if (active.security) backendTasks.push("Authentication & Access Control");
+  if (active.payments) backendTasks.push("Payment & Order Service");
+  if (/\b(cloud|storage|s3|bucket)\b/i.test(text)) backendTasks.push("Cloud Storage Integration");
+  if (topFeatures[0]) backendTasks.push(`${topFeatures[0]} Service Implementation`);
+  addStage("implementation", "Backend", 4, 5, 6, backendTasks);
 
-  // 4. AI/ML.
-  if (active.ai) add("AI / ML", 3, 5, 8, ["Dataset Collection & Labelling", "Model Training & Evaluation", "Prediction Service Integration"]);
+  // AI / ML
+  if (active.ai) {
+    addStage("implementation", "AI / ML", 3, 5, 8, [
+      "Dataset Collection & Labelling",
+      "Model Training & Evaluation",
+      "Prediction Service Integration",
+    ]);
+  }
 
-  // 5. Realtime / Integration.
-  if (active.realtime) add("Integration", 3, 4, 5, ["Realtime Sync Service", "Notification & Alert System"]);
+  // Realtime / Integration
+  if (active.realtime) {
+    addStage("implementation", "Integration", 3, 4, 5, [
+      "Realtime Sync Service",
+      "Notification & Alert System",
+    ]);
+  }
 
-  // 6. Frontend — almost always.
-  const frontend = ["Dashboard UI Design"];
-  if (active.analytics) frontend.push("Analytics & Reporting Screen");
-  frontend.push("Settings & Profile Screens");
-  if (topFeatures[1]) frontend.push(`${topFeatures[1]} Management Screen`);
-  add("Frontend", 3, 4, 5, [...new Set(frontend)].slice(0, 4));
+  // Frontend
+  const frontendTasks = ["Dashboard UI Development"];
+  if (active.analytics) frontendTasks.push("Analytics & Reporting Screen");
+  frontendTasks.push("Settings & Profile Screens");
+  if (topFeatures[1]) frontendTasks.push(`${topFeatures[1]} Management Screen`);
+  addStage("implementation", "Frontend", 3, 4, 5, frontendTasks);
 
-  // 7. Testing — always.
-  add("Testing", 3, 3, 4, ["Integration Testing", "User Acceptance Testing"]);
+  // ── 4. VERIFICATION / TESTING (always) ──
+  addStage("testing", "Testing", 4, 4, 4, [
+    "Unit & Component Testing",
+    "Integration Testing",
+    "Security & Quality Assurance Verification",
+  ]);
 
-  // 8. Deployment — always.
-  add("Deployment", 2, 3, 3, ["Cloud Deployment & CI/CD", "Monitoring & Alerting Setup"]);
+  // ── 5. DEPLOYMENT (always) ──
+  addStage("deployment", "Deployment", 3, 4, 4, [
+    "Cloud Infrastructure & CI/CD Pipeline",
+    "Staging Environment Setup & Deployment",
+  ]);
 
-  // Flatten to seed tasks. businessValue/estimatedHours are DERIVED from the
-  // phase profile (never project-specific magic numbers) so Knapsack/greedy work.
-  // `phaseIndex` lets the caller wire inter-phase dependencies (phase N depends
-  // on phase N-1) so the dependency graph and topological roadmap are connected.
+  // ── 6. MAINTENANCE (always) ──
+  addStage("maintenance", "Maintenance", 2, 3, 3, [
+    "Production Monitoring & Alerting Setup",
+    "Performance Optimization & Maintenance Review",
+  ]);
+
+  // Flatten to seed tasks with explicit phase metadata
+  const phaseOrderMap = {
+    requirements: 0,
+    design: 1,
+    implementation: 2,
+    testing: 3,
+    deployment: 4,
+    maintenance: 5,
+  };
+
   const seeds = [];
-  phases.forEach((p, phaseIndex) => {
-    for (const title of p.tasks) {
+  stages.forEach((st) => {
+    const phaseIdx = phaseOrderMap[st.phase] ?? 0;
+    for (const title of st.tasks) {
       seeds.push({
         title,
-        category: p.category,
-        description: `${p.category} deliverable for ${projectTitle || "the project"}.`,
-        urgency: p.urgency,
-        impact: p.impact,
-        estimatedHours: p.hours,
-        businessValue: p.impact * 2,
-        phaseIndex,
+        category: st.category,
+        phase: st.phase,
+        phaseIndex: phaseIdx,
+        description: `${st.category} deliverable for ${projectTitle || "the project"} (${st.phase} phase).`,
+        urgency: st.urgency,
+        impact: st.impact,
+        estimatedHours: st.hours,
+        businessValue: st.impact * 2,
       });
     }
   });
+
   return seeds;
 }

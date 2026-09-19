@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, Platform } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -10,6 +10,7 @@ import ImageUploader from "@/components/ImageUploader";
 import FloatingBackground from "@/components/FloatingBackground";
 import { ModalSheet, useConfirm, useToast } from "@/components/feedback";
 import { colors, spacing, radius, font, layout, glass, shadow } from "@/theme";
+import { API_BASE_URL } from "@/utils/api";
 
 const SKILL_OPTIONS = [
   "Frontend", "Backend", "Full Stack",
@@ -34,13 +35,21 @@ type ProfileDraft = {
   image: string | null;
 };
 
+type VerificationRecord = {
+  skill: string;
+  verified: boolean;
+  score: number;
+  totalQuestions: number;
+  createdAt?: string;
+};
+
 // Web-only gradient cover; solid fallback on native.
 const coverStyle = Platform.OS === "web"
   ? ({ backgroundImage: `linear-gradient(135deg, ${colors.primary} 0%, ${colors.accent} 100%)` } as any)
   : { backgroundColor: colors.primary };
 
 export default function Profile() {
-  const { user, signOut, updateProfile } = useAuth();
+  const { user, token, signOut, updateProfile, refreshProfile } = useAuth();
   const { teams } = useTeams();
   const confirm = useConfirm();
   const toast = useToast();
@@ -57,6 +66,65 @@ export default function Profile() {
     experience: user?.experience || "Mid-level",
     image: user?.avatar || null,
   });
+
+  // FIX 1: Fetch verification records from backend for verified badge display
+  const [verifications, setVerifications] = useState<VerificationRecord[]>([]);
+
+  const fetchVerifications = useCallback(async () => {
+    if (!token) return;
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/skills/verifications`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const arr = await res.json();
+        if (Array.isArray(arr)) {
+          // Build latest verification per skill
+          const map = new Map<string, VerificationRecord>();
+          for (const v of arr) {
+            const k = String(v.skill || "").trim();
+            if (!k) continue;
+            const cur = map.get(k);
+            if (!cur || new Date(v.createdAt) > new Date(cur.createdAt ?? 0)) {
+              map.set(k, {
+                skill: k,
+                verified: v.verified,
+                score: v.score,
+                totalQuestions: v.totalQuestions,
+                createdAt: v.createdAt,
+              });
+            }
+          }
+          setVerifications(Array.from(map.values()));
+        }
+      }
+    } catch {
+      // Non-fatal
+    }
+  }, [token]);
+
+  useEffect(() => {
+    fetchVerifications();
+  }, [fetchVerifications]);
+
+  // FIX 1: Build a set of verified skill names for badge display
+  const verifiedSkillSet = useMemo(() => {
+    const set = new Set<string>();
+    for (const v of verifications) {
+      if (v.verified) set.add(v.skill);
+    }
+    return set;
+  }, [verifications]);
+
+  // FIX 1: Merge user.skills with verified skills to produce a complete skill list
+  const displaySkills = useMemo(() => {
+    const allSkills = new Set<string>(user?.skills || []);
+    // Add verified skills that might not be in user.skills yet (edge case)
+    for (const v of verifications) {
+      if (v.verified) allSkills.add(v.skill);
+    }
+    return Array.from(allSkills);
+  }, [user?.skills, verifications]);
 
   // Sync draft when user changes
   useEffect(() => {
@@ -156,14 +224,37 @@ export default function Profile() {
             <StatCard icon="checkmark-done" label="Completion" value={`${stats.completion}%`} color={colors.success} />
           </View>
 
-          {/* Skills */}
+          {/* Skills — FIX 1: Show verified badges */}
           <Card style={{ gap: spacing.sm }}>
-            <Text style={font.h3}>Skills</Text>
-            {(!user?.skills || user.skills.length === 0) ? (
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+              <Text style={font.h3}>Skills</Text>
+              {verifiedSkillSet.size > 0 && (
+                <View style={s.verifiedCountBadge}>
+                  <Ionicons name="shield-checkmark" size={12} color={colors.success} />
+                  <Text style={s.verifiedCountTxt}>{verifiedSkillSet.size} Verified</Text>
+                </View>
+              )}
+            </View>
+            {displaySkills.length === 0 ? (
               <Text style={s.muted}>No skills added yet.</Text>
             ) : (
               <View style={s.tagRow}>
-                {user.skills.map((sk) => <Badge key={sk} label={sk} color={colors.accentDark} bg={colors.accentSoft} />)}
+                {displaySkills.map((sk) => {
+                  const isVerified = verifiedSkillSet.has(sk);
+                  return (
+                    <View key={sk} style={[s.skillBadge, isVerified && s.skillBadgeVerified]}>
+                      {isVerified && (
+                        <Ionicons name="checkmark-circle" size={13} color={colors.success} />
+                      )}
+                      <Text style={[s.skillBadgeTxt, isVerified && s.skillBadgeTxtVerified]}>
+                        {sk}
+                      </Text>
+                      {isVerified && (
+                        <Text style={s.verifiedLabel}>Verified</Text>
+                      )}
+                    </View>
+                  );
+                })}
               </View>
             )}
           </Card>
@@ -288,6 +379,52 @@ const s = StyleSheet.create({
 
   muted: { fontSize: 13, color: colors.textMuted },
   tagRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+
+  // FIX 1: Skill badge styles with verified state
+  skillBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: radius.pill,
+    backgroundColor: colors.accentSoft,
+    borderWidth: 1,
+    borderColor: colors.accentBorder || colors.border,
+  },
+  skillBadgeVerified: {
+    backgroundColor: colors.successSoft,
+    borderColor: colors.success,
+  },
+  skillBadgeTxt: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: colors.accentDark,
+  },
+  skillBadgeTxtVerified: {
+    color: colors.success,
+  },
+  verifiedLabel: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: colors.success,
+    textTransform: "uppercase",
+    letterSpacing: 0.3,
+  },
+  verifiedCountBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    borderRadius: radius.pill,
+    backgroundColor: colors.successSoft,
+  },
+  verifiedCountTxt: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: colors.success,
+  },
 
   row: { flexDirection: "row", alignItems: "center", gap: spacing.md, paddingVertical: 8 },
   rowTitle: { fontSize: 14, fontWeight: "700", color: colors.text },

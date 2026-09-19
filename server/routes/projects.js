@@ -117,6 +117,7 @@ import {
   evaluateProjectPhaseGate,
   advanceProjectPhase,
   overrideProjectPhaseGate,
+  getWaterfallPhaseStates,
 } from "../services/phaseGateService.js";
 import { simulateChangeImpact } from "../services/changeImpactService.js";
 import { handleProjectMutation } from "../services/reactiveEngine.js";
@@ -234,6 +235,16 @@ router.post("/projects", requireAuth, async (req, res) => {
     }
     if (!title || !String(title).trim()) {
       return res.status(400).json({ error: "Project title is required." });
+    }
+
+    // FIX A & B: Project description validation — minimum 1000 meaningful characters
+    const rawProjectDesc = description || originalPrompt || req.body?.projectDescription || "";
+    const projectDescTrimmed = String(rawProjectDesc || "").trim();
+    if (!projectDescTrimmed || projectDescTrimmed.length < 1000) {
+      return res.status(400).json({
+        error: "INVALID_DESCRIPTION",
+        message: "Project description must contain at least 1000 meaningful characters.",
+      });
     }
 
     // Verify the team exists
@@ -540,6 +551,12 @@ router.post("/projects/:projectId/plan/extract", requireAuth, async (req, res) =
     if (!project) return;
 
     const artifacts = project.artifacts || [];
+    if (!artifacts || artifacts.length === 0) {
+      return res.status(400).json({
+        error: "Upload an SRS, specification, or project artifact before analyzing.",
+      });
+    }
+
     const extracted = await extractRequirementsFromArtifacts({
       artifacts,
       projectTitle: project.title,
@@ -552,6 +569,20 @@ router.post("/projects/:projectId/plan/extract", requireAuth, async (req, res) =
       extracted,
       message: "Draft plan extracted successfully. Review and approve before persisting.",
     });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /api/projects/:projectId/waterfall/state ──────────────────────────────
+// Authoritative Waterfall phase and sequential gate evaluation across all tabs.
+router.get("/projects/:projectId/waterfall/state", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const state = await getWaterfallPhaseStates(project._id, project.teamId);
+    res.json({ success: true, ...state });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

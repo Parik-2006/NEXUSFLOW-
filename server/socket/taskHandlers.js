@@ -5,6 +5,7 @@ import { computePriorityScore } from "../algorithms/greedyScheduler.js";
 import { buildGraph, topologicalSort as topoSortGraph } from "../algorithms/graphTraversal.js";
 
 import { verifyTeamAccess } from "../routes/teams.js";
+import { assertWaterfallTaskExecutable, getWaterfallPhaseStates } from "../services/phaseGateService.js";
 
 // createdBy is an ObjectId ref. Dev auth uses email as the user id, so only set
 // createdBy when it's actually a valid ObjectId — never crash Mongo validation.
@@ -188,6 +189,17 @@ export function registerTaskHandlers(io, socket) {
         effPrev = cur?.status;
       }
 
+      // Waterfall Phase Gate Server-side Enforcement
+      if (newStatus && (newStatus === "in_progress" || newStatus === "done")) {
+        const existingTask = await Task.findById(taskId).lean();
+        if (!existingTask) return ack?.({ ok: false, error: "not_found" });
+        try {
+          await assertWaterfallTaskExecutable(existingTask, newStatus);
+        } catch (gateErr) {
+          return ack?.({ ok: false, error: gateErr.message, phase: gateErr.phase, locked: true });
+        }
+      }
+
       // Stamp/clear completedAt for accurate deadline-success tracking.
       if (newStatus !== undefined) {
         if (newStatus === "done" && effPrev !== "done") updatePayload.completedAt = new Date();
@@ -207,6 +219,15 @@ export function registerTaskHandlers(io, socket) {
       }
 
       io.to(`team:${teamId}`).emit("task:updated", { ...task, prevStatus: effPrev });
+      if (newStatus !== undefined) {
+        const wfState = await getWaterfallPhaseStates(task.projectId, teamId).catch(() => null);
+        if (wfState) {
+          io.to(`team:${teamId}`).emit("waterfall:phase:updated", wfState);
+          if (task.projectId) {
+            io.to(`project:${task.projectId}`).emit("waterfall:phase:updated", wfState);
+          }
+        }
+      }
       notifyHealthAndRiskChange(io, teamId);
       ack?.({ ok: true, task });
     } catch (e) {

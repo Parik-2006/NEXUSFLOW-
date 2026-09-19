@@ -15,9 +15,15 @@
  *     tasks, health, risks) all see the same person.
  *   - The creator can pick specific skills from an expanded catalog.
  *   - Existing profile skills are shown but not overwritten.
+ *
+ * MANUAL QA FIXES:
+ *   FIX 2: Example project templates (5-7), description min 1000 chars,
+ *          live counter, fields that must NOT be auto-filled.
+ *   FIX 3: Selectable recommended capabilities, per-capability verification,
+ *          mandatory quiz attempt before Continue, profile sync.
  */
-import React, { useEffect, useMemo, useState } from "react";
-import { View, Text, Pressable, StyleSheet, ActivityIndicator } from "react-native";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
+import { View, Text, Pressable, StyleSheet, ActivityIndicator, ScrollView } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { ModalSheet, useToast } from "@/components/feedback";
 import { Field, Button, Avatar, Chip, Badge } from "@/components/ui";
@@ -155,21 +161,16 @@ export const ROLE_CAPABILITIES: Record<
 
 const STEPS = ["Project", "Your role", "Members", "AI plan"];
 
-const DESC_MIN = 350;
-const DESC_MAX = 1000;
+const DESC_MIN = 1000;
+const DESC_RECOMMENDED = 1200;
+const DESC_MAX = 10000;
 
-// Sample project descriptions surfaced by the "Generate Example Description"
-// button. These are GUIDANCE only — NexusFlow decomposes whatever you write.
-const EXAMPLES: { title: string; text: string }[] = [
-  {
-    title: "AI-Based Student Performance Prediction System",
-    text: "Build an AI-based student performance prediction system where academic historical data and continuous assessment metrics train a machine-learning model to forecast student risk levels and recommend personalized interventions. The backend processes student datasets securely with role-based access for teachers and students, while a React web interface displays predicted grade trajectories, automated teacher alerts for at-risk students, and interactive performance charts.",
-  },
-  { title: "Smart Irrigation System", text: "Build an AI-driven smart irrigation system that uses IoT soil-moisture and temperature sensors with an ESP32 microcontroller to automatically schedule watering. Sensor readings stream over MQTT to a cloud backend that combines weather forecasting and a machine-learning model to predict optimal irrigation windows and control water pumps. Farmers monitor multiple fields, configure per-zone schedules, trigger manual overrides, and receive alerts when moisture drops below crop-specific thresholds, all through a mobile analytics dashboard with water-savings reporting." },
-  { title: "E-Commerce Platform", text: "Develop a full-stack e-commerce platform where customers browse a product catalog, manage a shopping cart, and check out securely with online payments. The backend handles product and inventory management, order processing, and a recommendation engine that suggests products based on browsing history. Include user authentication with role-based access for customers and admins, order tracking, email notifications, and an admin dashboard with sales analytics, revenue charts and low-stock alerts. The system must scale to handle seasonal traffic spikes reliably." },
-  { title: "Hospital Management System", text: "Create a hospital management system that digitises patient records, appointment scheduling, and billing across departments. Doctors and nurses access electronic health records, prescribe medication, and view lab results; receptionists book appointments and manage queues. The backend manages patients, staff, beds and pharmacy inventory with secure role-based access and full audit logging for compliance. Provide real-time notifications for appointments and critical alerts, plus an analytics dashboard covering occupancy, revenue and patient flow for administrators." },
-  { title: "AI Interview Assistant", text: "Build an AI interview assistant that helps candidates practise technical and behavioural interviews. The platform generates role-specific questions, records spoken answers, and uses a machine-learning model with natural-language processing to evaluate responses for clarity, relevance and confidence. Candidates receive instant feedback, scores and improvement tips; recruiters create custom question banks and review session reports. Include user authentication, a progress dashboard with performance trends over time, and real-time notifications for scheduled mock interviews." },
-];
+// ══════════════════════════════════════════════════════════════════════════════
+// FIX A: EXAMPLE PROJECT TEMPLATES (with 1,200+ char descriptions)
+// ══════════════════════════════════════════════════════════════════════════════
+import { PROJECT_TEMPLATES, type ProjectTemplate } from "@/constants/projectTemplates";
+export { PROJECT_TEMPLATES, type ProjectTemplate };
+
 
 // Teammate = real registered user (with `_id`).
 // `skills` are the workspace-specific skill picks (separate from profile skills).
@@ -189,12 +190,20 @@ type LookupState =
   | { kind: "found"; user: { _id: string; name: string; email: string; avatar?: string; skills: string[] } }
   | { kind: "not_found"; email: string };
 
+// FIX 3: Track capability verification attempt state
+type CapabilityAttempt = {
+  skill: string;
+  attempted: boolean;
+  verified: boolean;
+  score: number;
+};
+
 export default function CreateTeamModal({ visible, onClose, onCreate }: {
   visible: boolean; onClose: () => void;
   onCreate: (input: NewTeamInput) => Promise<{ error?: string }>;
 }) {
   const toast = useToast();
-  const { user, token: tokenStr } = useAuth();
+  const { user, token: tokenStr, refreshProfile } = useAuth();
   const [step, setStep] = useState(0);
   const [name, setName] = useState("");
   const [logo, setLogo] = useState<string | null>(null);
@@ -220,39 +229,64 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
   const [activeQuizSkill, setActiveQuizSkill] = useState<string | null>(null);
   const [pickedCategory, setPickedCategory] = useState<string>(SKILL_CATEGORIES[0].key);
   const [busy, setBusy] = useState(false);
-  const [showExamples, setShowExamples] = useState(false);
+
+  // FIX 2: Template selector state
+  const [showTemplates, setShowTemplates] = useState(false);
+  const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null);
+
+  // FIX 3: Selectable capability state
+  const [selectedCapabilities, setSelectedCapabilities] = useState<string[]>([]);
+  const [capabilityAttempts, setCapabilityAttempts] = useState<Record<string, CapabilityAttempt>>({});
 
   // Load existing verifications for the creator
-  useEffect(() => {
-    if (tokenStr && visible) {
-      fetch(`${API_BASE_URL}/api/skills/verifications`, {
+  const refreshVerifications = useCallback(async () => {
+    if (!tokenStr || !visible) return;
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/skills/verifications`, {
         headers: { Authorization: `Bearer ${tokenStr}` },
-      })
-        .then((res) => res.json())
-        .then((data) => {
-          if (Array.isArray(data)) {
-            const list = data
-              .filter((v: any) => v.verified)
-              .map((v: any) => String(v.skill || "").toLowerCase().trim());
-            setUserVerifications(list);
-          }
-        })
-        .catch(() => {});
-    }
+      });
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        const list = data
+          .filter((v: any) => v.verified)
+          .map((v: any) => String(v.skill || "").toLowerCase().trim());
+        setUserVerifications(list);
+      }
+    } catch {}
   }, [tokenStr, visible]);
 
-  const descLen = description.trim().length;
-  const descTooShort = descLen > 0 && descLen < DESC_MIN;
+  useEffect(() => {
+    refreshVerifications();
+  }, [refreshVerifications]);
+
+  // FIX A & B: Description validation — minimum 1000 meaningful characters, 1200+ recommended
+  const descTrimmed = description.trim();
+  const descLen = descTrimmed.length;
+  const descValid = descLen >= DESC_MIN;
+  const descRecommended = descLen >= DESC_RECOMMENDED;
   const descCounterColor = descLen === 0 ? colors.textFaint
     : descLen < DESC_MIN ? colors.danger
-    : descLen > DESC_MAX ? colors.warning : colors.success;
+    : descLen < DESC_RECOMMENDED ? colors.accent
+    : colors.success;
+
+  // FIX 3: Check if all selected capabilities have been attempted
+  const allCapabilitiesAttempted = useMemo(() => {
+    if (selectedCapabilities.length === 0) return true; // no selection = no requirement
+    return selectedCapabilities.every((sk) => capabilityAttempts[sk]?.attempted);
+  }, [selectedCapabilities, capabilityAttempts]);
+
+  const unattemptedCapabilities = useMemo(() => {
+    return selectedCapabilities.filter((sk) => !capabilityAttempts[sk]?.attempted);
+  }, [selectedCapabilities, capabilityAttempts]);
 
   const reset = () => {
     setStep(0); setName(""); setLogo(null); setProjectTitle(""); setDescription("");
     setDomain("AI"); setMethodology("WATERFALL"); setDeadline(""); setClientRequirements("");
     setRole("leader"); setMembers([]); setMEmail(""); setLookup({ kind: "idle" });
     setDraftMemberRole("member"); setActiveQuizSkill(null);
-    setPickedCategory(SKILL_CATEGORIES[0].key); setShowExamples(false);
+    setPickedCategory(SKILL_CATEGORIES[0].key);
+    setShowTemplates(false); setSelectedTemplate(null);
+    setSelectedCapabilities([]); setCapabilityAttempts({});
   };
   const close = () => { reset(); onClose(); };
 
@@ -345,17 +379,56 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
     return [...new Set(phases)];
   }, [projectTitle, description]);
 
-  const fillExample = () => {
-    const ex = EXAMPLES[Math.floor(Math.random() * EXAMPLES.length)];
-    if (!projectTitle.trim()) setProjectTitle(ex.title);
-    setDescription(ex.text);
-    setShowExamples(false);
+  // FIX A: Template selection — populates title, domain, methodology, client requirements, AND description
+  // Team name and due date remain empty for user entry. Populated description is immediately editable.
+  const selectTemplate = (template: ProjectTemplate) => {
+    setProjectTitle(template.title);
+    setDomain(template.domain);
+    setMethodology(template.methodology);
+    setClientRequirements(template.clientRequirements);
+    setDescription(template.description || "");
+    setSelectedTemplate(template.id);
+    setShowTemplates(false);
+  };
+
+  // FIX 3: Toggle capability selection
+  const toggleCapability = (skill: string) => {
+    setSelectedCapabilities((prev) => {
+      if (prev.includes(skill)) {
+        return prev.filter((s) => s !== skill);
+      }
+      return [...prev, skill];
+    });
+  };
+
+  // FIX 3: Handle quiz completion for capability verification
+  const handleCapabilityVerified = (skill: string, score: number) => {
+    const isVerified = score >= 3;
+    setCapabilityAttempts((prev) => ({
+      ...prev,
+      [skill]: { skill, attempted: true, verified: isVerified, score },
+    }));
+    // Refresh user verifications from backend
+    refreshVerifications();
+    if (refreshProfile) refreshProfile();
   };
 
   const next = () => {
-    if (step === 0 && !name.trim()) { toast("Team name is required", "error"); return; }
-    if (step === 0 && descLen > 0 && descLen < DESC_MIN) {
-      toast(`Description needs at least ${DESC_MIN} characters for a good AI plan`, "error"); return;
+    if (step === 0) {
+      if (!name.trim()) { toast("Team name is required", "error"); return; }
+      // FIX 2: Description is mandatory with 1000 char minimum
+      if (!descTrimmed) { toast("Description is required", "error"); return; }
+      if (descLen < DESC_MIN) {
+        toast(`Description must contain at least ${DESC_MIN} characters. Currently: ${descLen}`, "error");
+        return;
+      }
+    }
+    if (step === 1) {
+      // FIX 3: Block Continue if selected capabilities have unattempted quizzes
+      if (selectedCapabilities.length > 0 && !allCapabilitiesAttempted) {
+        toast("Complete verification for all selected capabilities before continuing.", "error");
+        return;
+      }
     }
     setStep((s) => Math.min(STEPS.length - 1, s + 1));
   };
@@ -363,6 +436,11 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
 
   const submit = async () => {
     if (!name.trim()) { toast("Team name is required", "error"); return; }
+    // FIX 2: Final validation for description length
+    if (descTrimmed.length < DESC_MIN) {
+      toast(`Description must contain at least ${DESC_MIN} characters.`, "error");
+      return;
+    }
     setBusy(true);
     const input: NewTeamInput = {
       name: name.trim(),
@@ -403,6 +481,13 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
 
   const currentCategory = SKILL_CATEGORIES.find((c) => c.key === pickedCategory) || SKILL_CATEGORIES[0];
 
+  // Continue button disabled logic:
+  // Step 0 requires team name and at least 1,000 meaningful characters.
+  // Step 1 requires all selected capabilities to be attempted.
+  const step0ContinueDisabled = step === 0 && (!name.trim() || descLen < DESC_MIN);
+  const step1ContinueDisabled = step === 1 && selectedCapabilities.length > 0 && !allCapabilitiesAttempted;
+  const continueDisabled = step0ContinueDisabled || step1ContinueDisabled;
+
   return (
     <ModalSheet visible={visible} onClose={close} title="New workspace">
       {/* Progress */}
@@ -422,6 +507,55 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
       {step === 0 && (
         <View style={{ gap: spacing.md }}>
           <Text style={s.stepHint}>Define your project foundation, engineering methodology, and requirements.</Text>
+
+          {/* FIX 2: Example Projects Template Selector */}
+          <View style={s.templateSection}>
+            <Pressable style={s.templateToggleBtn} onPress={() => setShowTemplates((v) => !v)}>
+              <Ionicons name="sparkles" size={16} color={colors.accentDark} />
+              <Text style={s.templateToggleTxt}>
+                {showTemplates ? "Hide Example Projects" : "✨ Example Projects"}
+              </Text>
+              <Ionicons name={showTemplates ? "chevron-up" : "chevron-down"} size={16} color={colors.accentDark} />
+            </Pressable>
+
+            {showTemplates && (
+              <View style={s.templateGrid}>
+                <Text style={s.templateGridHint}>
+                  Select a template to auto-fill project details. You can edit everything afterwards.
+                </Text>
+                {PROJECT_TEMPLATES.map((tpl) => {
+                  const isSelected = selectedTemplate === tpl.id;
+                  return (
+                    <Pressable
+                      key={tpl.id}
+                      style={[s.templateCard, isSelected && s.templateCardSelected]}
+                      onPress={() => selectTemplate(tpl)}
+                    >
+                      <View style={s.templateCardHeader}>
+                        <Ionicons name={tpl.domainIcon as any} size={18} color={isSelected ? colors.primary : colors.accentDark} />
+                        <Text style={[s.templateCardTitle, isSelected && { color: colors.primary }]}>{tpl.title}</Text>
+                        {isSelected && <Ionicons name="checkmark-circle" size={18} color={colors.primary} />}
+                      </View>
+                      <View style={s.templateTagRow}>
+                        {tpl.tags.map((tag) => (
+                          <Text key={tag} style={s.templateTag}>{tag}</Text>
+                        ))}
+                      </View>
+                      <Text style={s.templateDesc} numberOfLines={2}>{tpl.objective}</Text>
+                    </Pressable>
+                  );
+                })}
+
+                <View style={s.templateInfoBox}>
+                  <Ionicons name="information-circle-outline" size={16} color={colors.textMuted} />
+                  <Text style={s.templateInfoTxt}>
+                    Templates populate project details, requirements, and a comprehensive starter description (1,200+ characters). You can freely edit the description, team name, and target deadline.
+                  </Text>
+                </View>
+              </View>
+            )}
+          </View>
+
           <Field label="Project title" placeholder="e.g. AI Student Performance Prediction System" value={projectTitle} onChangeText={setProjectTitle} icon="rocket-outline" />
           <Field label="Team / Workspace name" placeholder="e.g. Engineering Team Alpha" value={name} onChangeText={setName} icon="people-outline" />
           <ImageUploader label="Team logo (optional)" value={logo} onChange={setLogo} shape="square" size={72} />
@@ -529,7 +663,7 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
 
           {/* Target Deadline */}
           <DatePicker
-            label="Target Project Deadline (optional)"
+            label="Target Project Deadline"
             value={deadline}
             onChange={setDeadline}
           />
@@ -544,61 +678,56 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
             multiline
           />
 
-          {/* Description Guide Card */}
-          <View style={s.guideCard}>
-            <View style={s.guideHead}>
-              <Ionicons name="bulb-outline" size={16} color={colors.accentDark} />
-              <Text style={s.guideTitle}>Writing a great description</Text>
+          {/* FIX A & B: Description — Mandatory, minimum 1000 characters, 1200+ recommended */}
+          <View style={s.descSection}>
+            <View style={s.descLabelRow}>
+              <Text style={s.subSectionLabel}>Project Description *</Text>
+              <Text style={[s.descRequired, descValid && { color: colors.success }]}>
+                {descRecommended
+                  ? "✓ Description ready for project analysis"
+                  : descValid
+                    ? "✓ Minimum requirement met · 1,200+ recommended"
+                    : "Required — minimum 1,000 characters"}
+              </Text>
             </View>
-            <Text style={s.guideTxt}>
-              Describe the project goal, key features and deliverables — not a task list.
-              NexusFlow decomposes it into a grouped backlog. Aim for {DESC_MIN}–{DESC_MAX} characters.
-            </Text>
-            <View style={s.guideBtnRow}>
-              <Pressable style={s.exampleBtn} onPress={() => setShowExamples((v) => !v)}>
-                <Ionicons name={showExamples ? "chevron-up" : "document-text-outline"} size={14} color={colors.primary} />
-                <Text style={s.exampleBtnTxt}>{showExamples ? "Hide examples" : "See examples"}</Text>
-              </Pressable>
-              <Pressable style={s.exampleBtn} onPress={fillExample}>
-                <Ionicons name="sparkles" size={14} color={colors.accentDark} />
-                <Text style={[s.exampleBtnTxt, { color: colors.accentDark }]}>Load Student AI Prediction Example</Text>
-              </Pressable>
-            </View>
-            {showExamples && (
-              <View style={{ gap: 6, marginTop: 4 }}>
-                {EXAMPLES.map((ex) => (
-                  <Pressable key={ex.title} style={s.exampleRow} onPress={() => { if (!projectTitle.trim()) setProjectTitle(ex.title); setDescription(ex.text); setShowExamples(false); }}>
-                    <Ionicons name="sparkles-outline" size={13} color={colors.accentDark} />
-                    <Text style={s.exampleRowTxt} numberOfLines={1}>{ex.title}</Text>
-                    <Ionicons name="add-circle-outline" size={15} color={colors.primary} />
-                  </Pressable>
-                ))}
-              </View>
-            )}
-          </View>
 
-          <Field
-            label="Project description"
-            placeholder="Describe the project — goals, scope, key features. NexusFlow turns this into your starter backlog."
-            value={description} onChangeText={(v) => setDescription(v.slice(0, DESC_MAX))} multiline maxLength={DESC_MAX}
-          />
-          <View style={s.counterRow}>
-            {descTooShort
-              ? <Text style={[s.counterHint, { color: colors.danger }]}>Add a bit more detail for a stronger AI plan.</Text>
-              : <Text style={s.counterHint}>Minimum {DESC_MIN} characters recommended.</Text>}
-            <Text style={[s.counter, { color: descCounterColor }]}>{descLen}/{DESC_MAX}</Text>
+            <Field
+              label=""
+              placeholder="Describe the project — goals, scope, key features, deliverables, and technical requirements. NexusFlow turns this into your starter backlog. Write a comprehensive description of at least 1,000 characters (1,200+ recommended)."
+              value={description}
+              onChangeText={(v) => setDescription(v)}
+              multiline
+              numberOfLines={8}
+              maxLength={DESC_MAX}
+              style={{ minHeight: 140 }}
+            />
+
+            <View style={s.counterRow}>
+              <Text style={[s.counterHint, descLen > 0 && descLen < DESC_MIN && { color: colors.danger }]}>
+                {descLen === 0
+                  ? "Minimum 1,000 meaningful characters required."
+                  : descLen < DESC_MIN
+                    ? `⚠️ Minimum 1,000 meaningful characters required. ${DESC_MIN - descLen} more needed.`
+                    : descLen < DESC_RECOMMENDED
+                      ? "✓ Minimum requirement met · 1,200+ recommended."
+                      : "✓ Description ready for project analysis."}
+              </Text>
+              <Text style={[s.counter, { color: descCounterColor }]}>
+                {descLen} / {DESC_RECOMMENDED} recommended
+              </Text>
+            </View>
           </View>
         </View>
       )}
 
-      {/* Step 2 — Your role (creator ONLY) */}
+      {/* Step 2 — Your role (creator ONLY) + FIX 3: Capability Selection */}
       {step === 1 && (
         <View style={{ gap: spacing.md }}>
           <Text style={s.stepHint}>How will you be working in this workspace?</Text>
           {ROLES.map((r) => {
             const on = role === r.key;
             return (
-              <Pressable key={r.key} onPress={() => setRole(r.key)} style={[s.roleCard, on && s.roleCardOn]}>
+              <Pressable key={r.key} onPress={() => { setRole(r.key); setSelectedCapabilities([]); setCapabilityAttempts({}); }} style={[s.roleCard, on && s.roleCardOn]}>
                 <View style={[s.roleIcon, on && { backgroundColor: colors.primary }]}>
                   <Ionicons name={r.icon as any} size={18} color={on ? "#fff" : colors.primary} />
                 </View>
@@ -611,12 +740,9 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
             );
           })}
 
-          {/* Role Capability Requirement & Skill Verification */}
+          {/* FIX 3: Role Capability Selection + Verification */}
           {ROLE_CAPABILITIES[role] && (() => {
             const cap = ROLE_CAPABILITIES[role];
-            const hasVerified = cap.recommendedSkills.some(
-              (sk) => userVerifications.includes(sk.toLowerCase().trim()) || (user?.skills || []).some((s) => s.toLowerCase() === sk.toLowerCase())
-            );
             return (
               <View style={s.capCard}>
                 <View style={s.capHead}>
@@ -627,24 +753,46 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
                   </View>
                 </View>
 
+                {/* Recommended Capabilities — Now SELECTABLE */}
                 <View style={s.capSkillsRow}>
-                  <Text style={s.capSkillsLabel}>Recommended capabilities:</Text>
+                  <Text style={s.capSkillsLabel}>Recommended capabilities — select to verify</Text>
                   <View style={s.capChipGrid}>
                     {cap.recommendedSkills.map((sk) => {
                       const isVer = userVerifications.includes(sk.toLowerCase().trim()) || (user?.skills || []).some((s) => s.toLowerCase() === sk.toLowerCase());
+                      const isSelected = selectedCapabilities.includes(sk);
+                      const attempt = capabilityAttempts[sk];
                       return (
                         <Pressable
                           key={sk}
-                          style={[s.capChip, isVer && s.capChipVerified]}
-                          onPress={() => setActiveQuizSkill(sk)}
+                          style={[
+                            s.capChip,
+                            isSelected && s.capChipSelected,
+                            isVer && s.capChipVerified,
+                            attempt?.attempted && !attempt.verified && s.capChipAttempted,
+                          ]}
+                          onPress={() => toggleCapability(sk)}
                         >
                           <Ionicons
-                            name={isVer ? "checkmark-circle" : "school-outline"}
-                            size={14}
-                            color={isVer ? colors.success : colors.accentDark}
+                            name={isVer || attempt?.verified
+                              ? "checkmark-circle"
+                              : isSelected
+                                ? "checkbox"
+                                : "square-outline"}
+                            size={16}
+                            color={isVer || attempt?.verified
+                              ? colors.success
+                              : isSelected
+                                ? colors.primary
+                                : colors.textMuted}
                           />
-                          <Text style={[s.capChipTxt, isVer && s.capChipTxtVerified]}>
-                            {sk} {isVer ? "✓ Verified" : "• Verify"}
+                          <Text style={[
+                            s.capChipTxt,
+                            isVer && s.capChipTxtVerified,
+                            isSelected && !isVer && { color: colors.primary, fontWeight: "700" },
+                          ]}>
+                            {sk}
+                            {(isVer || attempt?.verified) ? " ✓ Verified" : ""}
+                            {attempt?.attempted && !attempt?.verified ? ` (${attempt.score}/5)` : ""}
                           </Text>
                         </Pressable>
                       );
@@ -652,24 +800,74 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
                   </View>
                 </View>
 
-                {hasVerified ? (
+                {/* FIX 3: Your Selected Capabilities section */}
+                <View style={s.selectedCapSection}>
+                  <Text style={s.capSkillsLabel}>Your selected capabilities</Text>
+                  {selectedCapabilities.length === 0 ? (
+                    <Text style={s.capEmptyTxt}>No capabilities selected yet. Select the capabilities you want to verify above.</Text>
+                  ) : (
+                    <View style={{ gap: 8 }}>
+                      {selectedCapabilities.map((sk) => {
+                        const attempt = capabilityAttempts[sk];
+                        const isVer = userVerifications.includes(sk.toLowerCase().trim()) || attempt?.verified;
+                        const isAttempted = attempt?.attempted || false;
+                        return (
+                          <View key={sk} style={s.selectedCapRow}>
+                            <View style={{ flex: 1, gap: 2 }}>
+                              <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                                <Ionicons
+                                  name={isVer ? "checkmark-circle" : isAttempted ? "alert-circle" : "ellipse-outline"}
+                                  size={16}
+                                  color={isVer ? colors.success : isAttempted ? colors.warning : colors.textFaint}
+                                />
+                                <Text style={s.selectedCapName}>{sk}</Text>
+                                {isVer && (
+                                  <View style={s.verifiedBadge}>
+                                    <Text style={s.verifiedBadgeTxt}>✓ Verified</Text>
+                                  </View>
+                                )}
+                                {isAttempted && !isVer && (
+                                  <View style={s.notVerifiedBadge}>
+                                    <Text style={s.notVerifiedBadgeTxt}>Not Verified ({attempt?.score}/5)</Text>
+                                  </View>
+                                )}
+                              </View>
+                              {!isAttempted && (
+                                <Text style={s.capNotAttemptedTxt}>Not attempted</Text>
+                              )}
+                            </View>
+                            <Button
+                              title={isAttempted ? (isVer ? "Verified ✓" : "Retry") : `Verify ${sk}`}
+                              icon={isAttempted ? (isVer ? "checkmark" : "refresh") : "school-outline"}
+                              small
+                              variant={isVer ? "secondary" : undefined}
+                              onPress={() => setActiveQuizSkill(sk)}
+                              disabled={isVer}
+                            />
+                          </View>
+                        );
+                      })}
+                    </View>
+                  )}
+                </View>
+
+                {/* FIX 3: Continue blocked message */}
+                {selectedCapabilities.length > 0 && !allCapabilitiesAttempted && (
+                  <View style={s.capBlockedBox}>
+                    <Ionicons name="lock-closed" size={16} color={colors.warning} />
+                    <Text style={s.capBlockedTxt}>
+                      Complete verification for all selected capabilities before continuing.
+                      {unattemptedCapabilities.length > 0 && ` Remaining: ${unattemptedCapabilities.join(", ")}`}
+                    </Text>
+                  </View>
+                )}
+
+                {selectedCapabilities.length > 0 && allCapabilitiesAttempted && (
                   <View style={s.capStatusOk}>
                     <Ionicons name="checkmark-circle" size={16} color={colors.success} />
                     <Text style={s.capStatusOkTxt}>
-                      Verified capability active for {ROLES.find((r) => r.key === role)?.label}.
+                      All selected capabilities verified or attempted. You can proceed.
                     </Text>
-                  </View>
-                ) : (
-                  <View style={s.capPromptBox}>
-                    <Text style={s.capPromptTxt}>
-                      Take a quick 5-question verification quiz now, or verify later from your profile.
-                    </Text>
-                    <Button
-                      title={`Verify ${cap.primarySkill} (5 Qs)`}
-                      icon="school-outline"
-                      small
-                      onPress={() => setActiveQuizSkill(cap.primarySkill)}
-                    />
                   </View>
                 )}
               </View>
@@ -875,11 +1073,28 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
         </View>
       )}
 
+      {/* FIX 3: Skill Verification Quiz Modal */}
+      {activeQuizSkill && (
+        <SkillVerificationModal
+          visible={!!activeQuizSkill}
+          skill={activeQuizSkill}
+          roleLabel={ROLES.find((r) => r.key === role)?.label || "Role"}
+          onClose={() => setActiveQuizSkill(null)}
+          onVerified={(skill, score) => handleCapabilityVerified(skill, score)}
+        />
+      )}
+
       {/* Footer nav */}
       <View style={s.footer}>
         {step > 0 && <Button title="Back" icon="chevron-back" variant="secondary" onPress={back} style={{ flex: 1 }} />}
         {step < STEPS.length - 1 ? (
-          <Button title="Continue" icon="chevron-forward" onPress={next} style={{ flex: 1 }} />
+          <Button
+            title="Continue"
+            icon="chevron-forward"
+            onPress={next}
+            style={{ flex: 1 }}
+            disabled={continueDisabled}
+          />
         ) : (
           <Button title="Create workspace" icon="rocket" onPress={submit} loading={busy} style={{ flex: 1 }} />
         )}
@@ -924,18 +1139,29 @@ const s = StyleSheet.create({
   wipCalloutTitle: { fontSize: 12, fontWeight: "700", color: "#92400e" },
   wipCalloutTxt: { fontSize: 11.5, color: "#b45309", lineHeight: 16, marginTop: 1 },
 
-  guideCard: { backgroundColor: colors.accentSoft, borderRadius: radius.md, padding: spacing.md, borderWidth: 1, borderColor: colors.accentBorder, gap: 6 },
-  guideHead: { flexDirection: "row", alignItems: "center", gap: 6 },
-  guideTitle: { fontSize: 13, fontWeight: "800", color: colors.text },
-  guideTxt: { fontSize: 12, color: colors.textMuted, lineHeight: 18 },
-  guideBtnRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 14, marginTop: 2 },
-  exampleBtn: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 2 },
-  exampleBtnTxt: { fontSize: 12, fontWeight: "700", color: colors.primary },
-  exampleRow: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.surface, borderRadius: radius.sm, paddingVertical: 9, paddingHorizontal: 10, borderWidth: 1, borderColor: colors.border },
-  exampleRowTxt: { flex: 1, fontSize: 12.5, fontWeight: "700", color: colors.text },
+  // FIX 2: Template selector styles
+  templateSection: { gap: 8 },
+  templateToggleBtn: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.accentSoft, borderRadius: radius.md, padding: 12, borderWidth: 1, borderColor: colors.accentBorder || colors.border },
+  templateToggleTxt: { flex: 1, fontSize: 14, fontWeight: "800", color: colors.accentDark },
+  templateGrid: { gap: 8 },
+  templateGridHint: { fontSize: 12, color: colors.textMuted, lineHeight: 17, marginBottom: 4 },
+  templateCard: { backgroundColor: colors.surface, borderRadius: radius.md, padding: 12, borderWidth: 1.5, borderColor: colors.border, gap: 6 },
+  templateCardSelected: { borderColor: colors.primary, backgroundColor: colors.primarySoft },
+  templateCardHeader: { flexDirection: "row", alignItems: "center", gap: 8 },
+  templateCardTitle: { flex: 1, fontSize: 14, fontWeight: "800", color: colors.text },
+  templateTagRow: { flexDirection: "row", flexWrap: "wrap", gap: 4 },
+  templateTag: { fontSize: 10, fontWeight: "700", color: colors.textMuted, backgroundColor: colors.surfaceAlt, paddingHorizontal: 6, paddingVertical: 2, borderRadius: radius.pill, textTransform: "uppercase", letterSpacing: 0.3 },
+  templateDesc: { fontSize: 12, color: colors.textMuted, lineHeight: 17 },
+  templateInfoBox: { flexDirection: "row", alignItems: "flex-start", gap: 8, backgroundColor: colors.surfaceAlt, borderRadius: radius.sm, padding: 10, borderWidth: 1, borderColor: colors.border },
+  templateInfoTxt: { flex: 1, fontSize: 11, color: colors.textMuted, lineHeight: 16 },
+
+  // FIX 2: Description section styles
+  descSection: { gap: 6 },
+  descLabelRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  descRequired: { fontSize: 11, fontWeight: "700", color: colors.danger },
   counterRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   counterHint: { fontSize: 11, color: colors.textFaint, flex: 1 },
-  counter: { fontSize: 11, fontWeight: "800" },
+  counter: { fontSize: 12, fontWeight: "800" },
 
   roleCard: { flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
   roleCardOn: { borderColor: colors.primary, backgroundColor: colors.primarySoft },
@@ -950,10 +1176,26 @@ const s = StyleSheet.create({
   capSkillsRow: { gap: 6 },
   capSkillsLabel: { fontSize: 11, fontWeight: "700", color: colors.textFaint, textTransform: "uppercase", letterSpacing: 0.5 },
   capChipGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  capChip: { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 6, paddingHorizontal: 10, borderRadius: radius.pill, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.border },
+  capChip: { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 7, paddingHorizontal: 11, borderRadius: radius.pill, backgroundColor: colors.surfaceAlt, borderWidth: 1.5, borderColor: colors.border },
+  capChipSelected: { borderColor: colors.primary, backgroundColor: colors.primarySoft },
   capChipVerified: { backgroundColor: colors.successSoft, borderColor: colors.success },
+  capChipAttempted: { backgroundColor: colors.warningSoft || "#fef3c7", borderColor: colors.warning },
   capChipTxt: { fontSize: 12, fontWeight: "600", color: colors.text },
   capChipTxtVerified: { color: colors.success, fontWeight: "700" },
+
+  // FIX 3: Selected capabilities section styles
+  selectedCapSection: { gap: 8, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 12 },
+  capEmptyTxt: { fontSize: 12, color: colors.textMuted, fontStyle: "italic" },
+  selectedCapRow: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surfaceAlt, borderRadius: radius.md, padding: 10, borderWidth: 1, borderColor: colors.border },
+  selectedCapName: { fontSize: 14, fontWeight: "700", color: colors.text },
+  capNotAttemptedTxt: { fontSize: 11, color: colors.textFaint, marginLeft: 22 },
+  verifiedBadge: { paddingVertical: 2, paddingHorizontal: 6, borderRadius: radius.pill, backgroundColor: colors.successSoft },
+  verifiedBadgeTxt: { fontSize: 10, fontWeight: "800", color: colors.success },
+  notVerifiedBadge: { paddingVertical: 2, paddingHorizontal: 6, borderRadius: radius.pill, backgroundColor: colors.warningSoft || "#fef3c7" },
+  notVerifiedBadgeTxt: { fontSize: 10, fontWeight: "800", color: colors.warning },
+  capBlockedBox: { flexDirection: "row", alignItems: "flex-start", gap: 8, backgroundColor: colors.warningSoft || "#fef3c7", borderWidth: 1, borderColor: colors.warning, borderRadius: radius.md, padding: 10 },
+  capBlockedTxt: { flex: 1, fontSize: 12, fontWeight: "600", color: "#92400e", lineHeight: 17 },
+
   capStatusOk: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.successSoft, padding: 8, borderRadius: radius.sm },
   capStatusOkTxt: { fontSize: 12, color: colors.success, fontWeight: "600" },
   capPromptBox: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.accentSoft, padding: 8, borderRadius: radius.sm },

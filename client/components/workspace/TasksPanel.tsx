@@ -92,6 +92,42 @@ export default function TasksPanel({ teamId, onGenerateAI }: { teamId: string; o
   const searching = trimmed.length > 0;
   const visible = searching ? searchTasks(rawTasks, trimmed).map((r) => r.task) : tasks;
 
+  // ── Authoritative Sequential Waterfall Phase Gate State ──────────────────────
+  const phaseGateMap = useMemo(() => {
+    const map: Record<string, { status: "CLEARED" | "ACTIVE" | "LOCKED"; lockedReason?: string }> = {};
+    const phases = Object.keys(WATERFALL_PHASE_META);
+    let priorCleared = true;
+    let firstUncleared: string | null = null;
+
+    for (let i = 0; i < phases.length; i++) {
+      const pKey = phases[i];
+      const pTasks = rawTasks.filter((t) => (t.phase || "requirements") === pKey);
+      const doneCount = pTasks.filter((t) => t.status === "done").length;
+      const totalCount = pTasks.length;
+      const isCleared = totalCount > 0 ? doneCount >= totalCount : true;
+
+      if (i === 0) {
+        map[pKey] = { status: isCleared ? "CLEARED" : "ACTIVE" };
+      } else {
+        if (priorCleared) {
+          map[pKey] = { status: isCleared ? "CLEARED" : "ACTIVE" };
+        } else {
+          const prevMeta = WATERFALL_PHASE_META[(firstUncleared || phases[i - 1]) as keyof typeof WATERFALL_PHASE_META];
+          map[pKey] = {
+            status: "LOCKED",
+            lockedReason: `Complete ${prevMeta.label} before starting ${WATERFALL_PHASE_META[pKey as keyof typeof WATERFALL_PHASE_META].label}`,
+          };
+        }
+      }
+
+      if (!isCleared && !firstUncleared) {
+        firstUncleared = pKey;
+        priorCleared = false;
+      }
+    }
+    return map;
+  }, [rawTasks]);
+
   // ── Create / edit form ──────────────────────────────────────────────────────
   const openCreate = () => { setEditId(null); setDraft(EMPTY_DRAFT); setShowForm(true); };
   const openEdit = (t: Task) => {
@@ -136,6 +172,16 @@ export default function TasksPanel({ teamId, onGenerateAI }: { teamId: string; o
 
   const submit = async () => {
     if (!draft.title.trim()) { toast("Task title required", "error"); return; }
+    const targetPhase = draft.phase || "requirements";
+    const isLocked = phaseGateMap[targetPhase]?.status === "LOCKED";
+    if (isLocked && (draft.status === "in_progress" || draft.status === "done")) {
+      const orig = editId ? rawTasks.find((t) => t._id === editId) : null;
+      if (!orig || orig.status !== "done") {
+        toast(phaseGateMap[targetPhase]?.lockedReason || "Phase is locked. Complete prior phase gates first.", "error");
+        return;
+      }
+    }
+
     setBusy(true);
     if (editId) {
       const fields: TaskFields = {
@@ -182,21 +228,31 @@ export default function TasksPanel({ teamId, onGenerateAI }: { teamId: string; o
   };
 
   // Common card renderer for the All view.
-  const renderCard = (t: Task) => (
-    <TaskCard
-      key={t._id}
-      task={t}
-      showMeta
-      assigneeName={memberName(t.assignedTo)}
-      assigneeImage={memberImage(t.assignedTo)}
-      highlight={searching ? trimmed : undefined}
-      onCycle={(next) => setStatus(t._id, next)}
-      onSetPriority={(u, i) => setTaskPriority(t._id, u, i)}
-      onEdit={() => openEdit(t)}
-      onDelete={() => onDelete(t)}
-      onDuplicate={() => onDuplicate(t)}
-    />
-  );
+  const renderCard = (t: Task) => {
+    const isLocked = phaseGateMap[t.phase || "requirements"]?.status === "LOCKED";
+    return (
+      <TaskCard
+        key={t._id}
+        task={t}
+        showMeta
+        locked={isLocked}
+        assigneeName={memberName(t.assignedTo)}
+        assigneeImage={memberImage(t.assignedTo)}
+        highlight={searching ? trimmed : undefined}
+        onCycle={(next) => {
+          if (isLocked && t.status !== "done") {
+            toast(phaseGateMap[t.phase || "requirements"]?.lockedReason || "Phase is locked. Complete prior phase gates first.", "error");
+            return;
+          }
+          setStatus(t._id, next);
+        }}
+        onSetPriority={(u, i) => setTaskPriority(t._id, u, i)}
+        onEdit={() => openEdit(t)}
+        onDelete={() => onDelete(t)}
+        onDuplicate={() => onDuplicate(t)}
+      />
+    );
+  };
 
   if (loading) {
     return <View style={{ padding: spacing.lg, gap: spacing.sm }}>{[1, 2, 3].map((i) => <Skeleton key={i} height={84} />)}</View>;
@@ -261,21 +317,50 @@ export default function TasksPanel({ teamId, onGenerateAI }: { teamId: string; o
 
               {Object.keys(WATERFALL_PHASE_META).map((pKey) => {
                 const pMeta = WATERFALL_PHASE_META[pKey as keyof typeof WATERFALL_PHASE_META];
+                const phaseGate = phaseGateMap[pKey] || { status: "ACTIVE" };
                 const phaseTasks = visible.filter((t) => (t.phase || "requirements") === pKey);
                 const doneCount = phaseTasks.filter((t) => t.status === "done").length;
                 const totalCount = phaseTasks.length;
-                const pct = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
+                const pct = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : (phaseGate.status === "CLEARED" ? 100 : 0);
 
                 return (
-                  <View key={pKey} style={{ gap: spacing.xs, backgroundColor: colors.surface, padding: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border }}>
+                  <View key={pKey} style={{ gap: spacing.xs, backgroundColor: colors.surface, padding: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: phaseGate.status === "LOCKED" ? "#FCA5A5" : colors.border }}>
                     <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
                       <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.xs }}>
                         <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: pMeta.color }} />
                         <Text style={[font.h3, { color: pMeta.color }]}>{pMeta.label}</Text>
                         <Badge label={`${doneCount}/${totalCount} Done`} color={pMeta.color} bg={pMeta.bg} />
                       </View>
-                      <Text style={[font.caption, { color: colors.textFaint }]}>{pct}%</Text>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.xs }}>
+                        {phaseGate.status === "LOCKED" && (
+                          <View style={{ flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "#FEF2F2", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: "#FCA5A5" }}>
+                            <Ionicons name="lock-closed" size={10} color="#DC2626" />
+                            <Text style={{ fontSize: 10, fontWeight: "600", color: "#DC2626" }}>LOCKED</Text>
+                          </View>
+                        )}
+                        {phaseGate.status === "CLEARED" && (
+                          <View style={{ flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "#F0FDF4", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: "#BBF7D0" }}>
+                            <Ionicons name="checkmark-circle" size={10} color="#16A34A" />
+                            <Text style={{ fontSize: 10, fontWeight: "600", color: "#16A34A" }}>CLEARED</Text>
+                          </View>
+                        )}
+                        {phaseGate.status === "ACTIVE" && (
+                          <View style={{ flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "#EFF6FF", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: "#BFDBFE" }}>
+                            <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: "#2563EB" }} />
+                            <Text style={{ fontSize: 10, fontWeight: "600", color: "#2563EB" }}>ACTIVE</Text>
+                          </View>
+                        )}
+                        <Text style={[font.caption, { color: colors.textFaint }]}>{pct}%</Text>
+                      </View>
                     </View>
+
+                    {phaseGate.status === "LOCKED" && phaseGate.lockedReason ? (
+                      <View style={{ backgroundColor: "#FFF5F5", paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4, borderLeftWidth: 3, borderLeftColor: "#DC2626", marginVertical: 2 }}>
+                        <Text style={{ fontSize: 11, color: "#DC2626", fontWeight: "500" }}>
+                          🔒 {phaseGate.lockedReason}
+                        </Text>
+                      </View>
+                    ) : null}
 
                     {/* Progress Track */}
                     <View style={{ height: 4, backgroundColor: colors.surfaceAlt, borderRadius: 2, overflow: "hidden", marginVertical: 4 }}>

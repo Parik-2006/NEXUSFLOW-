@@ -106,6 +106,7 @@ export default function OverviewPanel({ teamId, onNavigate }: { teamId: string; 
   const [showChangeImpactModal, setShowChangeImpactModal] = useState(false);
 
   const fetchHealth = useCallback(async () => {
+    if (!teamId || typeof teamId !== "string" || !teamId.trim()) return;
     try {
       const res = await fetch(`${API}/api/teams/${teamId}/health`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -226,21 +227,39 @@ export default function OverviewPanel({ teamId, onNavigate }: { teamId: string; 
       },
     ];
 
+    let priorCleared = true;
+    let firstIncomplete: string | null = null;
+
     return definitions.map((def, idx) => {
       const phaseTasks = rawTasks.filter((t) => {
+        const p = (t.phase || "").toLowerCase().trim();
+        if (p === def.key) return true;
         const cat = (t.category || "").toLowerCase();
         const title = (t.title || "").toLowerCase();
         const desc = (t.description || "").toLowerCase();
         return def.match.some((m) => cat.includes(m) || title.includes(m) || desc.includes(m));
       });
 
-      const fallbackCount = idx === 0 ? Math.max(1, Math.floor(rawTasks.length * 0.2)) : Math.max(1, Math.floor(rawTasks.length * 0.16));
-      const taskCount = phaseTasks.length > 0 ? phaseTasks.length : rawTasks.length > 0 ? fallbackCount : 0;
-      const doneCount = phaseTasks.length > 0 ? phaseTasks.filter((t) => t.status === "done").length : 0;
-      const progress = taskCount > 0 ? doneCount / taskCount : 0;
-      const gatePassed = progress >= 0.75;
-      const status: "cleared" | "in_progress" | "pending" =
-        gatePassed ? "cleared" : progress > 0 || idx === 0 ? "in_progress" : "pending";
+      const taskCount = phaseTasks.length;
+      const doneCount = phaseTasks.filter((t) => t.status === "done").length;
+      const progress = taskCount > 0 ? doneCount / taskCount : (priorCleared ? 1 : 0);
+      const gatePassed = taskCount > 0 ? doneCount >= taskCount : true;
+
+      let status: "cleared" | "in_progress" | "pending" = "pending";
+      if (idx === 0) {
+        status = gatePassed ? "cleared" : "in_progress";
+      } else {
+        if (priorCleared) {
+          status = gatePassed ? "cleared" : "in_progress";
+        } else {
+          status = "pending";
+        }
+      }
+
+      if (!gatePassed && !firstIncomplete) {
+        firstIncomplete = def.key;
+        priorCleared = false;
+      }
 
       return {
         key: def.key,

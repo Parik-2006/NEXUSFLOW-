@@ -14,12 +14,14 @@
  * ============================================================================
  */
 
+import mongoose from "mongoose";
 import Project from "../models/Project.js";
 import Task from "../models/Task.js";
 import Team from "../models/Team.js";
 import Risk from "../models/Risk.js";
 import ArchitectureComponent from "../models/ArchitectureComponent.js";
 import { recordProjectEvent } from "./eventService.js";
+import { mapCategoryOrTitleToWaterfallPhase } from "../algorithms/projectDecomposer.js";
 
 export const WATERFALL_PHASES = [
   "requirements",
@@ -40,8 +42,165 @@ export const PHASE_DISPLAY_NAMES = {
 };
 
 /**
- * Evaluate the phase gate for a given project.
+ * Evaluates the deterministic phase state across all 6 Waterfall phases.
+ * Enforces sequential execution:
+ *   Requirements (Active) → Design (Locked) → Implementation (Locked) →
+ *   Verification (Locked) → Deployment (Locked) → Maintenance (Locked).
+ * A phase only unlocks when all tasks in prior phases are complete.
  */
+export async function getWaterfallPhaseStates(projectId, teamId = null) {
+  let project = null;
+  if (projectId && mongoose.isValidObjectId(projectId)) {
+    project = await Project.findById(projectId).lean();
+  }
+  const resolvedTeamId = project?.teamId || teamId;
+  if (!resolvedTeamId) {
+    throw new Error("Invalid project or team ID for Waterfall state evaluation.");
+  }
+
+  // Load all tasks for this project/team
+  const query = [];
+  if (project?._id) query.push({ projectId: project._id });
+  if (resolvedTeamId) query.push({ teamId: resolvedTeamId });
+
+  const tasks = await Task.find(query.length > 1 ? { $or: query } : query[0]).lean();
+
+  const phaseDefinitions = [
+    { phase: "requirements", name: "Requirements", order: 1 },
+    { phase: "design", name: "System Design", order: 2 },
+    { phase: "implementation", name: "Implementation", order: 3 },
+    { phase: "testing", name: "Verification", order: 4 },
+    { phase: "deployment", name: "Deployment", order: 5 },
+    { phase: "maintenance", name: "Maintenance", order: 6 },
+  ];
+
+  // Group tasks by canonical phase
+  const tasksByPhase = new Map();
+  for (const def of phaseDefinitions) {
+    tasksByPhase.set(def.phase, []);
+  }
+
+  for (const t of tasks) {
+    const rawPhase = (t.phase || "").toLowerCase().trim();
+    const mapped = tasksByPhase.has(rawPhase)
+      ? rawPhase
+      : mapCategoryOrTitleToWaterfallPhase(t.category, t.title);
+    if (tasksByPhase.has(mapped)) {
+      tasksByPhase.get(mapped).push(t);
+    } else {
+      tasksByPhase.get("requirements").push(t);
+    }
+  }
+
+  // Sequential gate progression
+  let priorAllCleared = true;
+  let firstUnclearedPhase = null;
+  const phaseStates = [];
+
+  for (let i = 0; i < phaseDefinitions.length; i++) {
+    const def = phaseDefinitions[i];
+    const pTasks = tasksByPhase.get(def.phase) || [];
+    const totalTasks = pTasks.length;
+    const completedTasks = pTasks.filter((t) => t.status === "done").length;
+    const requiredTasks = totalTasks;
+    const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : (priorAllCleared ? 100 : 0);
+    const gateSatisfied = totalTasks > 0 ? completedTasks >= totalTasks : true;
+
+    let status = "LOCKED";
+    let lockedReason = null;
+
+    if (i === 0) {
+      status = gateSatisfied ? "CLEARED" : "ACTIVE";
+    } else {
+      if (priorAllCleared) {
+        status = gateSatisfied ? "CLEARED" : "ACTIVE";
+      } else {
+        status = "LOCKED";
+        lockedReason = `${firstUnclearedPhase?.name || "Previous phase"} gate not cleared`;
+      }
+    }
+
+    if (!gateSatisfied && !firstUnclearedPhase) {
+      firstUnclearedPhase = def;
+      priorAllCleared = false;
+    }
+
+    phaseStates.push({
+      phase: def.phase,
+      name: def.name,
+      order: def.order,
+      status,
+      completedTasks,
+      requiredTasks,
+      totalTasks,
+      progress,
+      lockedReason,
+      gateSatisfied,
+    });
+  }
+
+  const activePhaseObj =
+    phaseStates.find((p) => p.status === "ACTIVE") ||
+    (phaseStates.every((p) => p.status === "CLEARED")
+      ? phaseStates[phaseStates.length - 1]
+      : phaseStates[0]);
+
+  const isLifecycleComplete = phaseStates.every(
+    (p) => p.gateSatisfied && (p.status === "CLEARED" || p.totalTasks === 0)
+  );
+
+  // Synchronize active phase to Project document
+  if (project && activePhaseObj && project.waterfallPhase !== activePhaseObj.phase) {
+    await Project.updateOne(
+      { _id: project._id },
+      { $set: { waterfallPhase: activePhaseObj.phase } }
+    ).catch(() => {});
+  }
+
+  return {
+    projectId: project?._id?.toString() || null,
+    teamId: resolvedTeamId.toString(),
+    currentPhase: activePhaseObj.phase,
+    currentPhaseName: activePhaseObj.name,
+    currentPhaseIndex: phaseDefinitions.findIndex((p) => p.phase === activePhaseObj.phase),
+    isLifecycleComplete,
+    phases: phaseStates,
+  };
+}
+
+/**
+ * Enforces server-side sequential Waterfall gate rules:
+ * Tasks in a LOCKED phase cannot be transitioned to 'in_progress' or 'done'.
+ */
+export async function assertWaterfallTaskExecutable(task, targetStatus) {
+  if (!task || !targetStatus) return;
+  if (targetStatus !== "in_progress" && targetStatus !== "done") return;
+  if (task.status === "done" && targetStatus === "done") return; // preserve done history
+
+  let isWaterfall = false;
+  if (task.projectId) {
+    const p = await Project.findById(task.projectId).select("methodology teamId").lean();
+    if (p && p.methodology === "WATERFALL") isWaterfall = true;
+  }
+  if (!isWaterfall && task.teamId) {
+    const t = await Team.findById(task.teamId).select("methodology activeProjectId").lean();
+    if (t && (t.methodology === "WATERFALL" || !t.methodology)) isWaterfall = true;
+  }
+  if (!isWaterfall) return;
+
+  const states = await getWaterfallPhaseStates(task.projectId, task.teamId);
+  const taskPhase = (task.phase || "").toLowerCase().trim() || mapCategoryOrTitleToWaterfallPhase(task.category, task.title);
+  const phaseInfo = states.phases.find((p) => p.phase === taskPhase);
+  if (phaseInfo && phaseInfo.status === "LOCKED") {
+    const err = new Error(`Cannot transition task in locked phase "${phaseInfo.name}". ${phaseInfo.lockedReason || "Complete prior phase gates first."}`);
+    err.statusCode = 403;
+    err.phase = phaseInfo.phase;
+    throw err;
+  }
+}
+
+export const evaluatePhaseGate = evaluateProjectPhaseGate;
+
 export async function evaluateProjectPhaseGate(projectId) {
   const project = await Project.findById(projectId).lean();
   if (!project) throw new Error("Project not found");

@@ -189,7 +189,7 @@ export default function GuidancePanel({ teamId }: { teamId: string }) {
 
   // ── Fetch Guidance ──────────────────────────────────────────────────────────
   const fetchGuidance = useCallback(async (hours = hackathonHours) => {
-    if (!teamId || !token) return;
+    if (!teamId || typeof teamId !== "string" || !teamId.trim() || !token) return;
     setLoading(true);
     setError(null);
     try {
@@ -222,7 +222,7 @@ export default function GuidancePanel({ teamId }: { teamId: string }) {
 
   // ── Create Next Action Task ────────────────────────────────────────────────
   const handleExecuteNextAction = useCallback(async () => {
-    if (!guidance?.nextAction || creatingTask) return;
+    if (!teamId || typeof teamId !== "string" || !teamId.trim() || !guidance?.nextAction || creatingTask) return;
     setCreatingTask(true);
     try {
       const taskBody = {

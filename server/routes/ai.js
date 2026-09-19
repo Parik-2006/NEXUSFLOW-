@@ -15,6 +15,11 @@ import { Router } from "express";
 import mongoose from "mongoose";
 import { requireAuth } from "../auth.js";
 import { resolveAuthUser } from "./teams.js";
+import User from "../models/User.js";
+import {
+  resolveCanonicalSkillId,
+  SKILL_QUESTION_POOLS,
+} from "../constants/quizQuestionBanks.js";
 
 const router = Router();
 
@@ -747,6 +752,10 @@ const CATEGORY_FALLBACK = {
 
 // Normalise input → pick the right bank
 function bankForSkill(raw) {
+  const canonicalId = resolveCanonicalSkillId(raw);
+  if (SKILL_QUESTION_POOLS[canonicalId] && SKILL_QUESTION_POOLS[canonicalId].length >= 5) {
+    return SKILL_QUESTION_POOLS[canonicalId];
+  }
   const skill = String(raw || "").trim();
   if (QUESTION_BANK[skill]) return QUESTION_BANK[skill];
   // Try title-case variations
@@ -762,10 +771,10 @@ function bankForSkill(raw) {
   if (key) return QUESTION_BANK[key];
   // Category fallback
   for (const [cat, def] of Object.entries(CATEGORY_FALLBACK)) {
-    if (skill.toLowerCase().includes(cat.toLowerCase())) return QUESTION_BANK[def];
+    if (skill.toLowerCase().includes(cat.toLowerCase()) && QUESTION_BANK[def]) return QUESTION_BANK[def];
   }
-  // Last resort: JavaScript
-  return QUESTION_BANK.JavaScript;
+  // Last resort: canonical JavaScript pool
+  return SKILL_QUESTION_POOLS.javascript || QUESTION_BANK.JavaScript;
 }
 
 // Validate an AI-generated quiz structure
@@ -773,8 +782,11 @@ function validateQuiz(quiz) {
   if (!quiz || typeof quiz !== "object") return false;
   const qs = Array.isArray(quiz.questions) ? quiz.questions : null;
   if (!qs || qs.length !== 5) return false;
+  const seen = new Set();
   for (const q of qs) {
     if (!q || typeof q.question !== "string" || !q.question.trim()) return false;
+    if (seen.has(q.question.trim().toLowerCase())) return false; // Reject duplicate questions
+    seen.add(q.question.trim().toLowerCase());
     if (!Array.isArray(q.options) || q.options.length !== 4) return false;
     if (q.options.some((o) => typeof o !== "string" || !o.trim())) return false;
     if (typeof q.correctIndex !== "number" || q.correctIndex < 0 || q.correctIndex > 3) return false;
@@ -782,13 +794,16 @@ function validateQuiz(quiz) {
   return true;
 }
 
-// Try the (optional) AI path. Never throws or blocks.
+// Try the (optional) AI path with canonical skill enforcement. Never throws or blocks.
 async function tryGenerateAI(skill, difficulty) {
   try {
+    const canonicalId = resolveCanonicalSkillId(skill);
     const { omniRouteGenerate } = await import("../services/omniRoute.js");
     const result = await omniRouteGenerate({
       prompt:
-        `Generate exactly 5 multiple-choice questions for ${skill} at ${difficulty} level. ` +
+        `Generate exactly 5 assessment multiple-choice questions specifically for the canonical skill "${skill}" (canonical identifier: ${canonicalId}) at ${difficulty} level. ` +
+        `The questions MUST focus specifically on ${skill} core concepts and techniques (e.g., if Cryptography: symmetric/asymmetric ciphers, hashing, digital signatures, PKI, ECC; if Network Security: firewalls, VPNs, TLS handshakes, IDS/IPS, network segmentation; if Cybersecurity: CIA triad, authentication, threats, defense-in-depth). ` +
+        `Do NOT generate questions for unrelated skills. Each question must have exactly 4 options with exactly one correct answer (correctIndex 0-3). ` +
         `Return strict JSON: { "questions": [ { "question": "...", "options": ["A","B","C","D"], "correctIndex": 0-3, "explanation": "..." } ] }`,
       responseFormat: "json_object",
       maxTokens: 1500,
@@ -816,12 +831,14 @@ router.post("/ai/quiz/generate", requireAuth, async (req, res) => {
       return res.status(400).json({ error: "Skill is required." });
     }
     const skillKey = String(skill).trim();
+    const canonicalId = resolveCanonicalSkillId(skillKey);
 
-    // 1. Try AI (optional)
+    // 1. Try AI with strict skill prompt
     const ai = await tryGenerateAI(skillKey, difficulty);
     if (ai) {
       const quiz = {
         skill: skillKey,
+        canonicalId,
         difficulty,
         questionCount: 5,
         questions: ai.questions.map((q, i) => ({
@@ -836,14 +853,27 @@ router.post("/ai/quiz/generate", requireAuth, async (req, res) => {
       return res.json({ success: true, quiz });
     }
 
-    // 2. Deterministic fallback (always works)
+    // 2. Deterministic skill-specific fallback (drawn from canonical 15+ pool)
     const bank = bankForSkill(skillKey);
-    const shuffled = [...bank].sort(() => Math.random() - 0.5).slice(0, 5);
+    // Shuffle and pick 5 distinct questions
+    const shuffled = [...bank].sort(() => Math.random() - 0.5);
+    const selected = [];
+    const seenQuestions = new Set();
+    for (const q of shuffled) {
+      if (!seenQuestions.has(q.question)) {
+        seenQuestions.add(q.question);
+        selected.push(q);
+        if (selected.length === 5) break;
+      }
+    }
+    const finalQuestions = selected.length === 5 ? selected : bank.slice(0, 5);
+
     const quiz = {
       skill: skillKey,
+      canonicalId,
       difficulty,
       questionCount: 5,
-      questions: shuffled.map((q, i) => ({
+      questions: finalQuestions.map((q, i) => ({
         index: i,
         question: q.question,
         options: q.options,
@@ -859,7 +889,7 @@ router.post("/ai/quiz/generate", requireAuth, async (req, res) => {
 });
 
 // ── POST /api/ai/quiz/submit ──────────────────────────────────────────────────
-// FIX 5F: Verification threshold = 3 / 5 (NOT 80%).
+// Verification threshold = 3 / 5 (NOT 80%).
 router.post("/ai/quiz/submit", requireAuth, async (req, res) => {
   try {
     const authUser = await resolveAuthUser(req.user);
@@ -894,6 +924,15 @@ router.post("/ai/quiz/submit", requireAuth, async (req, res) => {
       });
     }
     const verified = correct >= 3;
+
+    // FIX 1 Sync: When quiz passes, add skill to user's profile
+    if (verified && authUser?._id) {
+      await User.updateOne(
+        { _id: authUser._id },
+        { $addToSet: { skills: skillKey } }
+      ).catch(() => {});
+    }
+
     res.json({
       success: true,
       result: {

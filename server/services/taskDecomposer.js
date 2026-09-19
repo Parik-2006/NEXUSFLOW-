@@ -50,6 +50,7 @@ import { computePriorityScore } from "../algorithms/greedyScheduler.js";
 import { buildGraph, topologicalSort as topoSortGraph } from "../algorithms/graphTraversal.js";
 import { boyerMooreSearch } from "../algorithms/taskOptimiser.js";
 import { omniRouteGenerate } from "./omniRoute.js";
+import { mapCategoryOrTitleToWaterfallPhase } from "../algorithms/projectDecomposer.js";
 
 // ── 1. Build Task Generation Context ──────────────────────────────────────────
 export async function buildTaskGenerationContext(projectId, teamId, options = {}) {
@@ -733,12 +734,14 @@ export async function persistGeneratedTasks(teamId, projectId, proposedTasks, op
   }
 
   for (const pTask of tasksToCreate) {
+    const taskPhase = pTask.phase || mapCategoryOrTitleToWaterfallPhase(pTask.category, pTask.title);
     const taskDoc = await Task.create({
       teamId,
       projectId: projectId && mongoose.isValidObjectId(projectId) ? projectId : null,
       title: pTask.title,
       description: pTask.description,
       category: pTask.category,
+      phase: taskPhase,
       urgency: pTask.urgency,
       impact: pTask.impact,
       estimatedHours: pTask.estimatedHours,

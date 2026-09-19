@@ -233,6 +233,7 @@ app.use("/api", aiRoutes);         // NEXUSFLOW 3.0 — AI quiz
 app.use("/api", userLookupRoutes); // NEXUSFLOW 3.0 — Workspace email lookup (Fix 4)
 app.use("/api", teamRoutes);
 app.use("/api", projectRoutes);   // NEXUSFLOW 2.0 — Phase 1 project routes
+app.use(projectRoutes);          // Dual-mount contract: supports both /api/projects and /projects
 app.use("/api", githubRoutes);    // NEXUSFLOW 3.0 — Phase 11 GitHub integration
 app.use("/api", discoveryRoutes); // NEXUSFLOW 4.0 — Discovery & Applications
 app.use("/api/scrum", requireAuth, scrumRoutes); // NEXUSFLOW 4.0 — Scrum Methodology

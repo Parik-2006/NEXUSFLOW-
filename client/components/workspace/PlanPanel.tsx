@@ -131,7 +131,7 @@ export default function PlanPanel({ teamId, projectId, onNavigateToTasks }: Plan
         return;
       }
 
-      const res = await fetch(`${API_BASE_URL}/projects/${pId}/plan`, {
+      const res = await fetch(`${API_BASE_URL}/api/projects/${pId}/plan`, {
         headers: { Authorization: `Bearer ${token}` },
       });
 
@@ -167,7 +167,7 @@ export default function PlanPanel({ teamId, projectId, onNavigateToTasks }: Plan
     if (!resolvedProjectId) return;
 
     try {
-      const res = await fetch(`${API_BASE_URL}/projects/${resolvedProjectId}/artifacts`, {
+      const res = await fetch(`${API_BASE_URL}/api/projects/${resolvedProjectId}/artifacts`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -208,7 +208,7 @@ export default function PlanPanel({ teamId, projectId, onNavigateToTasks }: Plan
     if (!ok) return;
 
     try {
-      const res = await fetch(`${API_BASE_URL}/projects/${resolvedProjectId}/artifacts/${artifactId}`, {
+      const res = await fetch(`${API_BASE_URL}/api/projects/${resolvedProjectId}/artifacts/${artifactId}`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -225,9 +225,13 @@ export default function PlanPanel({ teamId, projectId, onNavigateToTasks }: Plan
   // AI Extraction of Requirements & Deliverables
   const handleExtractPlan = async () => {
     if (!resolvedProjectId) return;
+    if (!artifacts || artifacts.length === 0) {
+      toast("Upload an SRS, specification, or project artifact before analyzing.", "error");
+      return;
+    }
     try {
       setExtracting(true);
-      const res = await fetch(`${API_BASE_URL}/projects/${resolvedProjectId}/plan/extract`, {
+      const res = await fetch(`${API_BASE_URL}/api/projects/${resolvedProjectId}/plan/extract`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -244,7 +248,7 @@ export default function PlanPanel({ teamId, projectId, onNavigateToTasks }: Plan
           if (Array.isArray(data.extracted.requirements)) {
             // Save newly extracted draft requirements to server
             for (const r of data.extracted.requirements) {
-              await fetch(`${API_BASE_URL}/projects/${resolvedProjectId}/requirements`, {
+              await fetch(`${API_BASE_URL}/api/projects/${resolvedProjectId}/requirements`, {
                 method: "POST",
                 headers: {
                   "Content-Type": "application/json",
@@ -256,7 +260,7 @@ export default function PlanPanel({ teamId, projectId, onNavigateToTasks }: Plan
             await fetchPlan();
           }
         }
-        toast("Plan analysis complete. Draft requirements ready for review.", "success");
+        toast("Waterfall plan and requirements extracted successfully.", "success");
       } else {
         const err = await res.json();
         toast(err.error || "Extraction failed", "error");
@@ -272,7 +276,7 @@ export default function PlanPanel({ teamId, projectId, onNavigateToTasks }: Plan
   const handleApproveReq = async (reqItem: RequirementItem) => {
     if (!resolvedProjectId || !reqItem.reqId) return;
     try {
-      const res = await fetch(`${API_BASE_URL}/projects/${resolvedProjectId}/requirements/${reqItem.reqId}`, {
+      const res = await fetch(`${API_BASE_URL}/api/projects/${resolvedProjectId}/requirements/${reqItem.reqId}`, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
@@ -294,7 +298,7 @@ export default function PlanPanel({ teamId, projectId, onNavigateToTasks }: Plan
   const handleConvertToTask = async (reqItem: RequirementItem) => {
     if (!resolvedProjectId || !reqItem.reqId) return;
     try {
-      const res = await fetch(`${API_BASE_URL}/projects/${resolvedProjectId}/requirements/${reqItem.reqId}/convert-to-task`, {
+      const res = await fetch(`${API_BASE_URL}/api/projects/${resolvedProjectId}/requirements/${reqItem.reqId}/convert-to-task`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -326,7 +330,7 @@ export default function PlanPanel({ teamId, projectId, onNavigateToTasks }: Plan
     if (!ok) return;
 
     try {
-      const res = await fetch(`${API_BASE_URL}/projects/${resolvedProjectId}/requirements/${reqItem.reqId}`, {
+      const res = await fetch(`${API_BASE_URL}/api/projects/${resolvedProjectId}/requirements/${reqItem.reqId}`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -397,7 +401,7 @@ export default function PlanPanel({ teamId, projectId, onNavigateToTasks }: Plan
     try {
       let res;
       if (editingReq && editingReq.reqId) {
-        res = await fetch(`${API_BASE_URL}/projects/${resolvedProjectId}/requirements/${editingReq.reqId}`, {
+        res = await fetch(`${API_BASE_URL}/api/projects/${resolvedProjectId}/requirements/${editingReq.reqId}`, {
           method: "PATCH",
           headers: {
             "Content-Type": "application/json",
@@ -406,7 +410,7 @@ export default function PlanPanel({ teamId, projectId, onNavigateToTasks }: Plan
           body: JSON.stringify(payload),
         });
       } else {
-        res = await fetch(`${API_BASE_URL}/projects/${resolvedProjectId}/requirements`, {
+        res = await fetch(`${API_BASE_URL}/api/projects/${resolvedProjectId}/requirements`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",

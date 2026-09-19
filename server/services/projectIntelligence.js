@@ -44,6 +44,7 @@ import ArchitectureComponent from "../models/ArchitectureComponent.js";
 import Resource from "../models/Resource.js";
 import AIConversation from "../models/AIConversation.js";
 import AIMessage from "../models/AIMessage.js";
+import { getWaterfallPhaseStates } from "./phaseGateService.js";
 
 import {
   detectProjectDomain,
@@ -164,6 +165,11 @@ export async function buildProjectContext(projectId) {
     })),
     researchTopicsCount: researchItems.length,
     resourcesCount: resources.length,
+    methodology: project.methodology || "WATERFALL",
+    waterfallPhase: project.waterfallPhase || "requirements",
+    waterfallState: (project.methodology || "WATERFALL") === "WATERFALL"
+      ? await getWaterfallPhaseStates(project._id, project.teamId).catch(() => null)
+      : null,
     taskStats: {
       total: tasks.length,
       done: tasks.filter((t) => t.status === "done").length,
@@ -960,6 +966,26 @@ Once decided, create the corresponding setup task in your backlog.`;
 
     case "roadmap":
     case "general_project_question": {
+      if (projectContext.waterfallState) {
+        const wf = projectContext.waterfallState;
+        const currentP = wf.phases.find((p) => p.status === "ACTIVE") || wf.phases[0];
+        const nextP = wf.phases.find((p) => p.status === "LOCKED");
+        return `As your Waterfall Project Advisor for **${title}** (${domain}):
+
+### Current Waterfall Phase Status:
+• **Active Phase**: **${currentP.name}** (${currentP.completedTasks}/${currentP.requiredTasks} tasks complete — ${currentP.progress}%)
+${nextP ? `• **Next Phase**: **${nextP.name}** (🔒 LOCKED until ${currentP.name} phase gate is cleared)` : "• **Status**: All Waterfall phase gates cleared"}
+
+### Sequential Phase Gate Policy:
+Waterfall execution is deterministic and strictly sequential. Tasks in locked phases cannot be executed until prior phase gates are 100% complete. AI cannot bypass phase gates or mark tasks complete.
+
+**Recommended Action:**
+Focus all engineering efforts on completing the remaining ${Math.max(0, currentP.requiredTasks - currentP.completedTasks)} tasks in the **${currentP.name}** phase.
+
+**Next Step:**
+Once all required tasks in ${currentP.name} are marked DONE, the phase gate will clear and automatically unlock **${nextP ? nextP.name : "subsequent phases"}**.`;
+      }
+
       // If user asks "what should I do next" or "what should I build first"
       const taskDone = projectContext.taskStats?.done || 0;
       const taskTotal = projectContext.taskStats?.total || 0;

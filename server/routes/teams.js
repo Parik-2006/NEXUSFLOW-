@@ -13,7 +13,8 @@ import { greedySortTasks, computePriorityScore } from "../algorithms/greedySched
 import { assignTasksToMembers } from "../algorithms/branchAndBound.js";
 import { buildGraph, dfs, bfs, topologicalSort as topoSortGraph } from "../algorithms/graphTraversal.js";
 import { compareSortAlgorithms, mergeSortTasks, quickSortTasks } from "../utils/sortAlgorithms.js";
-import { decomposeProject, extractFeatures } from "../algorithms/projectDecomposer.js";
+import { decomposeProject, extractFeatures, mapCategoryOrTitleToWaterfallPhase } from "../algorithms/projectDecomposer.js";
+import { assertWaterfallTaskExecutable, getWaterfallPhaseStates } from "../services/phaseGateService.js";
 import { boyerMooreSearch, mergeSort } from "../algorithms/taskOptimiser.js";
 import { decomposeTasksWithContext } from "../services/taskDecomposer.js";
 import { buildCompactProjectContext } from "../utils/projectContextBuilder.js";
@@ -192,6 +193,16 @@ router.post("/teams", requireAuth, async (req, res) => {
     } = req.body ?? {};
     if (!name || !name.trim()) return res.status(400).json({ error: "Team name is required." });
 
+    // FIX A & B: Backend validation — description must be at least 1000 meaningful characters
+    const rawDesc = projectDescription ?? req.body?.description ?? "";
+    const descriptionTrimmed = String(rawDesc || "").trim();
+    if (!descriptionTrimmed || descriptionTrimmed.length < 1000) {
+      return res.status(400).json({
+        error: "INVALID_DESCRIPTION",
+        message: "Project description must contain at least 1000 meaningful characters.",
+      });
+    }
+
     const creatorId = mongoose.isValidObjectId(req.user?.id)
       ? new mongoose.Types.ObjectId(req.user.id)
       : new mongoose.Types.ObjectId();
@@ -237,6 +248,8 @@ router.post("/teams", requireAuth, async (req, res) => {
         title: t.title.trim(),
         description: (t.description ?? "").trim(),
         category: t.category ?? "General",
+        phase: t.phase || mapCategoryOrTitleToWaterfallPhase(t.category, t.title),
+        phaseIndex: typeof t.phaseIndex === "number" ? t.phaseIndex : 0,
         urgency: clampInt(t.urgency, 1, 5, 2),
         impact: clampInt(t.impact, 1, 5, 2),
         businessValue: numOrNull(t.businessValue),
@@ -292,7 +305,7 @@ router.post("/teams", requireAuth, async (req, res) => {
 
     // Create the initial AI/starter tasks (source = "ai") + wire phase deps.
     if (seeds.length) {
-      const count = await createSeededTasks(team._id, seeds);
+      const count = await createSeededTasks(team._id, seeds, project._id);
       await Team.updateOne({ _id: team._id }, { $set: { taskCount: count } });
     }
 
@@ -720,7 +733,7 @@ router.post("/teams/:teamId/generate-tasks", requireAuth, async (req, res) => {
     }
     if (!seeds.length) return res.json({ added: 0, tasks: [] });
 
-    const added = await createSeededTasks(teamId, seeds);     // APPEND (no delete) + wire + topo
+    const added = await createSeededTasks(teamId, seeds, team.activeProjectId);     // APPEND (no delete) + wire + topo
     await Team.updateOne({ _id: teamId }, { $inc: { taskCount: added } });
 
     const tasks = await Task.find({ teamId }).sort({ priorityScore: -1, createdAt: 1 }).lean();
@@ -2430,7 +2443,7 @@ router.patch("/teams/:teamId/tasks/:taskId", requireAuth, async (req, res) => {
       "estimatedHours", "businessValue", "status", "title", "description",
       "assignedTo", "urgency", "impact", "progress",
       "deadline", "startDate", "dueDate", "priorityLabel", "storyPoints",
-      "category", "reminderAt",
+      "category", "reminderAt", "phase",
     ];
     const update  = {};
     for (const key of allowed) {
@@ -2440,10 +2453,24 @@ router.patch("/teams/:teamId/tasks/:taskId", requireAuth, async (req, res) => {
     if (update.status === "done") update.completedAt = new Date();
     else if (update.status !== undefined) update.completedAt = null;
 
-    // Increment state version on any field change
-    const existing = await Task.findById(req.params.taskId).select("stateVersion").lean();
+    const existing = await Task.findById(req.params.taskId).lean();
     if (!existing) return res.status(404).json({ error: "Task not found." });
-    update.stateVersion = existing.stateVersion + 1;
+
+    // Server-side enforcement of Waterfall Phase Gates
+    if (update.status && (update.status === "in_progress" || update.status === "done")) {
+      try {
+        await assertWaterfallTaskExecutable(existing, update.status);
+      } catch (gateErr) {
+        return res.status(gateErr.statusCode || 403).json({
+          error: gateErr.message,
+          phase: gateErr.phase,
+          locked: true,
+        });
+      }
+    }
+
+    // Increment state version on any field change
+    update.stateVersion = (existing.stateVersion || 0) + 1;
     update.greedyVersion  = 0;   // mark stale
     update.planningVersion = 0;  // mark stale
 
@@ -2457,6 +2484,15 @@ router.patch("/teams/:teamId/tasks/:taskId", requireAuth, async (req, res) => {
     const io = req.app.get("io");
     if (io) {
       io.to(`team:${req.params.teamId}`).emit("task:updated", task);
+      if (update.status !== undefined) {
+        const waterfallState = await getWaterfallPhaseStates(task.projectId, req.params.teamId).catch(() => null);
+        if (waterfallState) {
+          io.to(`team:${req.params.teamId}`).emit("waterfall:phase:updated", waterfallState);
+          if (task.projectId) {
+            io.to(`project:${task.projectId}`).emit("waterfall:phase:updated", waterfallState);
+          }
+        }
+      }
     }
 
     res.json(task);
@@ -2769,9 +2805,17 @@ router.post("/teams/:teamId/assign", requireAuth, async (req, res) => {
       return res.status(409).json({ error: "Assignment engine requires skill profiles. Set member skills (not all default 5) so Branch & Bound can compute a cost matrix." });
 
     const taskQuery = { teamId, status: { $ne: "done" } };
-    if (Array.isArray(taskIds) && taskIds.length) taskQuery._id = { $in: taskIds };
-    const tasks = await Task.find(taskQuery).lean();
+    let tasks = await Task.find(taskQuery).lean();
     if (!tasks.length) return res.status(400).json({ error: "No eligible tasks." });
+
+    // Waterfall Phase Awareness: prioritize and assign active-phase work
+    const wfState = await getWaterfallPhaseStates(team.activeProjectId, teamId).catch(() => null);
+    if (wfState && !taskIds) {
+      const activeTasks = tasks.filter((t) => (t.phase || "requirements").toLowerCase() === wfState.currentPhase);
+      if (activeTasks.length > 0) {
+        tasks = activeTasks;
+      }
+    }
 
     const { assignments, totalCost, costMatrix, meta } = assignTasksToMembers(members, tasks);
 
@@ -2868,11 +2912,18 @@ function topologicalSort(tasks) {
 // Create starter tasks AND wire inter-phase dependencies (phase N depends on the
 // first task of phase N-1) so the dependency graph is connected and the
 // topological roadmap is meaningful. Recomputes topoOrder afterwards.
-async function createSeededTasks(teamId, seeds) {
+async function createSeededTasks(teamId, seeds, projectId = null) {
   const created = [];
   for (const d of seeds) {
     const { phaseIndex = 0, ...fields } = d;
-    const t = await Task.create({ teamId, source: "ai", ...fields });
+    const taskPhase = fields.phase || mapCategoryOrTitleToWaterfallPhase(fields.category, fields.title);
+    const t = await Task.create({
+      teamId,
+      projectId: projectId || null,
+      source: "ai",
+      ...fields,
+      phase: taskPhase,
+    });
     created.push({ id: t._id, phaseIndex });
   }
 
@@ -2987,6 +3038,20 @@ function buildEdgeList(tasks) {
   }
   return edges;
 }
+
+// ── GET /api/teams/:teamId/waterfall/state ────────────────────────────────────
+router.get("/teams/:teamId/waterfall/state", requireAuth, async (req, res) => {
+  try {
+    const access = await verifyTeamAccess(req.params.teamId, req.user);
+    if (access.error) return res.status(access.status).json({ error: access.error });
+
+    const team = await Team.findById(req.params.teamId).select("activeProjectId").lean();
+    const state = await getWaterfallPhaseStates(team?.activeProjectId, req.params.teamId);
+    res.json({ success: true, ...state });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 export default router;
 

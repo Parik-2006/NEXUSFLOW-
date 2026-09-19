@@ -157,6 +157,10 @@ export function useTeamTasks(teamId: string) {
 
   // ── REST hydrate ───────────────────────────────────────────────────────────
   const hydrate = useCallback(async () => {
+    if (!teamId || typeof teamId !== "string" || !teamId.trim()) {
+      setLoading(false);
+      return;
+    }
     const res = await fetch(`${API}/api/teams/${teamId}/tasks`, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -180,6 +184,7 @@ export function useTeamTasks(teamId: string) {
   }, []);
 
   const fetchExecutionOrder = useCallback(async () => {
+    if (!teamId || typeof teamId !== "string" || !teamId.trim()) return;
     const res = await fetch(`${API}/api/teams/${teamId}/tasks/execution-order`, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -199,6 +204,7 @@ export function useTeamTasks(teamId: string) {
 
   // ── Socket subscriptions ───────────────────────────────────────────────────
   useEffect(() => {
+    if (!teamId || typeof teamId !== "string" || !teamId.trim()) return;
     const socket = getSocket(token);
     socket.emit("room:join", { teamId });
 
@@ -385,6 +391,7 @@ export function useTeamTasks(teamId: string) {
   // ── duplicateTask (REST clone; socket task:created broadcasts the copy) ──────
   const duplicateTask = useCallback(
     async (taskId: string, cloneDependencies = false): Promise<{ error?: string }> => {
+      if (!teamId || typeof teamId !== "string" || !teamId.trim()) return { error: "No team ID" };
       const res = await fetch(`${API}/api/teams/${teamId}/tasks/${taskId}/duplicate`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -431,6 +438,7 @@ export function useTeamTasks(teamId: string) {
   };
   const aiSuggest = useCallback(
     async (mode: string, taskId?: string): Promise<AiSuggestResult> => {
+      if (!teamId || typeof teamId !== "string" || !teamId.trim()) return { error: "No team ID" };
       const res = await fetch(`${API}/api/teams/${teamId}/ai-suggest`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -445,6 +453,7 @@ export function useTeamTasks(teamId: string) {
 
   // ── restoreBacklog (Restore AI Backlog) ─────────────────────────────────────
   const restoreBacklog = useCallback(async (): Promise<{ error?: string; restored?: number }> => {
+    if (!teamId || typeof teamId !== "string" || !teamId.trim()) return { error: "No team ID" };
     const res = await fetch(`${API}/api/teams/${teamId}/restore-backlog`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
@@ -458,6 +467,7 @@ export function useTeamTasks(teamId: string) {
   // ── addDependency / removeDependency (Topo Sort) ───────────────────────────
   const addDependency = useCallback(
     async (taskId: string, dependsOn: string): Promise<{ error?: string }> => {
+      if (!teamId || typeof teamId !== "string" || !teamId.trim()) return { error: "No team ID" };
       const res = await fetch(`${API}/api/teams/${teamId}/tasks/${taskId}/dependencies`, {
         method : "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -473,6 +483,7 @@ export function useTeamTasks(teamId: string) {
 
   const removeDependency = useCallback(
     async (taskId: string, depId: string): Promise<{ error?: string }> => {
+      if (!teamId || typeof teamId !== "string" || !teamId.trim()) return { error: "No team ID" };
       const res = await fetch(`${API}/api/teams/${teamId}/tasks/${taskId}/dependencies/${depId}`, {
         method : "DELETE",
         headers: { Authorization: `Bearer ${token}` },

@@ -177,12 +177,15 @@ export default function SkillVerificationModal({
         }),
       });
 
-      if (isVerified) {
-        if (refreshProfile) await refreshProfile();
-        if (onVerified) onVerified(skill, finalScore);
-      }
+      // FIX 1+3: Always refresh profile so skills list updates immediately
+      if (refreshProfile) await refreshProfile();
+      // FIX 3: Always fire onVerified callback (pass or fail) so workspace
+      // capability tracking knows the quiz was attempted
+      if (onVerified) onVerified(skill, finalScore);
     } catch {
       // UX remains non-blocking even if network hiccup occurs
+      // Still fire callbacks so UI state updates
+      if (onVerified) onVerified(skill, finalScore);
     }
 
     setStep("result");

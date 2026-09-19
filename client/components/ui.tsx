@@ -253,18 +253,22 @@ export function Field({
       <View
         style={[
           s.fieldWrap,
-          props.multiline && { height: 88, alignItems: "flex-start" },
+          props.multiline && { minHeight: 88, height: "auto", alignItems: "flex-start", paddingVertical: 8 },
           focused && s.fieldWrapFocus,
         ]}
       >
-        {icon ? <Ionicons name={icon} size={17} color={focused ? colors.primary : colors.textFaint} style={{ marginTop: props.multiline ? 11 : 0 }} /> : null}
+        {icon ? <Ionicons name={icon} size={17} color={focused ? colors.primary : colors.textFaint} style={{ marginTop: props.multiline ? 4 : 0 }} /> : null}
         <TextInput
           {...props}
           secureTextEntry={secure}
           onFocus={(e) => { setFocused(true); props.onFocus?.(e); }}
           onBlur={(e) => { setFocused(false); props.onBlur?.(e); }}
           placeholderTextColor={colors.textFaint}
-          style={[s.fieldInput, props.multiline && { height: 80, textAlignVertical: "top" }, props.style as any]}
+          style={[
+            s.fieldInput,
+            props.multiline && { minHeight: 76, height: "auto", textAlignVertical: "top" },
+            props.style as any,
+          ]}
         />
         {passwordToggle ? (
           <Pressable onPress={() => setReveal((r) => !r)} hitSlop={8}>
