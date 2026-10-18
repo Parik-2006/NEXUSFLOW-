@@ -219,18 +219,39 @@ export default function WaterfallTimelinePanel({ teamId, projectId, onNavigatePl
   const doneTasks = rawTasks.filter((t) => t.status === "done").length;
   const overallProgress = totalTasks > 0 ? Math.round((doneTasks / totalTasks) * 100) : 0;
 
-  // ── Waterfall Locked State (Before Plan Finalization) ──────────────────────
-  if (methodology === "WATERFALL" && !isUnlocked && !lifecycleLoading) {
+  // ── Waterfall Locked / Setup-Required State ────────────────────────────────
+  if (methodology === "WATERFALL" && rawTasks.length === 0 && !loading && !lifecycleLoading) {
     const status = lifecycle?.status || "ARTIFACTS_PENDING";
-    let statusMsg = "Complete artifact analysis and finalize the Waterfall plan to unlock the execution timeline.";
-    if (status === "ARTIFACTS_PENDING") {
-      statusMsg = "No project documents uploaded yet. Upload SRS or brief documents in the Waterfall Plan tab.";
-    } else if (status === "ANALYSIS_PENDING") {
-      statusMsg = "Artifacts uploaded but not analyzed. Run artifact analysis in the Waterfall Plan tab.";
+    let title = "Timeline Tab Locked — Project Setup Required";
+    let statusMsg = "This Waterfall project has no source artifacts and no finalized plan. Upload your SRS or project specification in Overview to begin.";
+    let badgeText = "STATE A · SETUP REQUIRED";
+    let btnText = "Open Overview → Upload Artifacts";
+
+    if (!lifecycle || (lifecycle as any).artifactsCount === 0 || status === "ARTIFACTS_PENDING") {
+      title = "Timeline Tab Locked — Project Setup Required";
+      statusMsg = "This Waterfall project has no source artifacts and no finalized plan. Upload your SRS or project specification in Overview to begin planning.";
+      badgeText = "STATE A · NO ARTIFACTS";
+      btnText = "Go to Overview → Upload Artifacts";
+    } else if (status === "ANALYSIS_PENDING" || ((lifecycle as any).requirementsCount === 0 && (lifecycle as any).artifactsCount > 0)) {
+      title = "Timeline Tab Locked — Analysis Pending";
+      statusMsg = "Artifacts are uploaded, but document analysis and requirement extraction are not yet complete. Extract requirements in Overview → Project Setup & Plan.";
+      badgeText = "STATE B · ANALYSIS PENDING";
+      btnText = "Go to Overview → Analyze Artifacts";
     } else if (status === "PLAN_REVIEW_REQUIRED") {
-      statusMsg = "Artifact analysis completed. Review extracted scope cards (Executive Goals, Key Deliverables, Constraints) in the Plan tab.";
+      title = "Timeline Tab Locked — Review & Approvals Required";
+      statusMsg = "Requirements have been extracted from source documents. Review requirements, resolve any scope conflicts, and approve requirements in Overview → Project Setup & Plan.";
+      badgeText = "STATE B · REVIEW PENDING";
+      btnText = "Go to Overview → Review Requirements";
     } else if (status === "AWAITING_FINALIZATION") {
-      statusMsg = "Scope reviewed. Resolve any scope contradictions and confirm document readiness to finalize the plan.";
+      title = "Timeline Tab Locked — Plan Finalization Required";
+      statusMsg = "Scope has been reviewed and approved. Finalize the Waterfall plan in Overview → Project Setup & Plan before tasks can be generated.";
+      badgeText = "STATE C · AWAITING FINALIZATION";
+      btnText = "Go to Overview → Finalize Plan";
+    } else if (isUnlocked || (status as string) === "PLAN_FINALIZED" || (status as string) === "READY") {
+      title = "Timeline Tab Locked — Task Generation Required";
+      statusMsg = "Waterfall plan is finalized and ready! Click 'Convert All to Tasks' in Overview → Project Setup & Plan to generate your sequential schedule.";
+      badgeText = "STATE C · TASKS NOT YET CONVERTED";
+      btnText = "Go to Overview → Convert All to Tasks";
     }
 
     return (
@@ -239,15 +260,15 @@ export default function WaterfallTimelinePanel({ teamId, projectId, onNavigatePl
           <View style={s.lockIconCircle}>
             <Ionicons name="lock-closed" size={32} color={colors.warning} />
           </View>
-          <Text style={s.lockedTitle}>Timeline Tab Locked — Plan Not Finalized</Text>
+          <Text style={s.lockedTitle}>{title}</Text>
           <Text style={s.lockedDesc}>{statusMsg}</Text>
           <View style={s.lockedStatusPill}>
-            <Text style={s.lockedStatusPillText}>LIFECYCLE STATUS: {status.replace(/_/g, " ")}</Text>
+            <Text style={s.lockedStatusPillText}>{badgeText}</Text>
           </View>
           {onNavigatePlan && (
             <Pressable style={s.goToPlanBtn} onPress={onNavigatePlan}>
               <Ionicons name="document-text-outline" size={16} color="#FFF" />
-              <Text style={s.goToPlanBtnText}>Go to Waterfall Plan & Review Scope →</Text>
+              <Text style={s.goToPlanBtnText}>{btnText} →</Text>
             </Pressable>
           )}
         </View>
@@ -262,7 +283,7 @@ export default function WaterfallTimelinePanel({ teamId, projectId, onNavigatePl
         <View style={s.badgeRow}>
           <View style={s.waterfallBadge}>
             <Ionicons name="calendar-outline" size={14} color={colors.primary} />
-            <Text style={s.waterfallBadgeText}>WATERFALL TIMELINE · TAB 4</Text>
+            <Text style={s.waterfallBadgeText}>WATERFALL TIMELINE · TAB 5</Text>
           </View>
           <View style={s.cpmBadge}>
             <Ionicons name="git-commit-outline" size={13} color={colors.warning} />

@@ -324,8 +324,9 @@ router.post("/teams", requireAuth, async (req, res) => {
       }
     );
 
-    // Create the initial AI/starter tasks (source = "ai") + wire phase deps.
-    if (seeds.length) {
+    // Create the initial AI/starter tasks (source = "ai") + wire phase deps for non-Waterfall methodologies.
+    // For Waterfall, tasks are generated strictly from approved requirements and finalized plan in Project Setup & Plan.
+    if (seeds.length && normalizedMethodology !== "WATERFALL") {
       const count = await createSeededTasks(team._id, seeds, project._id);
       await Team.updateOne({ _id: team._id }, { $set: { taskCount: count } });
     }

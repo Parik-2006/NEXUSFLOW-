@@ -71,7 +71,7 @@ export default function WaterfallGuideModal({
               </View>
               <View>
                 <Text style={font.h3}>Waterfall Workspace Guide</Text>
-                <Text style={s.subtitle}>Step-by-step walkthrough of all 8 tabs & 6 phases</Text>
+                <Text style={s.subtitle}>Step-by-step walkthrough of all 7 tabs & 6 phases</Text>
               </View>
             </View>
             <Pressable onPress={onClose} hitSlop={12} style={s.closeBtn}>
@@ -91,7 +91,7 @@ export default function WaterfallGuideModal({
                 color={viewMode === "tabs" ? colors.primary : colors.textMuted}
               />
               <Text style={[s.modeBtnText, viewMode === "tabs" && s.modeBtnTextActive]}>
-                8 Workspace Tabs
+                7 Workspace Tabs
               </Text>
             </Pressable>
 

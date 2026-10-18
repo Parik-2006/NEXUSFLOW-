@@ -49,7 +49,7 @@ export default function WaterfallGuideBanner({ onNavigateTab, style }: Props) {
         </View>
         <View style={s.textCol}>
           <Text style={s.title}>New to Waterfall?</Text>
-          <Text style={s.desc}>Open the step-by-step guide to all 8 tabs & 6 phases</Text>
+          <Text style={s.desc}>Open the step-by-step guide to all 7 tabs & 6 phases</Text>
         </View>
       </View>
 

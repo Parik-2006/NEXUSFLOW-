@@ -236,7 +236,7 @@ async function main() {
     assert.ok(!sectionsText.includes('"jwt"'), "Must not have jwt in navigation");
   });
 
-  runTest("client/constants/waterfallGuideData.ts provides all 6 phases, 8 tabs, and 5 insights subtabs", () => {
+  runTest("client/constants/waterfallGuideData.ts provides all 6 phases, 7 primary tabs, and 5 insights subtabs", () => {
     const guideCode = fs.readFileSync(path.join(__dirname, "../../client/constants/waterfallGuideData.ts"), "utf8");
     
     // Check 6 phases
@@ -247,15 +247,18 @@ async function main() {
     assert.ok(guideCode.includes('"5. Deployment"'));
     assert.ok(guideCode.includes('"6. Maintenance & Review"'));
 
-    // Check 8 tabs
+    // Check exactly 7 primary tabs
     assert.ok(guideCode.includes('tabKey: "overview"'));
-    assert.ok(guideCode.includes('tabKey: "plan"'));
+    assert.ok(guideCode.includes('tabKey: "advisor"'));
+    assert.ok(guideCode.includes('tabKey: "team"'));
     assert.ok(guideCode.includes('tabKey: "tasks"'));
     assert.ok(guideCode.includes('tabKey: "timeline"'));
-    assert.ok(guideCode.includes('tabKey: "team"'));
     assert.ok(guideCode.includes('tabKey: "insights"'));
-    assert.ok(guideCode.includes('tabKey: "advisor"') || guideCode.includes('tabKey: "ai"'));
     assert.ok(guideCode.includes('tabKey: "chat"'));
+
+    // Plan is integrated into Overview rather than a standalone primary tab
+    assert.ok(!guideCode.includes('tabKey: "plan"'));
+    assert.ok(guideCode.includes("Project Setup & Plan"));
 
     // Check 5 insights subtabs
     assert.ok(guideCode.includes('key: "health"'));

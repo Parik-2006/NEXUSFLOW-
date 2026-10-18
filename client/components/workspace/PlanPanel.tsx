@@ -36,6 +36,7 @@ interface PlanPanelProps {
   teamId: string;
   projectId?: string;
   onNavigateToTasks?: () => void;
+  isEmbedded?: boolean;
 }
 
 export interface ArtifactItem {
@@ -149,7 +150,7 @@ export interface WaterfallPlanLifecycle {
   };
 }
 
-export default function PlanPanel({ teamId, projectId, onNavigateToTasks }: PlanPanelProps) {
+export default function PlanPanel({ teamId, projectId, onNavigateToTasks, isEmbedded }: PlanPanelProps) {
   const { user, token } = useAuth();
   const toast = useToast();
   const confirm = useConfirm();
@@ -1099,23 +1100,25 @@ export default function PlanPanel({ teamId, projectId, onNavigateToTasks }: Plan
   }
 
   return (
-    <ScrollView style={s.container} contentContainerStyle={s.contentContainer}>
-      {/* Waterfall Guide Entry Point */}
-      <WaterfallGuideBanner style={{ marginBottom: spacing.sm }} />
+    <ScrollView style={s.container} contentContainerStyle={[s.contentContainer, isEmbedded && { paddingTop: spacing.xs }]}>
+      {/* Waterfall Guide Entry Point (only if not embedded) */}
+      {!isEmbedded && <WaterfallGuideBanner style={{ marginBottom: spacing.sm }} />}
 
       {/* Header Banner */}
       <View style={s.headerBanner}>
         <View style={s.badgeRow}>
           <View style={s.waterfallBadge}>
             <Ionicons name="git-commit" size={14} color={colors.primary} />
-            <Text style={s.waterfallBadgeText}>WATERFALL METHODOLOGY · TAB 2</Text>
+            <Text style={s.waterfallBadgeText}>
+              {isEmbedded ? "WATERFALL · PROJECT SETUP & PLAN" : "WATERFALL METHODOLOGY · PROJECT SETUP & PLAN"}
+            </Text>
           </View>
           <View style={s.scopeBadge}>
             <Ionicons name="lock-closed" size={12} color={colors.textFaint} />
             <Text style={s.scopeBadgeText}>STRICT SEQUENTIAL SCOPE</Text>
           </View>
         </View>
-        <Text style={font.h1}>Plan & Project Understanding</Text>
+        <Text style={font.h1}>Project Setup & Plan</Text>
         <Text style={s.headerSubtitle}>
           Upload specifications, teacher instructions, and architecture documents. Review AI-synthesized
           functional requirements scored dynamically via DAA prior to task commitment.

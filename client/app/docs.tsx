@@ -571,11 +571,11 @@ function MethodologiesSection({ initialGuide }: { initialGuide?: string }) {
             </View>
           </Card>
 
-          {/* Section C: Interactive Tab Inspector (All 8 Workspace Tabs) */}
+          {/* Section C: Interactive Tab Inspector (All 7 Workspace Tabs) */}
           <Card style={{ gap: spacing.md }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
               <Ionicons name="layers-outline" size={20} color={colors.primary} />
-              <Text style={font.h3}>Interactive Workspace Tabs Guide (8 Tabs)</Text>
+              <Text style={font.h3}>Interactive Workspace Tabs Guide (7 Tabs)</Text>
             </View>
             <Text style={s.subText}>
               Select any workspace tab below to see its exact purpose, when to use it, step-by-step actions, and downstream workflow:
@@ -627,7 +627,7 @@ function MethodologiesSection({ initialGuide }: { initialGuide?: string }) {
                   </View>
                   <View>
                     <Text style={font.h3}>{activeTabGuide.tabName} Tab</Text>
-                    <Text style={s.subText}>Tab {activeTabGuide.order} of 8 in Waterfall Workspace</Text>
+                    <Text style={s.subText}>Tab {activeTabGuide.order} of 7 in Waterfall Workspace</Text>
                   </View>
                 </View>
                 <Badge label={`Order #${activeTabGuide.order}`} color={colors.primary} bg={colors.primarySoft} />

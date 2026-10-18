@@ -124,7 +124,7 @@ export const WATERFALL_PHASES: WaterfallPhaseGuide[] = [
   },
 ];
 
-// ── 2. STEP-BY-STEP WATERFALL WORKSPACE TABS GUIDE ──────────────────────────
+// ── 2. STEP-BY-STEP WATERFALL WORKSPACE TABS GUIDE (EXACTLY 7 PRIMARY TABS) ─
 export const WATERFALL_TAB_GUIDES: WaterfallTabGuide[] = [
   {
     tabKey: "overview",
@@ -132,39 +132,21 @@ export const WATERFALL_TAB_GUIDES: WaterfallTabGuide[] = [
     navKey: "overview",
     icon: "grid-outline",
     order: 1,
-    purpose: "Understand the current project situation, overall progress, and immediate priorities at a glance.",
-    whenToUse: "Every time you open the project or when evaluating milestone progress.",
+    purpose: "Understand project health, upload source artifacts, review extracted requirements, finalize the plan, and convert to active tasks in Project Setup & Plan.",
+    whenToUse: "At kickoff, when uploading artifacts/specifications, and every time you monitor phase gate progress.",
     steps: [
-      "Check the Executive Summary card to see the current active phase, domain, and completion percentage.",
-      "Review the Multi-Dimension Health Matrix to identify if schedule, capacity, or risks need attention.",
-      "Inspect the 3D Waterfall Phase Cascade to see which phase gates have passed and which is active.",
-      "Click any quick-jump card to jump directly to the workspace tab that requires action.",
+      "Review Executive Dashboard metrics, multi-dimension health scores, and sequential 3D Waterfall phase gates.",
+      "Switch to Project Setup & Plan to upload source artifacts (SRS, client briefs, or architecture documents).",
+      "Extract and review structured requirements, resolve conflicts, and approve specifications.",
+      "Verify plan readiness and click 'Finalize Plan' to establish the approved baseline.",
+      "Click 'Convert All to Tasks' to generate prioritized, phase-assigned execution tasks.",
     ],
-    whatComesNext: "Move to the Plan tab to review requirements and finalize the baseline.",
+    whatComesNext: "Consult Project AI for context-aware assistance or balance member capacity in Team.",
     keyConcepts: [
       {
         term: "Phase Gate",
         explanation: "A formal review checkpoint between sequential phases. A phase gate ensures deliverables meet quality criteria before the next phase can begin.",
       },
-    ],
-  },
-  {
-    tabKey: "plan",
-    tabName: "Plan",
-    navKey: "plan",
-    icon: "document-text-outline",
-    order: 2,
-    purpose: "Review source artifacts, resolve scope conflicts, approve requirements, and convert them into actionable tasks.",
-    whenToUse: "At project kickoff and during requirements/architecture phase reviews.",
-    steps: [
-      "Inspect uploaded source artifacts, teacher briefs, and problem statements in Section 1.",
-      "Review System Architecture and resolve any detected blockers or scope conflicts in Section 2.",
-      "Review structured requirements (SRS) in Section 3 and approve each requirement.",
-      "Check the Plan Readiness gauge (must reach 100%) and click 'Finalize Plan'.",
-      "Click 'Convert All to Tasks' to generate prioritized active tasks linked directly to approved requirements.",
-    ],
-    whatComesNext: "Open the Tasks tab to view the generated tasks and manage daily execution.",
-    keyConcepts: [
       {
         term: "Plan Readiness",
         explanation: "A deterministic check evaluating whether source artifacts, architecture, and requirements are fully reviewed, conflict-free, and approved.",
@@ -176,11 +158,53 @@ export const WATERFALL_TAB_GUIDES: WaterfallTabGuide[] = [
     ],
   },
   {
+    tabKey: "advisor",
+    tabName: "Project AI",
+    navKey: "advisor",
+    icon: "sparkles-outline",
+    order: 2,
+    purpose: "Consult AI assistance grounded in your actual project brief, artifacts, and engineering context.",
+    whenToUse: "When drafting technical specifications, deciding between architectural options, or researching academic algorithms.",
+    steps: [
+      "Ask the Project Copilot questions about implementation details, design patterns, or testing strategies.",
+      "Record architectural tradeoffs in the Decision Engine with alternatives and evaluated pros/cons.",
+      "Explore academic research papers relevant to your project domain.",
+      "Use developer tools to inspect API schemas and data contract recommendations.",
+    ],
+    whatComesNext: "Assign tasks and balance capacity in the Team tab.",
+  },
+  {
+    tabKey: "team",
+    tabName: "Team",
+    navKey: "team",
+    icon: "people-outline",
+    order: 3,
+    purpose: "Manage team member profiles, verified skills, and algorithmic workload balancing.",
+    whenToUse: "When onboarding teammates, matching tasks to skills, and preventing member burnout.",
+    steps: [
+      "Review team members, assigned roles, and weekly hour capacities (default 30-40h).",
+      "Inspect the Verified Skill Matrix to confirm technical competencies match project needs.",
+      "Run the DAA Branch & Bound assignment engine to compute optimal task assignments based on skill fit and capacity.",
+      "Accept recommended assignments or manually reassign tasks to resolve workload overload warnings.",
+    ],
+    whatComesNext: "Open the Tasks tab to view generated tasks and manage daily execution.",
+    keyConcepts: [
+      {
+        term: "Branch & Bound Assignment",
+        explanation: "An optimization algorithm that explores assignment combinations and prunes sub-optimal branches to match tasks to members with the highest skill synergy and lowest overload.",
+      },
+      {
+        term: "Verified Skill",
+        explanation: "A technical competency confirmed through assessment or verification, ensuring capability intelligence only relies on proven qualifications.",
+      },
+    ],
+  },
+  {
     tabKey: "tasks",
     tabName: "Tasks",
     navKey: "tasks",
     icon: "list-outline",
-    order: 3,
+    order: 4,
     purpose: "Track, prioritize, and execute engineering tasks organized by phase and DAA priority.",
     whenToUse: "During active development to pick up work, update progress, and check dependencies.",
     steps: [
@@ -206,7 +230,7 @@ export const WATERFALL_TAB_GUIDES: WaterfallTabGuide[] = [
     tabName: "Timeline",
     navKey: "timeline",
     icon: "calendar-outline",
-    order: 4,
+    order: 5,
     purpose: "Visualize the planned schedule, task date sequences, and Critical Path Method (CPM) milestones.",
     whenToUse: "When planning milestone dates, tracking schedule slippage, or analyzing critical dependencies.",
     steps: [
@@ -215,37 +239,11 @@ export const WATERFALL_TAB_GUIDES: WaterfallTabGuide[] = [
       "Verify task sequence respects Waterfall phase boundaries (e.g. design finishes before implementation).",
       "Track target milestone dates against your team's hard project deadline.",
     ],
-    whatComesNext: "Open the Team tab to balance member workloads and assign tasks.",
+    whatComesNext: "Open Insights to evaluate deep project health, risks, and learning loops.",
     keyConcepts: [
       {
         term: "Critical Path Method (CPM)",
         explanation: "The longest sequence of dependent tasks that determines the shortest possible project duration. Tasks on this path have zero slack.",
-      },
-    ],
-  },
-  {
-    tabKey: "team",
-    tabName: "Team",
-    navKey: "team",
-    icon: "people-outline",
-    order: 5,
-    purpose: "Manage team member profiles, verified skills, and algorithmic workload balancing.",
-    whenToUse: "When onboarding teammates, matching tasks to skills, and preventing member burnout.",
-    steps: [
-      "Review team members, assigned roles, and weekly hour capacities (default 30-40h).",
-      "Inspect the Verified Skill Matrix to confirm technical competencies match project needs.",
-      "Run the DAA Branch & Bound assignment engine to compute optimal task assignments based on skill fit and capacity.",
-      "Accept recommended assignments or manually reassign tasks to resolve workload overload warnings.",
-    ],
-    whatComesNext: "Open Insights to evaluate deep project health, risks, and learning loops.",
-    keyConcepts: [
-      {
-        term: "Branch & Bound Assignment",
-        explanation: "An optimization algorithm that explores assignment combinations and prunes sub-optimal branches to match tasks to members with the highest skill synergy and lowest overload.",
-      },
-      {
-        term: "Verified Skill",
-        explanation: "A technical competency confirmed through assessment or verification, ensuring capability intelligence only relies on proven qualifications.",
       },
     ],
   },
@@ -264,7 +262,7 @@ export const WATERFALL_TAB_GUIDES: WaterfallTabGuide[] = [
       "Trace the Dependency DAG to detect dependency bottlenecks or circular loops.",
       "Review the Learning Loop to capture validated lessons from completed project execution.",
     ],
-    whatComesNext: "Consult Project AI for architectural guidance or collaborate in Chat.",
+    whatComesNext: "Collaborate with teammates and coordinate delivery in Chat.",
     subTabs: [
       {
         key: "health",
@@ -309,27 +307,11 @@ export const WATERFALL_TAB_GUIDES: WaterfallTabGuide[] = [
     ],
   },
   {
-    tabKey: "advisor",
-    tabName: "Project AI",
-    navKey: "advisor",
-    icon: "sparkles-outline",
-    order: 7,
-    purpose: "Consult AI assistance grounded in your actual project brief, artifacts, and engineering context.",
-    whenToUse: "When drafting technical specifications, deciding between architectural options, or researching academic algorithms.",
-    steps: [
-      "Ask the Project Copilot questions about implementation details, design patterns, or testing strategies.",
-      "Record architectural tradeoffs in the Decision Engine with alternatives and evaluated pros/cons.",
-      "Explore academic research papers relevant to your project domain.",
-      "Use developer tools to inspect API schemas and data contract recommendations.",
-    ],
-    whatComesNext: "Coordinate implementation updates with teammates in Chat.",
-  },
-  {
     tabKey: "chat",
     tabName: "Chat",
     navKey: "chat",
     icon: "chatbubbles-outline",
-    order: 8,
+    order: 7,
     purpose: "Real-time communication channels for project teammates and team leaders.",
     whenToUse: "Daily collaboration, coordinating deliverables, and discussing phase gate milestones.",
     steps: [
@@ -343,11 +325,12 @@ export const WATERFALL_TAB_GUIDES: WaterfallTabGuide[] = [
 
 // ── 3. NATURAL WORKFLOW SEQUENCE SUMMARY ────────────────────────────────────
 export const WATERFALL_WORKFLOW_SEQUENCE = [
-  { step: 1, tab: "Overview", label: "Inspect Current State", desc: "Understand project health, active phase, and immediate milestones." },
-  { step: 2, tab: "Plan", label: "Finalize Requirements", desc: "Review artifacts, resolve scope conflicts, approve SRS, and convert to tasks." },
-  { step: 3, tab: "Tasks", label: "Execute Daily Work", desc: "Pick up Greedy-ranked tasks, complete prerequisites, and update statuses." },
-  { step: 4, tab: "Timeline", label: "Track Schedule & CPM", desc: "Ensure dates align with phase gates and zero-slack critical path." },
-  { step: 5, tab: "Team", label: "Balance Capacity", desc: "Verify skills and apply Branch & Bound optimal workload assignments." },
+  { step: 1, tab: "Overview", label: "Project Setup & Plan", desc: "Upload artifacts, extract requirements, approve specs, finalize plan, and convert to tasks." },
+  { step: 2, tab: "Project AI", label: "Contextual Guidance", desc: "Consult context-aware AI for architecture, research, and technical decisions." },
+  { step: 3, tab: "Team", label: "Balance Capacity & Skills", desc: "Verify skills and apply Branch & Bound optimal workload assignments." },
+  { step: 4, tab: "Tasks", label: "Execute Daily Work", desc: "Pick up Greedy-ranked tasks, complete prerequisites, and update statuses." },
+  { step: 5, tab: "Timeline", label: "Track Schedule & CPM", desc: "Ensure dates align with phase gates and zero-slack critical path." },
   { step: 6, tab: "Insights", label: "Audit Health & Risks", desc: "Review composite health, resolve risks, and capture validated lessons." },
-  { step: 7, tab: "Execution & Review", label: "Verify & Deliver", desc: "Pass phase gates sequentially to complete capstone delivery." },
+  { step: 7, tab: "Chat", label: "Collaborate & Deliver", desc: "Coordinate deliverables and verify phase gate handoffs with team." },
 ];
+

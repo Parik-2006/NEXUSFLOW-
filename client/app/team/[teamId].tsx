@@ -67,14 +67,13 @@ type TabKey =
   | "github"
   | "retro";
 
-const PRIMARY_TABS: { key: TabKey; label: string; icon: keyof typeof Ionicons.glyphMap; color: string }[] = [
+const WATERFALL_PRIMARY_TABS: { key: TabKey; label: string; icon: keyof typeof Ionicons.glyphMap; color: string }[] = [
   { key: "overview",  label: "Overview",   icon: "grid",                color: colors.primary },
-  { key: "plan",      label: "Plan",       icon: "document-text",       color: "#4F46E5" },
+  { key: "advisor",   label: "Project AI", icon: "sparkles",            color: colors.accent },
+  { key: "team",      label: "Team",       icon: "people",              color: colors.branch },
   { key: "tasks",     label: "Tasks",      icon: "list",                color: colors.greedy },
   { key: "timeline",  label: "Timeline",   icon: "calendar",            color: colors.topo },
-  { key: "team",      label: "Team",       icon: "people",              color: colors.branch },
   { key: "insights",  label: "Insights",   icon: "analytics",           color: colors.merge },
-  { key: "advisor",   label: "Project AI", icon: "sparkles",            color: colors.accent },
   { key: "chat",      label: "Chat",       icon: "chatbubbles",         color: colors.info },
 ];
 
@@ -105,16 +104,17 @@ const KANBAN_PRIMARY_TABS: { key: TabKey; label: string; icon: keyof typeof Ioni
 function normalizeTab(rawTab?: string, isScrum: boolean = false, isKanban: boolean = false): TabKey {
   if (!rawTab) return "overview";
   if (rawTab === "board") return "tasks";
-  if (rawTab === "backlog") return "plan";
+  if (rawTab === "backlog") return isKanban ? "plan" : "overview";
   if (rawTab === "flow") return "timeline";
   if (rawTab === "sprint") return isScrum ? "tasks" : "timeline";
   if (rawTab === "members") return "team";
   if (rawTab === "retro" && isScrum) return "retro";
   if (rawTab === "policies") return "policies";
+  if (rawTab === "plan") return isScrum ? "plan" : isKanban ? "plan" : "overview";
   if (["graph", "analytics", "health", "risks", "retro"].includes(rawTab)) return "insights";
   if (isKanban && KANBAN_PRIMARY_TABS.some((t) => t.key === rawTab)) return rawTab as TabKey;
   if (isScrum && SCRUM_PRIMARY_TABS.some((t) => t.key === rawTab)) return rawTab as TabKey;
-  if (PRIMARY_TABS.some((t) => t.key === rawTab)) return rawTab as TabKey;
+  if (WATERFALL_PRIMARY_TABS.some((t) => t.key === rawTab)) return rawTab as TabKey;
   return "overview";
 }
 
@@ -131,6 +131,7 @@ export default function Workspace() {
   const isKanban = methodology === "KANBAN" || methodology === "Kanban";
 
   const [active, setActive] = useState<TabKey>(normalizeTab(tab, isScrum, isKanban));
+  const [overviewSection, setOverviewSection] = useState<string | null>(tab === "plan" ? "plan" : null);
 
   // If the team was deleted (server returns 404) bounce safely to the dashboard.
   useEffect(() => {
@@ -158,7 +159,7 @@ export default function Workspace() {
   const otherNames = otherMembers.map((m) => m.name || "Member");
   const otherImages = otherMembers.map((m) => m.avatar || null);
 
-  const currentTabs = isKanban ? KANBAN_PRIMARY_TABS : isScrum ? SCRUM_PRIMARY_TABS : PRIMARY_TABS;
+  const currentTabs = isKanban ? KANBAN_PRIMARY_TABS : isScrum ? SCRUM_PRIMARY_TABS : WATERFALL_PRIMARY_TABS;
 
   const badgeColor = isWaterfall ? colors.primary : isScrum ? "#4F46E5" : isKanban ? "#0D9488" : colors.warning;
   const badgeIcon = isWaterfall ? "git-network" : isScrum ? "rocket-outline" : isKanban ? "water-outline" : "construct";
@@ -282,7 +283,20 @@ export default function Workspace() {
           ) : isScrum ? (
             <ScrumOverviewPanel teamId={teamId} onNavigate={(t) => setActive(normalizeTab(t, true, false))} />
           ) : (
-            <OverviewPanel teamId={teamId} onNavigate={(t) => setActive(normalizeTab(t, false, false))} />
+            <OverviewPanel
+              teamId={teamId}
+              projectId={team?.activeProjectId}
+              initialSection={overviewSection}
+              onClearSection={() => setOverviewSection(null)}
+              onNavigate={(t) => {
+                if (t === "plan") {
+                  setActive("overview");
+                  setOverviewSection("plan");
+                } else {
+                  setActive(normalizeTab(t, false, false));
+                }
+              }}
+            />
           )
         )}
         {teamId && active === "plan" && (
@@ -291,7 +305,19 @@ export default function Workspace() {
           ) : isScrum ? (
             <ScrumPlanPanel teamId={teamId} projectId={team?.activeProjectId || teamId} />
           ) : (
-            <PlanPanel teamId={teamId} projectId={team?.activeProjectId} onNavigateToTasks={() => setActive("tasks")} />
+            <OverviewPanel
+              teamId={teamId}
+              projectId={team?.activeProjectId}
+              initialSection="plan"
+              onNavigate={(t) => {
+                if (t === "plan") {
+                  setActive("overview");
+                  setOverviewSection("plan");
+                } else {
+                  setActive(normalizeTab(t, false, false));
+                }
+              }}
+            />
           )
         )}
         {teamId && active === "tasks" && (
@@ -300,7 +326,15 @@ export default function Workspace() {
           ) : isScrum ? (
             <ScrumTasksPanel teamId={teamId} onNavigatePlan={() => setActive("plan")} />
           ) : (
-            <TasksPanel teamId={teamId} projectId={team?.activeProjectId} onNavigatePlan={() => setActive("plan")} onGenerateAI={() => setActive("advisor")} />
+            <TasksPanel
+              teamId={teamId}
+              projectId={team?.activeProjectId}
+              onNavigatePlan={() => {
+                setActive("overview");
+                setOverviewSection("plan");
+              }}
+              onGenerateAI={() => setActive("advisor")}
+            />
           )
         )}
         {teamId && active === "timeline" && (
@@ -309,7 +343,14 @@ export default function Workspace() {
           ) : isScrum ? (
             <ScrumTimelinePanel teamId={teamId} />
           ) : (
-            <WaterfallTimelinePanel teamId={teamId} projectId={team?.activeProjectId} onNavigatePlan={() => setActive("plan")} />
+            <WaterfallTimelinePanel
+              teamId={teamId}
+              projectId={team?.activeProjectId}
+              onNavigatePlan={() => {
+                setActive("overview");
+                setOverviewSection("plan");
+              }}
+            />
           )
         )}
         {teamId && active === "team" && (
@@ -327,7 +368,14 @@ export default function Workspace() {
           ) : isScrum ? (
             <ScrumInsightsPanel teamId={teamId} />
           ) : (
-            <WaterfallInsightsPanel teamId={teamId} projectId={team?.activeProjectId || teamId} />
+            <WaterfallInsightsPanel
+              teamId={teamId}
+              projectId={team?.activeProjectId || teamId}
+              onNavigatePlan={() => {
+                setActive("overview");
+                setOverviewSection("plan");
+              }}
+            />
           )
         )}
         {teamId && active === "policies" && (
