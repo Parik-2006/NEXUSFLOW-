@@ -21,6 +21,12 @@ import { buildCompactProjectContext } from "../utils/projectContextBuilder.js";
 import { evaluateDecision, listDecisionTypes } from "../algorithms/decisionEngine.js";
 import { generateProjectGuidance } from "../algorithms/projectGuidanceEngine.js";
 import { sendTeamInvitation, checkInvitationExpiry } from "../services/invitationService.js";
+import { scanProjectRisks } from "../services/riskEngine.js";
+import {
+  isMethodologyAllowedForNewProjects,
+  getMethodologyAvailability,
+  normalizeMethodologyId,
+} from "../config/methodologyAvailability.js";
 
 const router = Router();
 
@@ -257,11 +263,26 @@ router.post("/teams", requireAuth, async (req, res) => {
         priorityLabel: t.priorityLabel ?? null,
       }));
 
-    // ── NEXUSFLOW V4: Create & link central Project entity ────────────────────
-    const validMethodologies = ["WATERFALL", "SCRUM", "KANBAN", "HYBRID"];
-    const normalizedMethodology = typeof methodology === "string" && validMethodologies.includes(methodology.toUpperCase().trim())
-      ? methodology.toUpperCase().trim()
-      : "WATERFALL";
+    // SAFEGUARD B: Validate methodology input
+    const normalizedMethodology = normalizeMethodologyId(methodology);
+    if (!normalizedMethodology) {
+      return res.status(400).json({
+        error: "INVALID_METHODOLOGY",
+        message: `Unknown or invalid methodology specified: "${methodology}". Must be one of WATERFALL, CLASSIC, SCRUM, KANBAN, HYBRID.`,
+      });
+    }
+
+    // SAFEGUARD A & C: Enforce production methodology availability
+    if (!isMethodologyAllowedForNewProjects(normalizedMethodology)) {
+      const meta = getMethodologyAvailability(normalizedMethodology);
+      return res.status(403).json({
+        error: "METHODOLOGY_UNAVAILABLE",
+        message: `${meta?.name || normalizedMethodology} is currently in development and is not available for new projects in this environment.`,
+        methodology: normalizedMethodology,
+        status: meta?.status || "IN_PROGRESS",
+        reason: meta?.reason || "In development.",
+      });
+    }
 
     const team = await Team.create({
       name: name.trim(),
@@ -2492,6 +2513,27 @@ router.patch("/teams/:teamId/tasks/:taskId", requireAuth, async (req, res) => {
             io.to(`project:${task.projectId}`).emit("waterfall:phase:updated", waterfallState);
           }
         }
+      }
+      io.to(`team:${req.params.teamId}`).emit("project:risk:updated", { action: "task_updated", taskId: task._id });
+      io.to(`team:${req.params.teamId}`).emit("project:health:updated", { reason: "task_updated" });
+      if (task.projectId) {
+        io.to(`project:${task.projectId}`).emit("project:risk:updated", { action: "task_updated", taskId: task._id });
+        io.to(`project:${task.projectId}`).emit("project:health:updated", { reason: "task_updated" });
+      }
+    }
+
+    // Authoritative risk reconciliation on status, assignment, or capacity change
+    if (
+      update.status !== undefined ||
+      update.assignedTo !== undefined ||
+      update.estimatedHours !== undefined ||
+      update.priorityLabel !== undefined ||
+      update.urgency !== undefined ||
+      update.impact !== undefined
+    ) {
+      const targetScopeId = task.projectId || req.params.teamId;
+      if (targetScopeId) {
+        scanProjectRisks(targetScopeId).catch(() => {});
       }
     }
 

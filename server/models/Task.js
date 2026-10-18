@@ -32,6 +32,7 @@ const TaskSchema = new mongoose.Schema(
     // The existing `teamId` field remains the primary task grouping key.
     // `projectId` adds a FINER level of scoping (multiple projects per team).
     projectId: { type: mongoose.Schema.Types.ObjectId, ref: "Project", default: null, index: true },
+    project:   { type: mongoose.Schema.Types.ObjectId, ref: "Project", default: null, index: true },
     title:     { type: String, required: true },
     description: { type: String, default: "" },   // Boyer-Moore search field
     status:    { type: String, enum: ["todo", "in_progress", "done"], default: "todo" },
@@ -50,6 +51,8 @@ const TaskSchema = new mongoose.Schema(
     category:      { type: String, default: "General" }, // AI project-decomposition group (Planning / Backend / …)
     phase:         { type: String, default: "requirements" }, // Waterfall phase (requirements, design, implementation, testing, deployment, maintenance)
     requirementId: { type: String, default: null }, // Link to SRS requirement ID (REQ-001)
+    executionOrder: { type: Number, default: null }, // Deterministic sequential order in Waterfall phase
+    sourceArtifact: { type: String, default: "" }, // Provenance link to source artifact document
     reminderAt:    { type: Date, default: null },         // user-set reminder timestamp
 
     // ── Greedy Scheduler inputs ───────────────────────────────────────────────

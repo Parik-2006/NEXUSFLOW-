@@ -140,6 +140,58 @@ const COMPARATOR: Record<SortMode, (a: Task, b: Task) => number> = {
   [SortMode.PROGRESS]: compareProgress,
 };
 
+/**
+ * Normalizes incoming task records to guarantee stable, non-empty _id and id fields.
+ * If backend sends `id` without `_id` or `_id` as an object, normalizes to string.
+ * Flags malformed items with a dev warning instead of crashing.
+ */
+export function normalizeTaskRecord(raw: any, index: number, source: string = "api"): Task {
+  if (!raw || typeof raw !== "object") {
+    console.warn(`[useTeamTasks:${source}] Received non-object task at index ${index}:`, raw);
+    return {
+      _id: `task-invalid-${index}`,
+      teamId: "",
+      title: "Malformed Task",
+      status: "todo",
+    };
+  }
+
+  const rawId = raw._id ?? raw.id;
+  const idStr = typeof rawId === "object" && rawId !== null
+    ? (rawId.toString ? rawId.toString() : String(rawId))
+    : (rawId ? String(rawId).trim() : "");
+
+  if (!idStr) {
+    console.warn(`[useTeamTasks:${source}] Task missing usable _id/id at index ${index} (title: "${raw.title || "untitled"}"):`, raw);
+  }
+
+  const stableId = idStr || `task-fallback-${raw.teamId || "team"}-${index}-${(raw.title || "unnamed").replace(/\s+/g, "_")}`;
+
+  return {
+    ...raw,
+    _id: stableId,
+    id: raw.id || stableId,
+  };
+}
+
+export function validateAndDeduplicateTasks(taskList: any[], source: string = "api"): Task[] {
+  if (!Array.isArray(taskList)) return [];
+  const seenIds = new Set<string>();
+  const normalized: Task[] = [];
+
+  for (let i = 0; i < taskList.length; i++) {
+    const t = normalizeTaskRecord(taskList[i], i, source);
+    if (seenIds.has(t._id)) {
+      console.warn(`[useTeamTasks:${source}] Duplicate task identifier detected: "${t._id}" (title: "${t.title}"). Retaining first occurrence.`);
+      continue;
+    }
+    seenIds.add(t._id);
+    normalized.push(t);
+  }
+
+  return normalized;
+}
+
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
 export function useTeamTasks(teamId: string) {
@@ -165,8 +217,9 @@ export function useTeamTasks(teamId: string) {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (res.ok) {
-      const data: Task[] = await res.json();
-      setRawTasks(data);
+      const data: any[] = await res.json();
+      const validated = validateAndDeduplicateTasks(data, "hydrate");
+      setRawTasks(validated);
       lastSync.current = new Date().toISOString();
     }
     setLoading(false);
@@ -190,11 +243,12 @@ export function useTeamTasks(teamId: string) {
     });
     if (res.ok) {
       const data = await res.json();
-      setExecutionOrder(data.tasks ?? []);
+      const validTasks = validateAndDeduplicateTasks(data.tasks ?? [], "execution-order");
+      setExecutionOrder(validTasks);
       setEdges(data.edges ?? []);
       setRawTasks((prev) => {
         const topoMap = new Map<string, number>();
-        (data.tasks ?? []).forEach((t: Task, i: number) => topoMap.set(t._id, i));
+        validTasks.forEach((t: Task, i: number) => topoMap.set(t._id, i));
         return prev.map((t) => ({ ...t, topoOrder: topoMap.get(t._id) ?? t.topoOrder }));
       });
     }
@@ -208,11 +262,15 @@ export function useTeamTasks(teamId: string) {
     const socket = getSocket(token);
     socket.emit("room:join", { teamId });
 
-    const onCreated = (task: Task) =>
+    const onCreated = (rawTask: Task) => {
+      const task = normalizeTaskRecord(rawTask, 0, "socket:create");
       setRawTasks((prev) => (prev.some((t) => t._id === task._id) ? prev : [task, ...prev]));
+    };
 
-    const onUpdated = (task: Task) =>
+    const onUpdated = (rawTask: Task) => {
+      const task = normalizeTaskRecord(rawTask, 0, "socket:update");
       setRawTasks((prev) => prev.map((t) => (t._id === task._id ? { ...t, ...task } : t)));
+    };
 
     const onDeleted = ({ taskId }: { taskId: string }) =>
       setRawTasks((prev) => prev.filter((t) => t._id !== taskId));
@@ -241,6 +299,8 @@ export function useTeamTasks(teamId: string) {
     socket.on("task:execution-order",    onExecutionOrder);
     socket.on("task:assigned",           onTaskAssigned);
     socket.on("assign:warning",          onAssignWarning);
+    socket.on("tasks:updated",           hydrate);
+    socket.on("waterfall:plan:finalized", hydrate);
     socket.on("reconnect",               hydrate);
 
     return () => {
@@ -252,13 +312,15 @@ export function useTeamTasks(teamId: string) {
       socket.off("task:execution-order",    onExecutionOrder);
       socket.off("task:assigned",           onTaskAssigned);
       socket.off("assign:warning",          onAssignWarning);
+      socket.off("tasks:updated",           hydrate);
+      socket.off("waterfall:plan:finalized", hydrate);
       socket.off("reconnect",               hydrate);
     };
   }, [teamId, token, hydrate, applyTopo]);
 
   // ── setStatus ──────────────────────────────────────────────────────────────
   const setStatus = useCallback(
-    (taskId: string, status: Task["status"]) => {
+    (taskId: string, status: Task["status"], onError?: (errMsg: string) => void) => {
       const socket = getSocket(token);
       let prevStatus: Task["status"] | undefined;
 
@@ -269,9 +331,14 @@ export function useTeamTasks(teamId: string) {
         })
       );
 
-      socket.emit("task:update", { teamId, taskId, status, prevStatus }, (ack: { ok: boolean }) => {
-        if (!ack?.ok && prevStatus) {
-          setRawTasks((prev) => prev.map((t) => (t._id === taskId ? { ...t, status: prevStatus! } : t)));
+      socket.emit("task:update", { teamId, taskId, status, prevStatus }, (ack: { ok: boolean; error?: string }) => {
+        if (!ack?.ok) {
+          if (prevStatus) {
+            setRawTasks((prev) => prev.map((t) => (t._id === taskId ? { ...t, status: prevStatus! } : t)));
+          }
+          if (ack?.error) {
+            onError?.(ack.error);
+          }
         }
       });
     },

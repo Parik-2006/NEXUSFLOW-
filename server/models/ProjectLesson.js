@@ -155,4 +155,4 @@ ProjectLessonSchema.index({ status: 1, reusableTags: 1 });
 ProjectLessonSchema.index({ domain: 1, methodology: 1 });
 ProjectLessonSchema.index({ projectId: 1, category: 1, title: 1 });
 
-export default mongoose.model("ProjectLesson", ProjectLessonSchema);
+export default mongoose.models.ProjectLesson || mongoose.model("ProjectLesson", ProjectLessonSchema);

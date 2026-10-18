@@ -23,7 +23,9 @@ import Task from "../models/Task.js";
 import SkillVerification from "../models/SkillVerification.js";
 import CapabilityProfile from "../models/CapabilityProfile.js";
 import ProjectEvent from "../models/ProjectEvent.js";
+import Risk from "../models/Risk.js";
 import { CANONICAL_SKILLS } from "../constants/skills.js";
+import { scanProjectRisks } from "./riskEngine.js";
 import { logger } from "../utils/logger.js";
 
 /**
@@ -334,7 +336,7 @@ export async function previewDynamicAssignment(projectId) {
   );
 
   const openTasks = await Task.find({
-    projectId,
+    $or: [{ project: projectId }, { projectId }],
     status: { $ne: "done" },
   }).sort({ priorityScore: -1, urgency: -1 }).lean();
 
@@ -419,11 +421,14 @@ export async function previewDynamicAssignment(projectId) {
 
     if (bestFit) {
       memberSimulatedHours[bestFit.userId] = bestFit.hoursAfter;
+      const currentAssigneeStr = (task.assignedTo?._id || task.assignedTo)?.toString() || null;
+      const isAlreadyAssigned = Boolean(currentAssigneeStr && currentAssigneeStr === bestFit.userId);
 
       assignments.push({
         taskId: task._id.toString(),
         taskTitle: task.title,
-        currentAssigneeId: task.assignedTo?.toString() || null,
+        currentAssigneeId: currentAssigneeStr,
+        isAlreadyAssigned,
         recommendedMemberId: bestFit.userId,
         recommendedMemberName: bestFit.name,
         fitCost: bestFit.cost,
@@ -477,7 +482,7 @@ export async function acceptAssignment(projectId, { taskId, newAssigneeId }, act
   const project = await Project.findById(projectId).lean();
   if (!project) throw new Error("Project not found");
 
-  const task = await Task.findOne({ _id: taskId, projectId });
+  const task = await Task.findOne({ _id: taskId, $or: [{ project: projectId }, { projectId }] });
   if (!task) throw new Error("Task not found in this project");
 
   const newAssignee = await User.findById(newAssigneeId).lean();
@@ -505,22 +510,63 @@ export async function acceptAssignment(projectId, { taskId, newAssigneeId }, act
     },
   });
 
-  // Refresh Capability Profile for new assignee
+  // Refresh Capability Profile for new assignee and previous
   await buildCapabilityProfile(newAssigneeId, project.teamId, project._id);
   if (previousAssigneeId) {
     await buildCapabilityProfile(previousAssigneeId, project.teamId, project._id);
   }
 
+  // Recalculate/resolve any unassigned-task risks for this task
+  try {
+    const escapedTitle = task.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    await Risk.updateMany(
+      {
+        $or: [{ projectId: project._id }, { teamId: project.teamId }],
+        category: "unassigned_high_priority",
+        title: { $regex: escapedTitle },
+        status: "open",
+      },
+      {
+        $set: {
+          status: "resolved",
+          resolvedAt: new Date(),
+          resolutionReason: `Task assigned to ${newAssignee.name}`,
+        },
+      }
+    );
+    await scanProjectRisks(project._id).catch(() => {});
+  } catch (rErr) {
+    logger.warn("[capabilityIntelligence] Risk update notice:", { err: rErr.message });
+  }
+
   if (io) {
-    io.to(`project:${project._id.toString()}`).emit("assignment.accepted", {
+    const projectRoom = `project:${project._id.toString()}`;
+    const teamRoom = project.teamId ? `team:${project.teamId.toString()}` : null;
+
+    const payload = {
       taskId: task._id.toString(),
       newAssigneeId: newAssignee._id.toString(),
       assigneeName: newAssignee.name,
-    });
-    io.to(`project:${project._id.toString()}`).emit("capability.updated", {
-      projectId: project._id.toString(),
-    });
+      task,
+    };
+
+    io.to(projectRoom).emit("assignment.accepted", payload);
+    io.to(projectRoom).emit("capability.updated", { projectId: project._id.toString() });
+    io.to(projectRoom).emit("task:assigned", payload);
+    io.to(projectRoom).emit("task:updated", task);
+    io.to(projectRoom).emit("tasks:updated", { projectId: project._id.toString() });
+    io.to(projectRoom).emit("project:risk:updated", { action: "assignment_update" });
+    io.to(projectRoom).emit("project:health:updated", { reason: "task_assigned" });
+
+    if (teamRoom) {
+      io.to(teamRoom).emit("assignment.accepted", payload);
+      io.to(teamRoom).emit("task:assigned", payload);
+      io.to(teamRoom).emit("task:updated", task);
+      io.to(teamRoom).emit("tasks:updated", { teamId: project.teamId.toString() });
+      io.to(teamRoom).emit("project:risk:updated", { action: "assignment_update" });
+      io.to(teamRoom).emit("project:health:updated", { reason: "task_assigned" });
+    }
   }
 
-  return { success: true, task, assignedTo: newAssignee.name };
+  return { success: true, task, assignedTo: newAssignee.name, assigneeId: newAssignee._id.toString() };
 }

@@ -14,11 +14,22 @@ import { View, Text, StyleSheet, PanResponder, Animated } from "react-native";
 import type { Task } from "@/hooks/useTeamTasks";
 import { dueLabel } from "@/components/TaskCard";
 import { colors, spacing, radius, statusMeta, PRIORITY_META, taskPriorityKey } from "@/theme";
+import { Ionicons } from "@expo/vector-icons";
 
 const COLS: Task["status"][] = ["todo", "in_progress", "done"];
 const NEXT: Record<Task["status"], Task["status"]> = { todo: "in_progress", in_progress: "done", done: "todo" };
 
-export default function KanbanBoard({ tasks, onMove }: { tasks: Task[]; onMove: (id: string, status: Task["status"]) => void }) {
+export default function KanbanBoard({
+  tasks,
+  onMove,
+  getLockReason,
+  methodology,
+}: {
+  tasks: Task[];
+  onMove: (id: string, status: Task["status"]) => void;
+  getLockReason?: (task: Task) => string | null;
+  methodology?: string;
+}) {
   const boardRef = useRef<View>(null);
   const layout = useRef({ left: 0, colWidth: 0 });
   const [dragId, setDragId] = useState<string | null>(null);
@@ -54,6 +65,7 @@ export default function KanbanBoard({ tasks, onMove }: { tasks: Task[]; onMove: 
                   active={dragId === t._id}
                   layout={layout}
                   measure={measure}
+                  lockReason={getLockReason ? getLockReason(t) : null}
                   onStart={() => setDragId(t._id)}
                   onHover={setHoverCol}
                   onEnd={(targetIdx, isTap) => {
@@ -74,12 +86,13 @@ export default function KanbanBoard({ tasks, onMove }: { tasks: Task[]; onMove: 
 }
 
 function DraggableCard({
-  task, active, layout, measure, onStart, onHover, onEnd,
+  task, active, layout, measure, lockReason, onStart, onHover, onEnd,
 }: {
   task: Task;
   active: boolean;
   layout: React.MutableRefObject<{ left: number; colWidth: number }>;
   measure: () => void;
+  lockReason?: string | null;
   onStart: () => void;
   onHover: (idx: number | null) => void;
   onEnd: (targetIdx: number | null, isTap: boolean) => void;
@@ -92,6 +105,9 @@ function DraggableCard({
     if (!colWidth) return null;
     return Math.min(2, Math.max(0, Math.floor((moveX - left) / colWidth)));
   };
+
+  const isLocked = Boolean(lockReason);
+  const isBlockedByPrereq = isLocked && (lockReason?.includes("Prerequisite") || lockReason?.includes("Predecessor"));
 
   const responder = useRef(
     PanResponder.create({
@@ -134,18 +150,53 @@ function DraggableCard({
       {...responder.panHandlers}
       style={[
         s.card,
+        isLocked && task.status !== "done" && s.cardLocked,
         active && s.cardActive,
         { transform: [{ translateX: pan.x }, { translateY: pan.y }, { scale }], zIndex: active ? 999 : 1 },
       ]}
     >
-      <Text style={s.cardTitle} numberOfLines={2}>{task.title}</Text>
+      <View style={{ flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 4 }}>
+        <Text style={[s.cardTitle, task.status === "done" && s.cardTitleDone]} numberOfLines={2}>
+          {task.title}
+        </Text>
+      </View>
+
+      {/* Lock or Eligibility Pill */}
+      {isLocked && task.status !== "done" ? (
+        <View style={isBlockedByPrereq ? s.blockedBanner : s.lockBanner}>
+          <Ionicons
+            name={isBlockedByPrereq ? "hourglass-outline" : "lock-closed"}
+            size={11}
+            color={isBlockedByPrereq ? "#D97706" : "#DC2626"}
+          />
+          <Text
+            style={[s.bannerTxt, { color: isBlockedByPrereq ? "#B45309" : "#DC2626" }]}
+            numberOfLines={2}
+          >
+            {lockReason}
+          </Text>
+        </View>
+      ) : task.status === "todo" ? (
+        <View style={s.actionableBadge}>
+          <Ionicons name="flash-outline" size={10} color="#059669" />
+          <Text style={s.actionableTxt}>Actionable · Ready to start</Text>
+        </View>
+      ) : null}
+
       <View style={s.cardMeta}>
         <View style={[s.priority, { backgroundColor: m.bg }]}>
           <Text style={[s.priorityTxt, { color: m.color }]}>{m.label}</Text>
         </View>
+        {task.requirementId ? (
+          <View style={s.reqBadge}>
+            <Text style={s.reqTxt}>{task.requirementId}</Text>
+          </View>
+        ) : null}
         {due ? <Text style={[s.due, { color: due.color }]}>{due.text}</Text> : null}
       </View>
-      <Text style={s.hint}>drag → · tap to advance</Text>
+      <Text style={s.hint}>
+        {isLocked && task.status !== "done" ? "prerequisites required" : "drag → · tap to advance"}
+      </Text>
     </Animated.View>
   );
 }
@@ -161,11 +212,52 @@ const s = StyleSheet.create({
   empty: { fontSize: 12, color: colors.textFaint, textAlign: "center", paddingVertical: 14 },
 
   card: { backgroundColor: colors.surface, borderRadius: radius.sm, padding: 10, borderWidth: 1, borderColor: colors.border, gap: 6 },
+  cardLocked: { backgroundColor: "#FFFBFB", borderColor: "#FCA5A5" },
   cardActive: { borderColor: colors.primary, shadowColor: "#2F4F4F", shadowOpacity: 0.18, shadowRadius: 12, shadowOffset: { width: 0, height: 6 }, elevation: 8 },
-  cardTitle: { fontSize: 12.5, fontWeight: "700", color: colors.text },
+  cardTitle: { flex: 1, fontSize: 12.5, fontWeight: "700", color: colors.text },
+  cardTitleDone: { textDecorationLine: "line-through", color: colors.textMuted },
+
+  lockBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#FEF2F2",
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: "#FCA5A5",
+  },
+  blockedBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#FFFBEB",
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: "#FDE68A",
+  },
+  bannerTxt: { fontSize: 10, fontWeight: "600", flex: 1 },
+
+  actionableBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#ECFDF5",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    alignSelf: "flex-start",
+  },
+  actionableTxt: { fontSize: 9.5, fontWeight: "700", color: "#059669" },
+
   cardMeta: { flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" },
   priority: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 5 },
   priorityTxt: { fontSize: 9, fontWeight: "800", letterSpacing: 0.3 },
+  reqBadge: { paddingHorizontal: 5, paddingVertical: 1.5, borderRadius: 4, backgroundColor: colors.primarySoft },
+  reqTxt: { fontSize: 9, fontWeight: "700", color: colors.primary },
   due: { fontSize: 10, fontWeight: "700" },
   hint: { fontSize: 9, color: colors.textFaint, fontWeight: "600" },
 });

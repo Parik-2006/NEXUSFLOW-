@@ -45,6 +45,13 @@ export default function RiskPanel({
   const [hasScanned, setHasScanned] = useState(false);
   const [filter, setFilter] = useState<"all" | "open" | "acknowledged" | "resolved">("open");
   const [error, setError] = useState<string | null>(null);
+  const [updatingRiskId, setUpdatingRiskId] = useState<string | null>(null);
+  const [counts, setCounts] = useState<{ open: number; acknowledged: number; resolved: number; all: number }>({
+    open: 0,
+    acknowledged: 0,
+    resolved: 0,
+    all: 0,
+  });
 
   const targetId = projectId || teamId;
 
@@ -63,6 +70,16 @@ export default function RiskPanel({
         const data = await res.json();
         const loadedRisks = data.risks || [];
         setRisks(loadedRisks);
+        if (data.counts) {
+          setCounts(data.counts);
+        } else {
+          setCounts({
+            open: loadedRisks.filter((r: any) => r.status === "open").length,
+            acknowledged: loadedRisks.filter((r: any) => r.status === "acknowledged").length,
+            resolved: loadedRisks.filter((r: any) => r.status === "resolved").length,
+            all: loadedRisks.length,
+          });
+        }
         if (loadedRisks.length > 0 || filter !== "open") {
           setHasScanned(true);
         }
@@ -88,10 +105,10 @@ export default function RiskPanel({
       });
       if (res.ok) {
         const data = await res.json();
-        setRisks(data.risks || []);
         setHasScanned(true);
         const count = data.count ?? data.risks?.length ?? 0;
         toast(`Risk scan complete: ${count} risk trigger(s) evaluated`, count > 0 ? "info" : "success");
+        await fetchRisks(true);
       } else {
         const errData = await res.json().catch(() => ({}));
         throw new Error(errData.error || "Risk scan failed");
@@ -105,7 +122,8 @@ export default function RiskPanel({
   };
 
   const handleUpdateStatus = async (riskId: string, newStatus: "acknowledged" | "resolved") => {
-    if (!targetId || !token) return;
+    if (!targetId || !token || updatingRiskId) return;
+    setUpdatingRiskId(riskId);
     try {
       const res = await fetch(`${API}/api/projects/${targetId}/risks/${riskId}`, {
         method: "PATCH",
@@ -117,15 +135,43 @@ export default function RiskPanel({
       });
       if (res.ok) {
         const data = await res.json();
-        setRisks((prev) =>
-          prev.map((r) => (r._id === riskId ? { ...r, status: newStatus } : r))
-        );
+        const updatedRisk = data.risk;
         toast(`Risk marked as ${newStatus}`, "success");
+
+        // Immediately update counts
+        setCounts((prev) => {
+          const currentRisk = risks.find((r) => r._id === riskId);
+          const oldStatus = currentRisk?.status || "open";
+          if (oldStatus === newStatus) return prev;
+          return {
+            ...prev,
+            [oldStatus]: Math.max(0, prev[oldStatus as keyof typeof prev] - 1),
+            [newStatus]: prev[newStatus as keyof typeof prev] + 1,
+          };
+        });
+
+        // Update list according to current filter
+        setRisks((prev) => {
+          if (filter === "all") {
+            return prev.map((r) => (r._id === riskId ? { ...r, ...updatedRisk, status: newStatus } : r));
+          }
+          if (filter === newStatus) {
+            return prev.map((r) => (r._id === riskId ? { ...r, ...updatedRisk, status: newStatus } : r));
+          }
+          // In "open" or "acknowledged" tab, remove if moved out of this tab
+          return prev.filter((r) => r._id !== riskId);
+        });
+
+        // Background refetch for full sync
+        fetchRisks(true);
       } else {
-        throw new Error("Failed to update status");
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || "Failed to update status");
       }
     } catch (e: any) {
       toast(e.message || "Failed to update risk status", "error");
+    } finally {
+      setUpdatingRiskId(null);
     }
   };
 
@@ -140,12 +186,7 @@ export default function RiskPanel({
     socket.emit("room:join:project", { projectId: targetId });
 
     const handleRiskUpdate = (payload: any) => {
-      if (payload?.risks) {
-        setRisks(payload.risks);
-        setHasScanned(true);
-      } else {
-        fetchRisks(true);
-      }
+      fetchRisks(true);
     };
 
     socket.on("project:risk:updated", handleRiskUpdate);
@@ -183,7 +224,7 @@ export default function RiskPanel({
 
   const criticalCount = risks.filter((r) => r.severity === "critical" && r.status === "open").length;
   const highCount = risks.filter((r) => r.severity === "high" && r.status === "open").length;
-  const openCount = risks.filter((r) => r.status === "open").length;
+  const openCount = counts.open;
 
   return (
     <ScrollView
@@ -212,10 +253,11 @@ export default function RiskPanel({
         />
       </View>
 
-      {/* Filter Tabs */}
+      {/* Filter Tabs with Live Authoritative Counts */}
       <View style={s.filterRow}>
         {(["open", "acknowledged", "resolved", "all"] as const).map((f) => {
           const isActive = filter === f;
+          const count = counts[f];
           return (
             <Pressable
               key={f}
@@ -228,7 +270,7 @@ export default function RiskPanel({
                   isActive ? { fontWeight: "700", color: colors.primary } : { color: colors.textMuted },
                 ]}
               >
-                {f.charAt(0).toUpperCase() + f.slice(1)}
+                {f.charAt(0).toUpperCase() + f.slice(1)} ({count})
               </Text>
             </Pressable>
           );
@@ -250,9 +292,25 @@ export default function RiskPanel({
           </Card>
         ) : (
           <EmptyState
-            icon="shield-checkmark-outline"
-            title="No Risks Detected"
-            message={`Your project currently has no active risk triggers in the "${filter}" category.`}
+            icon={filter === "resolved" ? "checkmark-done-circle-outline" : "shield-checkmark-outline"}
+            title={
+              filter === "open"
+                ? "No Open Risks"
+                : filter === "acknowledged"
+                ? "No Acknowledged Risks"
+                : filter === "resolved"
+                ? "No Resolved Risks"
+                : "No Risks Detected"
+            }
+            message={
+              filter === "open"
+                ? "All detected risk triggers have been reviewed or resolved."
+                : filter === "acknowledged"
+                ? "No risks are currently awaiting resolution in acknowledged state."
+                : filter === "resolved"
+                ? "No risks have been resolved yet."
+                : "Your project currently has no active risk triggers."
+            }
             actionLabel="Scan Again"
             actionIcon="refresh"
             onAction={handleScan}
@@ -261,11 +319,24 @@ export default function RiskPanel({
       ) : (
         risks.map((risk) => {
           const color = severityColorMap[risk.severity] || colors.info;
+          const isBusy = updatingRiskId === risk._id;
           return (
             <Card key={risk._id} style={s.riskCard}>
               <View style={s.riskTop}>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.xs, flex: 1, flexWrap: "wrap" }}>
                   <Badge label={risk.severity.toUpperCase()} color={color} />
+                  {filter === "all" && (
+                    <Badge
+                      label={risk.status.toUpperCase()}
+                      color={
+                        risk.status === "resolved"
+                          ? colors.success
+                          : risk.status === "acknowledged"
+                          ? colors.warning
+                          : colors.info
+                      }
+                    />
+                  )}
                   {!!risk.affectedArea && (
                     <Badge label={risk.affectedArea} color={colors.primary} bg={colors.primarySoft} />
                   )}
@@ -279,17 +350,30 @@ export default function RiskPanel({
                       title="Acknowledge"
                       variant="secondary"
                       small
+                      disabled={isBusy}
                       onPress={() => handleUpdateStatus(risk._id, "acknowledged")}
                     />
                     <Button
                       title="Resolve"
                       variant="ghost"
                       small
+                      disabled={isBusy}
+                      onPress={() => handleUpdateStatus(risk._id, "resolved")}
+                    />
+                  </View>
+                ) : risk.status === "acknowledged" ? (
+                  <View style={s.actionsRow}>
+                    <Badge label="ACKNOWLEDGED" color={colors.warning} />
+                    <Button
+                      title="Resolve"
+                      variant="primary"
+                      small
+                      disabled={isBusy}
                       onPress={() => handleUpdateStatus(risk._id, "resolved")}
                     />
                   </View>
                 ) : (
-                  <Badge label={risk.status.toUpperCase()} color={risk.status === "resolved" ? colors.success : colors.textMuted} />
+                  <Badge label="RESOLVED" color={colors.success} />
                 )}
               </View>
 

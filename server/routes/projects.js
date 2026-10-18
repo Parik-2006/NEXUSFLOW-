@@ -99,6 +99,7 @@ import Opinion          from "../models/Opinion.js";
 import Retrospective    from "../models/Retrospective.js";
 import LearningInsight  from "../models/LearningInsight.js";
 import { computeTeamHealth, resolveProjectAndTeam } from "../services/teamHealth.js";
+import { computeUnifiedProjectHealth } from "../services/unifiedProjectHealthService.js";
 import { scanProjectRisks }       from "../services/riskEngine.js";
 import { generateRetrospective }  from "../services/retrospectiveService.js";
 import { generateInsights }       from "../services/learningService.js";
@@ -110,6 +111,12 @@ import {
   calculateRequirementScore,
   sortRequirementsMergeSort,
   extractRequirementsFromArtifacts,
+  generateWaterfallTasksFromPlan,
+  detectScopeConflicts,
+  recalculateProjectConflicts,
+  calculateWaterfallReadiness,
+  bulkConvertApprovedRequirementsToTasks,
+  convertSingleRequirementToTask,
 } from "../services/requirementService.js";
 
 // V4 Waterfall Phase Gates, Change Impact, Reactive Engine, Events
@@ -131,16 +138,23 @@ import {
   getTemporaryContext,
   buildMemoryContextForPrompt,
 } from "../services/projectMemoryContext.js";
+import {
+  isMethodologyAllowedForNewProjects,
+  getMethodologyAvailability,
+  getMethodologyRegistry,
+  normalizeMethodologyId,
+} from "../config/methodologyAvailability.js";
 
 const router = Router();
 
 // ── Helper: verify project exists, check authorization, and return it ────────
-async function findProject(projectId, res, user = null) {
+async function findProject(projectId, res, user = null, { lean = true } = {}) {
   if (!mongoose.isValidObjectId(projectId)) {
     res.status(400).json({ error: "invalid_project_id" });
     return null;
   }
-  const project = await Project.findById(projectId).lean();
+  const query = Project.findById(projectId);
+  const project = lean ? await query.lean() : await query;
   if (!project) {
     res.status(404).json({ error: "project_not_found" });
     return null;
@@ -177,6 +191,28 @@ async function findProject(projectId, res, user = null) {
 
   return project;
 }
+
+// ── Helper: get real Mongoose document with .save() and subdocument methods ──
+async function findProjectDoc(projectId, res, user = null) {
+  return findProject(projectId, res, user, { lean: false });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// METHODOLOGY AVAILABILITY & PRODUCTION SAFETY (FIX 8)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GET /api/methodologies & GET /api/methodologies/availability
+const handleGetMethodologies = (req, res) => {
+  const registry = getMethodologyRegistry();
+  res.json({
+    success: true,
+    methodologies: Object.values(registry),
+    registry,
+  });
+};
+
+router.get("/methodologies", handleGetMethodologies);
+router.get("/methodologies/availability", handleGetMethodologies);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PROJECT CRUD
@@ -271,10 +307,26 @@ router.post("/projects", requireAuth, async (req, res) => {
       return res.status(403).json({ error: "Forbidden: You are not a member of this team." });
     }
 
-    const validMethodologies = ["WATERFALL", "SCRUM", "KANBAN", "HYBRID"];
-    const normalizedMethodology = typeof methodology === "string" && validMethodologies.includes(methodology.toUpperCase().trim())
-      ? methodology.toUpperCase().trim()
-      : "WATERFALL";
+    // SAFEGUARD B: Validate methodology input (missing -> WATERFALL, unknown -> null)
+    const normalizedMethodology = normalizeMethodologyId(methodology);
+    if (!normalizedMethodology) {
+      return res.status(400).json({
+        error: "INVALID_METHODOLOGY",
+        message: `Unknown or invalid methodology specified: "${methodology}". Must be one of WATERFALL, CLASSIC, SCRUM, KANBAN, HYBRID.`,
+      });
+    }
+
+    // SAFEGUARD A & C: Enforce production methodology availability
+    if (!isMethodologyAllowedForNewProjects(normalizedMethodology)) {
+      const meta = getMethodologyAvailability(normalizedMethodology);
+      return res.status(403).json({
+        error: "METHODOLOGY_UNAVAILABLE",
+        message: `${meta?.name || normalizedMethodology} is currently in development and is not available for new projects in this environment.`,
+        methodology: normalizedMethodology,
+        status: meta?.status || "IN_PROGRESS",
+        reason: meta?.reason || "In development.",
+      });
+    }
 
     // Create the project document
     const project = await Project.create({
@@ -332,10 +384,24 @@ router.patch("/projects/:projectId", requireAuth, async (req, res) => {
     for (const k of ALLOWED) {
       if (req.body[k] !== undefined) {
         if (k === "methodology") {
-          const val = String(req.body[k]).toUpperCase().trim();
-          if (["WATERFALL", "SCRUM", "KANBAN", "HYBRID"].includes(val)) {
-            update[k] = val;
+          const norm = normalizeMethodologyId(req.body[k]);
+          if (!norm) {
+            return res.status(400).json({
+              error: "INVALID_METHODOLOGY",
+              message: `Unknown or invalid methodology specified: "${req.body[k]}". Must be one of WATERFALL, CLASSIC, SCRUM, KANBAN, HYBRID.`,
+            });
           }
+          if (!isMethodologyAllowedForNewProjects(norm)) {
+            const meta = getMethodologyAvailability(norm);
+            return res.status(403).json({
+              error: "METHODOLOGY_UNAVAILABLE",
+              message: `${meta?.name || norm} is currently in development and is not available in this environment.`,
+              methodology: norm,
+              status: meta?.status || "IN_PROGRESS",
+              reason: meta?.reason || "In development.",
+            });
+          }
+          update[k] = norm;
         } else {
           update[k] = req.body[k];
         }
@@ -356,6 +422,45 @@ router.patch("/projects/:projectId", requireAuth, async (req, res) => {
     }
 
     res.json(updated);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/projects/:projectId/methodology-select ─────────────────────────
+// Dedicated endpoint to switch or select a project methodology safely.
+router.post("/projects/:projectId/methodology-select", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res);
+    if (!project) return;
+
+    const { methodology } = req.body || {};
+    const norm = normalizeMethodologyId(methodology);
+    if (!norm) {
+      return res.status(400).json({
+        error: "INVALID_METHODOLOGY",
+        message: `Unknown or invalid methodology specified: "${methodology}". Must be one of WATERFALL, CLASSIC, SCRUM, KANBAN, HYBRID.`,
+      });
+    }
+
+    if (!isMethodologyAllowedForNewProjects(norm)) {
+      const meta = getMethodologyAvailability(norm);
+      return res.status(403).json({
+        error: "METHODOLOGY_UNAVAILABLE",
+        message: `${meta?.name || norm} is currently in development and is not available in this environment.`,
+        methodology: norm,
+        status: meta?.status || "IN_PROGRESS",
+        reason: meta?.reason || "In development.",
+      });
+    }
+
+    const updated = await Project.findByIdAndUpdate(
+      req.params.projectId,
+      { $set: { methodology: norm } },
+      { new: true, lean: true }
+    );
+
+    res.json({ success: true, project: updated });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -466,21 +571,80 @@ router.patch("/projects/:projectId/context", requireAuth, async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── GET /api/projects/:projectId/plan ─────────────────────────────────────────
-// Fetch project plan data: uploaded artifacts, structured requirements, and context.
+// Fetch project plan data: uploaded artifacts, structured requirements, scope cards, and lifecycle.
 router.get("/projects/:projectId/plan", requireAuth, async (req, res) => {
   try {
     const project = await findProject(req.params.projectId, res, req.user);
     if (!project) return;
 
-    const requirements = sortRequirementsMergeSort(project.requirements || []);
+    // Backward-compatible lifecycle state resolution
+    if (!project.waterfallPlanLifecycle) {
+      project.waterfallPlanLifecycle = {
+        status: (project.artifacts?.length || 0) === 0 ? "ARTIFACTS_PENDING" : "ANALYSIS_PENDING",
+        planRevision: 1,
+        artifactAnalysisRevision: 0,
+        finalizedPlanRevision: 0,
+        taskGenerationRevision: 0,
+        documentReadinessConfirmed: false,
+        conflicts: [],
+        scope: { goals: [], deliverables: [], constraints: [] },
+      };
+    }
+
+    const lifecycle = project.waterfallPlanLifecycle;
+    const status = lifecycle.status || "ARTIFACTS_PENDING";
+    const executionUnlocked = ["PLAN_FINALIZED", "TASKS_GENERATED", "IN_EXECUTION", "COMPLETED"].includes(status);
+
+    const existingTasks = await Task.find({ project: project._id }).select("_id title status customFields phase").lean();
+    const taskByReqId = new Map();
+    for (const t of existingTasks) {
+      const customReq = t.customFields?.requirementId || (t.customFields instanceof Map ? t.customFields.get("requirementId") : null);
+      const titleMatch = t.title?.match(/^(?:FR-\d+|W-\d+|REQ-\d+)/)?.[0];
+      const matchKey = customReq || titleMatch;
+      if (matchKey) {
+        taskByReqId.set(matchKey, t);
+      }
+    }
+
+    const rawRequirements = sortRequirementsMergeSort(project.requirements || []);
+    const requirements = rawRequirements.map((r) => {
+      const rObj = typeof r.toObject === "function" ? r.toObject() : { ...r };
+      const linked = taskByReqId.get(rObj.reqId);
+      rObj.hasActiveTask = Boolean(linked);
+      rObj.linkedTaskId = linked ? linked._id : null;
+      rObj.linkedTaskStatus = linked ? linked.status : null;
+      return rObj;
+    });
+    const scope = lifecycle.scope || { goals: [], deliverables: [], constraints: [] };
+
+    // Format goals, deliverables, constraints for display
+    const goals = (scope.goals && scope.goals.length > 0)
+      ? scope.goals.map((g) => `${g.label}: ${g.description || g.label}`)
+      : (project.context?.goals || []);
+
+    const deliverables = (scope.deliverables && scope.deliverables.length > 0)
+      ? scope.deliverables.map((d) => `${d.label}: ${d.description || d.label}`)
+      : (project.context?.expectedOutputs || []);
+
+    const constraints = (scope.constraints && scope.constraints.length > 0)
+      ? scope.constraints.map((c) => `${c.label}: ${c.description || c.label}`)
+      : (project.context?.constraints || []);
+
+    const readiness = calculateWaterfallReadiness(project, req.user);
+
     res.json({
       success: true,
       artifacts: project.artifacts || [],
       requirements,
       context: project.context || {},
-      goals: project.context?.goals || [],
-      constraints: project.context?.constraints || [],
-      deliverables: project.context?.expectedOutputs || [],
+      goals,
+      constraints,
+      deliverables,
+      scope,
+      conflicts: lifecycle.conflicts || [],
+      waterfallPlanLifecycle: lifecycle,
+      readiness,
+      executionUnlocked,
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -491,32 +655,303 @@ router.get("/projects/:projectId/plan", requireAuth, async (req, res) => {
 // Upload or save project artifact (persistent or temporary).
 router.post("/projects/:projectId/artifacts", requireAuth, async (req, res) => {
   try {
-    const project = await findProject(req.params.projectId, res, req.user);
+    const project = await findProjectDoc(req.params.projectId, res, req.user);
     if (!project) return;
 
     const { name, artifactType = "document", content = "", scope = "persistent", summary = "" } = req.body || {};
-    if (!name) return res.status(400).json({ error: "Artifact name is required" });
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ error: "Artifact name is required" });
+    }
+    if (!content || !String(content).trim()) {
+      return res.status(400).json({ error: "Artifact content is required" });
+    }
+
+    const trimmedContent = String(content).trim();
+    const artifactScope = scope === "temporary" ? "temporary" : "persistent";
+    const newArtifactId = new mongoose.Types.ObjectId();
 
     const newArtifact = {
+      _id: newArtifactId,
       name: String(name).trim(),
       artifactType,
-      content: String(content || ""),
-      scope: scope === "temporary" ? "temporary" : "persistent",
-      fileSize: Buffer.byteLength(content || "", "utf8"),
+      content: trimmedContent,
+      scope: artifactScope,
+      fileSize: Buffer.byteLength(trimmedContent, "utf8"),
       summary: String(summary || ""),
+      approvalStatus: "pending",
+      approvedAt: null,
+      approvedBy: null,
+      approvedByName: "",
       uploadedAt: new Date(),
     };
 
-    const updated = await Project.findByIdAndUpdate(
-      req.params.projectId,
-      { $push: { artifacts: newArtifact } },
-      { new: true, lean: true }
-    );
+    if (!project.waterfallPlanLifecycle) {
+      project.waterfallPlanLifecycle = { status: "ANALYSIS_PENDING" };
+    }
+
+    // Invalidate stale plan finalization if documents change
+    if (["PLAN_FINALIZED", "TASKS_GENERATED", "IN_EXECUTION"].includes(project.waterfallPlanLifecycle.status)) {
+      project.waterfallPlanLifecycle.documentReadinessConfirmed = false;
+      project.waterfallPlanLifecycle.status = "PLAN_REVIEW_REQUIRED";
+    } else {
+      project.waterfallPlanLifecycle.status = "ANALYSIS_PENDING";
+    }
+    project.waterfallPlanLifecycle.planRevision = (project.waterfallPlanLifecycle.planRevision || 0) + 1;
+
+    project.artifacts.push(newArtifact);
+
+    // If analysis was previously executed, recalculate conflicts with newly added artifact
+    if (project.waterfallPlanLifecycle.artifactAnalysisRevision > 0) {
+      project.waterfallPlanLifecycle.conflicts = recalculateProjectConflicts({
+        project,
+        remainingArtifacts: project.artifacts,
+        user: req.user,
+        modificationType: "artifact_added",
+      });
+    }
+
+    // If persistent scope, also sync with structured ProjectMemory as IMPORTANT_ARTIFACT
+    if (artifactScope === "persistent") {
+      try {
+        await ProjectMemory.create({
+          projectId: project._id,
+          title: String(name).trim().slice(0, 200),
+          content: trimmedContent.slice(0, 5000),
+          category: "IMPORTANT_ARTIFACT",
+          scope: "persistent",
+          source: "manual",
+          createdBy: (req.user?._id || req.user?.id) || null,
+          tags: ["artifact", artifactType, newArtifactId.toString()],
+          relatedEntityIds: [newArtifactId.toString()],
+        });
+      } catch (memErr) {
+        console.warn("[ProjectMemory Sync] Non-blocking warning:", memErr.message);
+      }
+    }
+
+    const readiness = calculateWaterfallReadiness(project, req.user);
+    project.markModified("artifacts");
+    project.markModified("waterfallPlanLifecycle");
+    await project.save();
+
+    const savedArtifact = project.artifacts[project.artifacts.length - 1];
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`team:${project.teamId}`).emit("waterfall:lifecycle:updated", {
+        projectId: project._id,
+        lifecycle: project.waterfallPlanLifecycle,
+        readiness,
+      });
+    }
 
     res.status(201).json({
       success: true,
-      artifact: updated.artifacts[updated.artifacts.length - 1],
-      artifacts: updated.artifacts,
+      artifact: savedArtifact,
+      artifacts: project.artifacts,
+      conflicts: project.waterfallPlanLifecycle.conflicts || [],
+      lifecycle: project.waterfallPlanLifecycle,
+      readiness,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── PATCH /api/projects/:projectId/artifacts/:artifactId ─────────────────────
+// Update an existing uploaded artifact (name, content, type, scope).
+router.patch("/projects/:projectId/artifacts/:artifactId", requireAuth, async (req, res) => {
+  try {
+    const project = await findProjectDoc(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const artifactId = req.params.artifactId;
+    const { name, content, artifactType, scope, summary } = req.body || {};
+
+    const target = (project.artifacts || []).find(
+      (a) => a._id?.toString() === artifactId || a.id?.toString() === artifactId
+    );
+    if (!target) {
+      return res.status(404).json({ error: "Artifact not found" });
+    }
+
+    if (name !== undefined) {
+      if (!String(name).trim()) return res.status(400).json({ error: "Artifact name cannot be empty" });
+      target.name = String(name).trim();
+    }
+    if (content !== undefined) {
+      if (!String(content).trim()) return res.status(400).json({ error: "Artifact content cannot be empty" });
+      target.content = String(content).trim();
+      target.fileSize = Buffer.byteLength(target.content, "utf8");
+    }
+    if (artifactType !== undefined) target.artifactType = artifactType;
+    if (scope !== undefined) target.scope = scope === "temporary" ? "temporary" : "persistent";
+    if (summary !== undefined) target.summary = String(summary || "");
+
+    // Reset approval on edit because content/scope changed
+    target.approvalStatus = "pending";
+    target.approvedAt = null;
+    target.approvedBy = null;
+    target.approvedByName = "";
+
+    if (!project.waterfallPlanLifecycle) project.waterfallPlanLifecycle = {};
+    project.waterfallPlanLifecycle.documentReadinessConfirmed = false;
+    project.waterfallPlanLifecycle.planRevision = (project.waterfallPlanLifecycle.planRevision || 0) + 1;
+
+    // Update synced ProjectMemory if persistent
+    if (target.scope === "persistent") {
+      await ProjectMemory.findOneAndUpdate(
+        { projectId: project._id, $or: [{ relatedEntityIds: artifactId }, { tags: artifactId }] },
+        {
+          $set: {
+            title: target.name.slice(0, 200),
+            content: target.content.slice(0, 5000),
+            updatedAt: new Date(),
+          },
+        },
+        { upsert: false }
+      ).catch(() => {});
+    }
+
+    // Authoritative conflict recalculation against updated artifact text!
+    project.waterfallPlanLifecycle.conflicts = recalculateProjectConflicts({
+      project,
+      remainingArtifacts: project.artifacts,
+      user: req.user,
+      modificationType: "artifact_edited",
+    });
+
+    const readiness = calculateWaterfallReadiness(project, req.user);
+    project.markModified("artifacts");
+    project.markModified("waterfallPlanLifecycle");
+    await project.save();
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`team:${project.teamId}`).emit("waterfall:lifecycle:updated", {
+        projectId: project._id,
+        lifecycle: project.waterfallPlanLifecycle,
+        readiness,
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Artifact updated successfully.",
+      artifact: target,
+      artifacts: project.artifacts,
+      conflicts: project.waterfallPlanLifecycle.conflicts,
+      lifecycle: project.waterfallPlanLifecycle,
+      readiness,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── PATCH /api/projects/:projectId/artifacts/:artifactId/approve ─────────────
+// Approve an individual artifact.
+router.patch("/projects/:projectId/artifacts/:artifactId/approve", requireAuth, async (req, res) => {
+  try {
+    const project = await findProjectDoc(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const artifactId = req.params.artifactId;
+    const target = (project.artifacts || []).find(
+      (a) => a._id?.toString() === artifactId || a.id?.toString() === artifactId
+    );
+    if (!target) {
+      return res.status(404).json({ error: "Artifact not found" });
+    }
+
+    target.approvalStatus = "approved";
+    target.approvedAt = new Date();
+    target.approvedBy = req.user?._id || req.user?.id;
+    target.approvedByName = req.user?.name || "Authorized Member";
+
+    project.markModified("artifacts");
+    project.markModified("waterfallPlanLifecycle");
+    await project.save();
+
+    const readiness = calculateWaterfallReadiness(project, req.user);
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`team:${project.teamId}`).emit("waterfall:lifecycle:updated", {
+        projectId: project._id,
+        lifecycle: project.waterfallPlanLifecycle,
+        readiness,
+      });
+    }
+
+    res.json({
+      success: true,
+      message: `Artifact "${target.name}" approved.`,
+      artifact: target,
+      artifacts: project.artifacts,
+      lifecycle: project.waterfallPlanLifecycle,
+      readiness,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/projects/:projectId/artifacts/approve-all ──────────────────────
+// Bulk approve all remaining eligible non-deleted artifacts belonging to this project.
+router.post("/projects/:projectId/artifacts/approve-all", requireAuth, async (req, res) => {
+  try {
+    const project = await findProjectDoc(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const artifacts = project.artifacts || [];
+    if (artifacts.length === 0) {
+      return res.status(400).json({ error: "No artifacts to approve." });
+    }
+
+    const now = new Date();
+    const approverId = req.user?._id || req.user?.id;
+    const approverName = req.user?.name || "Authorized Member";
+
+    let approvedNowCount = 0;
+    for (const a of artifacts) {
+      if (a.approvalStatus !== "approved") {
+        a.approvalStatus = "approved";
+        a.approvedAt = now;
+        a.approvedBy = approverId;
+        a.approvedByName = approverName;
+        approvedNowCount++;
+      } else if (!a.approvedAt) {
+        a.approvedAt = now;
+        a.approvedBy = approverId;
+        a.approvedByName = approverName;
+      }
+    }
+
+    project.markModified("artifacts");
+    project.markModified("waterfallPlanLifecycle");
+    await project.save();
+
+    const readiness = calculateWaterfallReadiness(project, req.user);
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`team:${project.teamId}`).emit("waterfall:lifecycle:updated", {
+        projectId: project._id,
+        lifecycle: project.waterfallPlanLifecycle,
+        readiness,
+      });
+    }
+
+    res.json({
+      success: true,
+      message: `Successfully approved ${artifacts.length} of ${artifacts.length} artifacts.`,
+      approvedCount: artifacts.length,
+      totalCount: artifacts.length,
+      newlyApprovedCount: approvedNowCount,
+      artifacts: project.artifacts,
+      lifecycle: project.waterfallPlanLifecycle,
+      readiness,
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -527,27 +962,84 @@ router.post("/projects/:projectId/artifacts", requireAuth, async (req, res) => {
 // Remove an uploaded artifact.
 router.delete("/projects/:projectId/artifacts/:artifactId", requireAuth, async (req, res) => {
   try {
-    const project = await findProject(req.params.projectId, res, req.user);
+    const project = await findProjectDoc(req.params.projectId, res, req.user);
     if (!project) return;
 
-    const updated = await Project.findByIdAndUpdate(
-      req.params.projectId,
-      { $pull: { artifacts: { _id: req.params.artifactId } } },
-      { new: true, lean: true }
+    const artifactId = req.params.artifactId;
+    if (!artifactId) {
+      return res.status(400).json({ error: "artifactId is required" });
+    }
+
+    const artifactIndex = (project.artifacts || []).findIndex(
+      (a) => a._id?.toString() === artifactId || a.id?.toString() === artifactId
     );
 
-    res.json({ success: true, artifacts: updated.artifacts || [] });
+    if (artifactIndex === -1) {
+      return res.status(404).json({ error: "Artifact not found" });
+    }
+
+    project.artifacts.splice(artifactIndex, 1);
+    project.markModified("artifacts");
+
+    // Remove any synced ProjectMemory record
+    await ProjectMemory.deleteMany({
+      projectId: project._id,
+      $or: [
+        { relatedEntityIds: artifactId },
+        { tags: artifactId },
+      ],
+    }).catch(() => {});
+
+    if (!project.waterfallPlanLifecycle) project.waterfallPlanLifecycle = {};
+    if (project.artifacts.length === 0) {
+      project.waterfallPlanLifecycle.status = "ARTIFACTS_PENDING";
+    } else {
+      project.waterfallPlanLifecycle.status = "PLAN_REVIEW_REQUIRED";
+    }
+    project.waterfallPlanLifecycle.documentReadinessConfirmed = false;
+    project.waterfallPlanLifecycle.planRevision = (project.waterfallPlanLifecycle.planRevision || 0) + 1;
+
+    // Authoritative conflict recalculation when artifact is deleted!
+    project.waterfallPlanLifecycle.conflicts = recalculateProjectConflicts({
+      project,
+      remainingArtifacts: project.artifacts,
+      user: req.user,
+      modificationType: "artifact_deleted",
+    });
+
+    const readiness = calculateWaterfallReadiness(project, req.user);
+    project.markModified("waterfallPlanLifecycle");
+    await project.save();
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`team:${project.teamId}`).emit("waterfall:lifecycle:updated", {
+        projectId: project._id,
+        lifecycle: project.waterfallPlanLifecycle,
+        readiness,
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Artifact removed successfully.",
+      deletedArtifactId: artifactId,
+      artifacts: project.artifacts,
+      conflicts: project.waterfallPlanLifecycle.conflicts,
+      lifecycle: project.waterfallPlanLifecycle,
+      readiness,
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
 // ── POST /api/projects/:projectId/plan/extract ───────────────────────────────
-// Extract draft requirements, goals, and deliverables via Project AI under $0 policy.
-// Does NOT silently commit; returns draft items for human review.
+// Extract requirements, goals, deliverables, constraints, and detect scope conflicts.
+// Persists the extracted results to project memory and lifecycle state.
 router.post("/projects/:projectId/plan/extract", requireAuth, async (req, res) => {
   try {
-    const project = await findProject(req.params.projectId, res, req.user);
+    const project = await findProjectDoc(req.params.projectId, res, req.user);
     if (!project) return;
 
     const artifacts = project.artifacts || [];
@@ -562,12 +1054,340 @@ router.post("/projects/:projectId/plan/extract", requireAuth, async (req, res) =
       projectTitle: project.title,
       projectDescription: project.description || project.originalPrompt,
       domain: project.domain || "General Software",
+      existingGoals: project.context?.goals || [],
     });
+
+    if (!project.waterfallPlanLifecycle) {
+      project.waterfallPlanLifecycle = {};
+    }
+
+    const hasUnresolvedConflicts = (extracted.conflicts || []).some((c) => c.status === "unresolved");
+    project.waterfallPlanLifecycle.status = hasUnresolvedConflicts ? "PLAN_REVIEW_REQUIRED" : "AWAITING_FINALIZATION";
+    project.waterfallPlanLifecycle.artifactAnalysisRevision = (project.waterfallPlanLifecycle.artifactAnalysisRevision || 0) + 1;
+    project.waterfallPlanLifecycle.planRevision = (project.waterfallPlanLifecycle.planRevision || 0) + 1;
+    project.waterfallPlanLifecycle.conflicts = extracted.conflicts || [];
+    project.waterfallPlanLifecycle.scope = extracted.scope;
+
+    // Persist to context so Copilot and Project AI share authoritative ground truth
+    if (!project.context) project.context = {};
+    project.context.goals = extracted.scope.goals.map((g) => `${g.label}: ${g.description || g.label}`);
+    project.context.expectedOutputs = extracted.scope.deliverables.map((d) => `${d.label}: ${d.description || d.label}`);
+    project.context.constraints = extracted.scope.constraints.map((c) => `${c.label}: ${c.description || c.label}`);
+
+    // If project has no requirements, initialize with extracted items
+    if (!project.requirements || project.requirements.length === 0) {
+      project.requirements = extracted.requirements || [];
+    }
+
+    project.markModified("waterfallPlanLifecycle");
+    project.markModified("context");
+    project.markModified("requirements");
+    await project.save();
 
     res.json({
       success: true,
       extracted,
-      message: "Draft plan extracted successfully. Review and approve before persisting.",
+      scope: extracted.scope,
+      conflicts: extracted.conflicts,
+      lifecycle: project.waterfallPlanLifecycle,
+      message: "Artifacts analyzed and scope extracted successfully. Key Deliverables and Constraints populated.",
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── PATCH /api/projects/:projectId/plan/scope ────────────────────────────────
+// Update or edit extracted scope cards (goals, deliverables, constraints).
+router.patch("/projects/:projectId/plan/scope", requireAuth, async (req, res) => {
+  try {
+    const project = await findProjectDoc(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const { goals, deliverables, constraints } = req.body || {};
+    if (!project.waterfallPlanLifecycle) project.waterfallPlanLifecycle = {};
+    if (!project.waterfallPlanLifecycle.scope) project.waterfallPlanLifecycle.scope = {};
+
+    if (Array.isArray(goals)) project.waterfallPlanLifecycle.scope.goals = goals;
+    if (Array.isArray(deliverables)) project.waterfallPlanLifecycle.scope.deliverables = deliverables;
+    if (Array.isArray(constraints)) project.waterfallPlanLifecycle.scope.constraints = constraints;
+
+    // Synchronize to project.context
+    if (!project.context) project.context = {};
+    if (Array.isArray(goals)) project.context.goals = goals.map((g) => `${g.label}: ${g.description || g.label}`);
+    if (Array.isArray(deliverables)) project.context.expectedOutputs = deliverables.map((d) => `${d.label}: ${d.description || d.label}`);
+    if (Array.isArray(constraints)) project.context.constraints = constraints.map((c) => `${c.label}: ${c.description || c.label}`);
+
+    project.waterfallPlanLifecycle.planRevision = (project.waterfallPlanLifecycle.planRevision || 0) + 1;
+    project.markModified("waterfallPlanLifecycle");
+    project.markModified("context");
+    await project.save();
+
+    res.json({
+      success: true,
+      scope: project.waterfallPlanLifecycle.scope,
+      lifecycle: project.waterfallPlanLifecycle,
+      message: "Plan scope updated successfully.",
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── PATCH /api/projects/:projectId/plan/conflicts/:conflictId ────────────────
+// Resolve a scope conflict by selecting a resolution or entering a custom rationale.
+router.patch("/projects/:projectId/plan/conflicts/:conflictId", requireAuth, async (req, res) => {
+  try {
+    const project = await findProjectDoc(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const { resolution, note = "", resolutionType = "custom_rationale" } = req.body || {};
+    if (!resolution || !String(resolution).trim()) {
+      return res.status(400).json({ error: "Resolution choice or documented rationale is required." });
+    }
+
+    const conflicts = project.waterfallPlanLifecycle?.conflicts || [];
+    const target = conflicts.find((c) => c.id === req.params.conflictId);
+    if (!target) return res.status(404).json({ error: "Conflict not found." });
+
+    const trimmedResolution = String(resolution).trim();
+    const resolutionNoteText = note ? String(note).trim() : `Resolved by ${req.user.name || "user"}: ${trimmedResolution}`;
+
+    target.status = "resolved";
+    target.selectedResolution = trimmedResolution;
+    target.resolutionNote = resolutionNoteText;
+    target.resolutionType = resolutionType;
+    target.resolvedAt = new Date();
+    target.resolvedBy = req.user._id;
+    target.resolvedByName = req.user.name || "Authorized Member";
+
+    if (!Array.isArray(target.history)) target.history = [];
+    target.history.push({
+      action: "resolved",
+      performedBy: req.user._id,
+      performedByName: req.user.name || "Authorized Member",
+      timestamp: new Date(),
+      notes: resolutionNoteText,
+    });
+
+    const readiness = calculateWaterfallReadiness(project, req.user);
+
+    // If all conflicts are resolved and readiness confirmed, move to awaiting finalization
+    if (readiness.details.conflictsResolved && project.waterfallPlanLifecycle.documentReadinessConfirmed) {
+      project.waterfallPlanLifecycle.status = "AWAITING_FINALIZATION";
+    }
+
+    project.markModified("waterfallPlanLifecycle");
+    await project.save();
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`team:${project.teamId}`).emit("waterfall:lifecycle:updated", {
+        projectId: project._id,
+        lifecycle: project.waterfallPlanLifecycle,
+        readiness,
+      });
+    }
+
+    res.json({
+      success: true,
+      conflicts,
+      lifecycle: project.waterfallPlanLifecycle,
+      readiness,
+      message: "Scope contradiction resolved successfully.",
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/projects/:projectId/plan/conflicts/recalculate ─────────────────
+// Force recalculation of scope conflicts against current artifacts and concept.
+router.post("/projects/:projectId/plan/conflicts/recalculate", requireAuth, async (req, res) => {
+  try {
+    const project = await findProjectDoc(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    if (!project.waterfallPlanLifecycle) project.waterfallPlanLifecycle = {};
+
+    project.waterfallPlanLifecycle.conflicts = recalculateProjectConflicts({
+      project,
+      remainingArtifacts: project.artifacts,
+      user: req.user,
+      modificationType: "manual_recalculation",
+    });
+
+    const readiness = calculateWaterfallReadiness(project, req.user);
+    project.markModified("waterfallPlanLifecycle");
+    await project.save();
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`team:${project.teamId}`).emit("waterfall:lifecycle:updated", {
+        projectId: project._id,
+        lifecycle: project.waterfallPlanLifecycle,
+        readiness,
+      });
+    }
+
+    res.json({
+      success: true,
+      conflicts: project.waterfallPlanLifecycle.conflicts,
+      lifecycle: project.waterfallPlanLifecycle,
+      readiness,
+      message: "Scope contradictions recalculated.",
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /api/projects/:projectId/plan/readiness ──────────────────────────────
+// Fetch authoritative finalization readiness state and remaining blockers.
+router.get("/projects/:projectId/plan/readiness", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const readiness = calculateWaterfallReadiness(project, req.user);
+    res.json({
+      success: true,
+      readiness,
+      lifecycle: project.waterfallPlanLifecycle || {},
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── PATCH /api/projects/:projectId/plan/readiness ────────────────────────────
+// Toggle explicit document readiness confirmation.
+router.patch("/projects/:projectId/plan/readiness", requireAuth, async (req, res) => {
+  try {
+    const project = await findProjectDoc(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const { confirmed = false } = req.body || {};
+    if (!project.waterfallPlanLifecycle) project.waterfallPlanLifecycle = {};
+
+    project.waterfallPlanLifecycle.documentReadinessConfirmed = Boolean(confirmed);
+    project.waterfallPlanLifecycle.readinessConfirmedAt = confirmed ? new Date() : null;
+    project.waterfallPlanLifecycle.readinessConfirmedBy = confirmed ? req.user._id : null;
+
+    const hasUnresolved = (project.waterfallPlanLifecycle.conflicts || []).some((c) => c.status === "unresolved");
+    if (confirmed && !hasUnresolved) {
+      project.waterfallPlanLifecycle.status = "AWAITING_FINALIZATION";
+    } else if (!confirmed) {
+      project.waterfallPlanLifecycle.status = "PLAN_REVIEW_REQUIRED";
+    }
+
+    const readiness = calculateWaterfallReadiness(project, req.user);
+    project.markModified("waterfallPlanLifecycle");
+    await project.save();
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`team:${project.teamId}`).emit("waterfall:lifecycle:updated", {
+        projectId: project._id,
+        lifecycle: project.waterfallPlanLifecycle,
+        readiness,
+      });
+    }
+
+    res.json({
+      success: true,
+      lifecycle: project.waterfallPlanLifecycle,
+      readiness,
+      message: confirmed ? "Document readiness confirmed." : "Document readiness unconfirmed.",
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/projects/:projectId/plan/finalize ──────────────────────────────
+// Finalize Waterfall Plan & Generate Tasks.
+// Strictly validates document readiness, methodology, revisions, and unresolved conflicts.
+router.post("/projects/:projectId/plan/finalize", requireAuth, async (req, res) => {
+  try {
+    const project = await findProjectDoc(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const readiness = calculateWaterfallReadiness(project, req.user);
+    if (!readiness.isReady) {
+      return res.status(400).json({
+        error: `Cannot finalize Waterfall plan: ${readiness.blockers.join(" ")}`,
+        blockers: readiness.blockers,
+        readiness,
+      });
+    }
+
+    // Generate Waterfall tasks from finalized plan (idempotent reconciliation)
+    const generatedTasks = await generateWaterfallTasksFromPlan({
+      project,
+      teamId: project.teamId,
+      userId: req.user._id,
+    });
+
+    // Update Waterfall lifecycle state
+    project.waterfallPlanLifecycle.status = "IN_EXECUTION";
+    project.waterfallPlanLifecycle.finalizedAt = new Date();
+    project.waterfallPlanLifecycle.finalizedBy = req.user._id;
+    project.waterfallPlanLifecycle.finalizedPlanRevision = (project.waterfallPlanLifecycle.planRevision || 1);
+    project.waterfallPlanLifecycle.taskGenerationRevision = project.waterfallPlanLifecycle.finalizedPlanRevision;
+    project.waterfallPhase = "requirements"; // Activates Requirements phase first
+    project.taskCount = generatedTasks.length;
+
+    // Persist finalized plan context into ProjectMemory
+    try {
+      await ProjectMemory.create({
+        projectId: project._id,
+        title: `Finalized Waterfall Plan (Rev v${project.waterfallPlanLifecycle.finalizedPlanRevision})`,
+        content: `Finalized Waterfall plan with ${project.artifacts.length} approved artifacts, ${generatedTasks.length} generated tasks across 6 phases, and zero unresolved scope contradictions.`,
+        category: "IMPORTANT_ARTIFACT",
+        scope: "persistent",
+        source: "system",
+        createdBy: req.user._id,
+        tags: ["waterfall", "plan_finalized", `rev_${project.waterfallPlanLifecycle.finalizedPlanRevision}`],
+      });
+    } catch (memErr) {
+      console.warn("[ProjectMemory Sync] Plan memory warning:", memErr.message);
+    }
+
+    project.markModified("waterfallPlanLifecycle");
+    await project.save();
+
+    // Broadcast socket events for real-time unlock and tab synchronization
+    const io = req.app.get("io");
+    if (io) {
+      const wfState = await getWaterfallPhaseStates(project._id, project.teamId).catch(() => null);
+      io.to(`team:${project.teamId}`).emit("waterfall:plan:finalized", {
+        projectId: project._id,
+        lifecycle: project.waterfallPlanLifecycle,
+        waterfallState: wfState,
+        readiness: { isReady: true, blockers: [] },
+      });
+      io.to(`team:${project.teamId}`).emit("waterfall:phase:updated", wfState);
+      io.to(`team:${project.teamId}`).emit("waterfall:lifecycle:updated", {
+        projectId: project._id,
+        lifecycle: project.waterfallPlanLifecycle,
+        readiness: { isReady: true, blockers: [] },
+      });
+      io.to(`team:${project.teamId}`).emit("tasks:updated");
+      io.to(`team:${project.teamId}`).emit("project:updated", {
+        projectId: project._id,
+        taskCount: generatedTasks.length,
+      });
+    }
+
+    res.json({
+      success: true,
+      lifecycle: project.waterfallPlanLifecycle,
+      tasks: generatedTasks,
+      taskCount: generatedTasks.length,
+      readiness: { isReady: true, blockers: [] },
+      executionUnlocked: true,
+      message: "Waterfall plan finalized successfully! Tasks generated and Requirements phase activated.",
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -648,10 +1468,92 @@ router.post("/projects/:projectId/requirements", requireAuth, async (req, res) =
       { new: true, lean: true }
     );
 
+    const readiness = calculateWaterfallReadiness(updated, req.user);
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`team:${project.teamId}`).emit("waterfall:lifecycle:updated", {
+        projectId: project._id,
+        lifecycle: project.waterfallPlanLifecycle,
+        readiness,
+      });
+    }
+
     res.status(201).json({
       success: true,
       requirement: updated.requirements[updated.requirements.length - 1],
       requirements: sortRequirementsMergeSort(updated.requirements),
+      readiness,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/projects/:projectId/requirements/approve-all ────────────────────
+// Bulk approve all remaining eligible non-deleted requirements for this project.
+router.post("/projects/:projectId/requirements/approve-all", requireAuth, async (req, res) => {
+  try {
+    const project = await findProjectDoc(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const requirements = project.requirements || [];
+    if (requirements.length === 0) {
+      return res.status(400).json({ error: "No requirements found to approve." });
+    }
+
+    const now = new Date();
+    const approverId = req.user?._id || req.user?.id;
+    const approverName = req.user?.name || req.user?.email || "Authorized Member";
+
+    let approvedNowCount = 0;
+    for (const r of requirements) {
+      if (r.status !== "approved" && r.status !== "in_progress" && r.status !== "verified") {
+        r.status = "approved";
+        r.approvedAt = now;
+        r.approvedBy = approverId;
+        r.approvedByName = approverName;
+        approvedNowCount++;
+      } else if (!r.approvedAt) {
+        r.approvedAt = now;
+        r.approvedBy = approverId;
+        r.approvedByName = approverName;
+      }
+    }
+
+    project.markModified("requirements");
+    project.markModified("waterfallPlanLifecycle");
+    await project.save();
+
+    const readiness = calculateWaterfallReadiness(project, req.user);
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`team:${project.teamId}`).emit("waterfall:requirements:approved", {
+        projectId: project._id,
+        count: approvedNowCount,
+      });
+      io.to(`team:${project.teamId}`).emit("waterfall:lifecycle:updated", {
+        projectId: project._id,
+        lifecycle: project.waterfallPlanLifecycle,
+        readiness,
+      });
+    }
+
+    const totalCount = requirements.length;
+    const previouslyApproved = totalCount - approvedNowCount;
+
+    res.json({
+      success: true,
+      message: `Successfully approved ${approvedNowCount} requirement(s). (${totalCount} of ${totalCount} now approved)`,
+      total: totalCount,
+      totalCount: totalCount,
+      previouslyApproved: previouslyApproved,
+      newlyApproved: approvedNowCount,
+      newlyApprovedCount: approvedNowCount,
+      requirements: sortRequirementsMergeSort(project.requirements),
+      readiness,
+      lifecycle: project.waterfallPlanLifecycle,
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -660,9 +1562,10 @@ router.post("/projects/:projectId/requirements", requireAuth, async (req, res) =
 
 // ── PATCH /api/projects/:projectId/requirements/:reqId ───────────────────────
 // Update a requirement (triggers dynamic DAA priority recalculation).
+// If content is modified without explicit approval, resets approval status to draft.
 router.patch("/projects/:projectId/requirements/:reqId", requireAuth, async (req, res) => {
   try {
-    const project = await findProject(req.params.projectId, res, req.user);
+    const project = await findProjectDoc(req.params.projectId, res, req.user);
     if (!project) return;
 
     const existingIndex = (project.requirements || []).findIndex(
@@ -673,28 +1576,58 @@ router.patch("/projects/:projectId/requirements/:reqId", requireAuth, async (req
     }
 
     const current = project.requirements[existingIndex];
+    const isExplicitApproval = req.body.status === "approved";
+    const hasContentEdits = req.body.title !== undefined ||
+      req.body.description !== undefined ||
+      req.body.phase !== undefined ||
+      req.body.acceptanceCriteria !== undefined ||
+      req.body.estimatedHours !== undefined ||
+      req.body.requiredSkills !== undefined ||
+      req.body.dependencies !== undefined;
+
     const merged = {
-      ...current,
+      ...(current.toObject ? current.toObject() : current),
       ...req.body,
     };
 
-    // Recalculate deterministic score
+    if (isExplicitApproval) {
+      merged.status = "approved";
+      merged.approvedAt = new Date();
+      merged.approvedBy = req.user._id || req.user.id;
+      merged.approvedByName = req.user.name || req.user.email || "Authorized Member";
+    } else if (hasContentEdits && !req.body.status) {
+      // Content modified without explicit reapproval: reset approval to draft
+      merged.status = "draft";
+      merged.approvedAt = null;
+      merged.approvedBy = null;
+      merged.approvedByName = "";
+    }
+
+    // Recalculate deterministic DAA priority score
     const scored = calculateRequirementScore(merged);
     merged.priorityScore = scored.priorityScore;
     merged.scoreExplanation = scored.scoreExplanation;
 
     project.requirements[existingIndex] = merged;
+    project.markModified("requirements");
+    await project.save();
 
-    const updated = await Project.findByIdAndUpdate(
-      req.params.projectId,
-      { $set: { requirements: project.requirements } },
-      { new: true, lean: true }
-    );
+    const readiness = calculateWaterfallReadiness(project, req.user);
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`team:${project.teamId}`).emit("waterfall:lifecycle:updated", {
+        projectId: project._id,
+        lifecycle: project.waterfallPlanLifecycle,
+        readiness,
+      });
+    }
 
     res.json({
       success: true,
       requirement: merged,
-      requirements: sortRequirementsMergeSort(updated.requirements),
+      requirements: sortRequirementsMergeSort(project.requirements),
+      readiness,
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -702,78 +1635,77 @@ router.patch("/projects/:projectId/requirements/:reqId", requireAuth, async (req
 });
 
 // ── DELETE /api/projects/:projectId/requirements/:reqId ──────────────────────
-// Delete a requirement.
+// Delete a requirement and recalculate readiness and dependencies.
 router.delete("/projects/:projectId/requirements/:reqId", requireAuth, async (req, res) => {
   try {
-    const project = await findProject(req.params.projectId, res, req.user);
+    const project = await findProjectDoc(req.params.projectId, res, req.user);
     if (!project) return;
 
-    const updated = await Project.findByIdAndUpdate(
-      req.params.projectId,
-      {
-        $pull: {
-          requirements: {
-            $or: [{ reqId: req.params.reqId }, { _id: req.params.reqId }],
-          },
-        },
-      },
-      { new: true, lean: true }
+    project.requirements = (project.requirements || []).filter(
+      (r) => r.reqId !== req.params.reqId && r._id?.toString() !== req.params.reqId
     );
+
+    project.markModified("requirements");
+    await project.save();
+
+    const readiness = calculateWaterfallReadiness(project, req.user);
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`team:${project.teamId}`).emit("waterfall:lifecycle:updated", {
+        projectId: project._id,
+        lifecycle: project.waterfallPlanLifecycle,
+        readiness,
+      });
+    }
 
     res.json({
       success: true,
-      requirements: sortRequirementsMergeSort(updated.requirements || []),
+      requirements: sortRequirementsMergeSort(project.requirements || []),
+      readiness,
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
+// ── POST /api/projects/:projectId/requirements/bulk-convert ───────────────────
+// Convert all eligible approved/verified requirements into active Waterfall tasks in one idempotent operation.
+router.post("/projects/:projectId/requirements/bulk-convert", requireAuth, async (req, res) => {
+  try {
+    const project = await findProject(req.params.projectId, res, req.user);
+    if (!project) return;
+
+    const io = req.app.get("io");
+    const result = await bulkConvertApprovedRequirementsToTasks({
+      project,
+      teamId: project.teamId,
+      userId: req.user?._id || req.user?.id,
+      io,
+    });
+
+    res.status(200).json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── POST /api/projects/:projectId/requirements/:reqId/convert-to-task ────────
-// Convert an approved requirement into an active Task with phase and Greedy priority.
+// Convert an approved requirement into an active Task with phase and DAA priority.
 router.post("/projects/:projectId/requirements/:reqId/convert-to-task", requireAuth, async (req, res) => {
   try {
     const project = await findProject(req.params.projectId, res, req.user);
     if (!project) return;
 
-    const reqItem = (project.requirements || []).find(
-      (r) => r.reqId === req.params.reqId || r._id?.toString() === req.params.reqId
-    );
-    if (!reqItem) return res.status(404).json({ error: "Requirement not found" });
-
-    // Map requirement attributes to Task
-    const urgency = Math.min(5, Math.max(1, Math.round(reqItem.criticality / 2)));
-    const impact = Math.min(5, Math.max(1, Math.round(reqItem.businessValue / 2)));
-
-    const task = await Task.create({
-      teamId: project.teamId,
-      projectId: project._id,
-      title: reqItem.title,
-      description: reqItem.description,
-      phase: reqItem.phase || "requirements",
-      requirementId: reqItem.reqId,
-      category: reqItem.phase || "Requirements",
-      urgency,
-      impact,
-      estimatedHours: reqItem.estimatedHours || 12,
-      businessValue: reqItem.businessValue || 7,
-      requiredSkills: reqItem.requiredSkills || [],
-      source: "manual",
-      status: "todo",
-      createdBy: req.user?._id || req.user?.id,
+    const io = req.app.get("io");
+    const result = await convertSingleRequirementToTask({
+      project,
+      reqId: req.params.reqId,
+      userId: req.user?._id || req.user?.id,
+      io,
     });
 
-    // Mark requirement as in_progress or approved
-    await Project.updateOne(
-      { _id: project._id, "requirements.reqId": reqItem.reqId },
-      { $set: { "requirements.$.status": "in_progress" } }
-    );
-
-    res.status(201).json({
-      success: true,
-      task,
-      message: `Requirement ${reqItem.reqId} converted into an active task.`,
-    });
+    res.status(result.alreadyExisted ? 200 : 201).json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1838,8 +2770,34 @@ router.post("/projects/:projectId/tasks/ai-suggest", requireAuth, async (req, re
 });
 
 // =============================================================================
-// NEXUSFLOW 3.0 — PHASE 12: TEAM HEALTH ENGINE
+// NEXUSFLOW V4 — UNIFIED PROJECT HEALTH ENDPOINTS
 // =============================================================================
+
+// GET /api/projects/:projectId/project-health & /api/projects/:projectId/health
+router.get(["/projects/:projectId/project-health", "/projects/:projectId/health"], requireAuth, async (req, res) => {
+  const { projectId } = req.params;
+  if (!mongoose.isValidObjectId(projectId)) return res.status(400).json({ error: "invalid_project_id" });
+  try {
+    const io = req.app.get("io");
+    const health = await computeUnifiedProjectHealth(projectId, io);
+    res.json(health);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/projects/:projectId/project-health/refresh & /api/projects/:projectId/health/refresh
+router.post(["/projects/:projectId/project-health/refresh", "/projects/:projectId/health/refresh"], requireAuth, async (req, res) => {
+  const { projectId } = req.params;
+  if (!mongoose.isValidObjectId(projectId)) return res.status(400).json({ error: "invalid_project_id" });
+  try {
+    const io = req.app.get("io");
+    const health = await computeUnifiedProjectHealth(projectId, io);
+    res.json(health);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // GET /api/projects/:projectId/team-health
 router.get("/projects/:projectId/team-health", requireAuth, async (req, res) => {
@@ -1882,10 +2840,24 @@ router.get("/projects/:projectId/risks", requireAuth, async (req, res) => {
   if (!mongoose.isValidObjectId(projectId)) return res.status(400).json({ error: "invalid_project_id" });
   try {
     const { projectId: resolvedPid, teamId } = await resolveProjectAndTeam(projectId);
-    const filter = { $or: [{ projectId: resolvedPid }, { teamId }] };
-    if (status !== "all") filter.status = status;
-    const risks = await Risk.find(filter).sort({ severity: 1, createdAt: -1 }).lean();
-    res.json({ risks });
+    // Reconcile risks authoritatively from live task state before returning
+    await scanProjectRisks(projectId).catch(() => {});
+    const filter = { $or: [{ projectId: resolvedPid }, { teamId }, { projectId }] };
+    const allRisks = await Risk.find(filter).lean();
+    const counts = {
+      open: allRisks.filter((r) => r.status === "open").length,
+      acknowledged: allRisks.filter((r) => r.status === "acknowledged").length,
+      resolved: allRisks.filter((r) => r.status === "resolved").length,
+      all: allRisks.length,
+    };
+    const filteredRisks = status === "all" ? allRisks : allRisks.filter((r) => r.status === status);
+    filteredRisks.sort((a, b) => {
+      const sevOrder = { critical: 0, high: 1, medium: 2, low: 3 };
+      const sDiff = (sevOrder[a.severity] ?? 9) - (sevOrder[b.severity] ?? 9);
+      if (sDiff !== 0) return sDiff;
+      return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+    });
+    res.json({ risks: filteredRisks, counts });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1896,12 +2868,18 @@ router.post("/projects/:projectId/risks/scan", requireAuth, async (req, res) => 
   const { projectId } = req.params;
   if (!mongoose.isValidObjectId(projectId)) return res.status(400).json({ error: "invalid_project_id" });
   try {
-    const { projectId: resolvedPid } = await resolveProjectAndTeam(projectId);
+    const { projectId: resolvedPid, teamId } = await resolveProjectAndTeam(projectId);
     const risks = await scanProjectRisks(projectId);
     const io = req.app.get("io");
     if (io) {
       broadcastRiskUpdate(io, resolvedPid, { action: "scan", risks });
       broadcastRiskUpdate(io, projectId, { action: "scan", risks });
+      broadcastHealthUpdate(io, resolvedPid, { reason: "risk_scan" });
+      broadcastHealthUpdate(io, projectId, { reason: "risk_scan" });
+      if (teamId) {
+        io.to(`team:${teamId.toString()}`).emit("project:risk:updated", { action: "scan", risks });
+        io.to(`team:${teamId.toString()}`).emit("project:health:updated", { reason: "risk_scan" });
+      }
     }
     res.json({ risks, count: risks.length });
   } catch (e) {
@@ -1922,6 +2900,10 @@ router.patch("/projects/:projectId/risks/:riskId", requireAuth, async (req, res)
   try {
     const { projectId: resolvedPid, teamId } = await resolveProjectAndTeam(projectId);
     const updates = { status };
+    if (status === "acknowledged") {
+      updates.acknowledgedBy = req.user.id || req.user._id;
+      updates.acknowledgedAt = new Date();
+    }
     if (status === "resolved") {
       updates.resolvedBy = req.user.id || req.user._id;
       updates.resolvedAt = new Date();
@@ -1934,8 +2916,14 @@ router.patch("/projects/:projectId/risks/:riskId", requireAuth, async (req, res)
     if (!risk) return res.status(404).json({ error: "risk_not_found" });
     const io = req.app.get("io");
     if (io) {
-      broadcastRiskUpdate(io, resolvedPid, { risk });
-      broadcastRiskUpdate(io, projectId, { risk });
+      broadcastRiskUpdate(io, resolvedPid, { action: "status_update", risk });
+      broadcastRiskUpdate(io, projectId, { action: "status_update", risk });
+      broadcastHealthUpdate(io, resolvedPid, { reason: "risk_status_updated" });
+      broadcastHealthUpdate(io, projectId, { reason: "risk_status_updated" });
+      if (teamId) {
+        io.to(`team:${teamId.toString()}`).emit("project:risk:updated", { action: "status_update", risk });
+        io.to(`team:${teamId.toString()}`).emit("project:health:updated", { reason: "risk_status_updated" });
+      }
     }
     res.json({ risk });
   } catch (e) {
@@ -2910,8 +3898,19 @@ router.post(
       if (!project) return;
       const { methodology } = req.body;
       if (!methodology) return res.status(400).json({ error: "methodology is required" });
+      const norm = normalizeMethodologyId(methodology);
+      if (!isMethodologyAllowedForNewProjects(norm)) {
+        const meta = getMethodologyAvailability(norm);
+        return res.status(403).json({
+          error: "METHODOLOGY_UNAVAILABLE",
+          message: `${meta.name} is currently in development and is not available in this environment.`,
+          methodology: norm,
+          status: meta.status,
+          reason: meta.reason,
+        });
+      }
       const userId = (req.user?._id || req.user?.id)?.toString();
-      const result = await selectMethodology(req.params.projectId, methodology, userId, req.user?.name);
+      const result = await selectMethodology(req.params.projectId, norm, userId, req.user?.name);
       res.json(result);
     } catch (e) {
       res.status(500).json({ error: e.message });

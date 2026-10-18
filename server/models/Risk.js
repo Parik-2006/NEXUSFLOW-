@@ -56,8 +56,11 @@ const RiskSchema = new mongoose.Schema(
     },
 
     recommendation: { type: String, default: "" },
+    acknowledgedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    acknowledgedAt: { type: Date, default: null },
     resolvedBy:     { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     resolvedAt:     { type: Date, default: null },
+    resolutionReason: { type: String, default: "" },
   },
   { timestamps: true }
 );
@@ -65,4 +68,4 @@ const RiskSchema = new mongoose.Schema(
 RiskSchema.index({ projectId: 1, status: 1, severity: 1 });
 RiskSchema.index({ projectId: 1, fingerprint: 1 }, { unique: false });
 
-export default mongoose.model("Risk", RiskSchema);
+export default mongoose.models.Risk || mongoose.model("Risk", RiskSchema);

@@ -49,6 +49,7 @@ interface ProjectLesson {
     validatedAt?: string;
     validatedBy?: string;
     notes?: string;
+    rejectionReason?: string;
   };
   reusableTags?: string[];
 }
@@ -61,42 +62,77 @@ export default function ProjectLearningPanel({ projectId }: { projectId: string 
   const [generating, setGenerating] = useState(false);
   const [filterStatus, setFilterStatus] = useState<string>("ALL");
   const [validationNotes, setValidationNotes] = useState<{ [id: string]: string }>({});
+  const [error, setError] = useState<string | null>(null);
+  const [counts, setCounts] = useState<{
+    all: number;
+    candidate: number;
+    validated: number;
+    applied: number;
+    archived: number;
+  }>({
+    all: 0,
+    candidate: 0,
+    validated: 0,
+    applied: 0,
+    archived: 0,
+  });
 
   const fetchLessons = useCallback(async () => {
     if (!projectId || !token) return;
     try {
       setLoading(true);
-      const res = await fetch(`${API_BASE_URL}/api/projects/${projectId}/lessons`, {
+      setError(null);
+      const res = await fetch(`${API_BASE_URL}/api/projects/${projectId}/lessons?status=${filterStatus}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {
         const data = await res.json();
         setLessons(data.lessons || []);
+        if (data.counts) {
+          setCounts(data.counts);
+        } else {
+          const lList = data.lessons || [];
+          setCounts({
+            all: lList.length,
+            candidate: lList.filter((l: any) => l.status === "CANDIDATE").length,
+            validated: lList.filter((l: any) => l.status === "VALIDATED").length,
+            applied: lList.filter((l: any) => l.status === "APPLIED").length,
+            archived: lList.filter((l: any) => l.status === "ARCHIVED").length,
+          });
+        }
+      } else {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Failed to load project lessons");
       }
     } catch (e: any) {
+      setError(e.message || "Failed to load project lessons");
       toast(e.message || "Failed to load project lessons", "error");
     } finally {
       setLoading(false);
     }
-  }, [projectId, token]);  useEffect(() => {
+  }, [projectId, token, filterStatus]);
+
+  useEffect(() => {
     fetchLessons();
     const socket = getSocket(token);
     if (socket) {
-      socket.on("lesson.created", () => fetchLessons());
-      socket.on("lesson.validated", () => fetchLessons());
-      socket.on("lesson.applied", () => fetchLessons());
-      socket.on("lesson.archived", () => fetchLessons());
+      socket.emit("room:join:project", { projectId });
+      const handleRefresh = () => fetchLessons();
+      socket.on("lesson.created", handleRefresh);
+      socket.on("lesson.validated", handleRefresh);
+      socket.on("lesson.applied", handleRefresh);
+      socket.on("lesson.archived", handleRefresh);
       return () => {
-        socket.off("lesson.created");
-        socket.off("lesson.validated");
-        socket.off("lesson.applied");
-        socket.off("lesson.archived");
+        socket.off("lesson.created", handleRefresh);
+        socket.off("lesson.validated", handleRefresh);
+        socket.off("lesson.applied", handleRefresh);
+        socket.off("lesson.archived", handleRefresh);
       };
     }
-  }, [fetchLessons, token]);
+  }, [fetchLessons, token, projectId]);
 
   const handleGenerate = async () => {
-    if (!projectId || !token) return;
+    if (!projectId || !token || generating) return;
     try {
       setGenerating(true);
       const res = await fetch(`${API_BASE_URL}/api/projects/${projectId}/lessons/generate`, {
@@ -105,13 +141,14 @@ export default function ProjectLearningPanel({ projectId }: { projectId: string 
       });
       const data = await res.json();
       if (res.ok) {
-        toast(`Extracted ${data.count || 0} evidence-backed lesson candidate(s)`, "success");
-        fetchLessons();
+        const count = data.count ?? data.candidates?.length ?? 0;
+        toast(`Extracted ${count} evidence-backed lesson candidate(s)`, "success");
+        await fetchLessons();
       } else {
         toast(data.error || "Failed to extract lesson candidates", "error");
       }
     } catch (e: any) {
-      toast(e.message || "Network error", "error");
+      toast(e.message || "Network error generating lessons", "error");
     } finally {
       setGenerating(false);
     }
@@ -130,8 +167,8 @@ export default function ProjectLearningPanel({ projectId }: { projectId: string 
       });
       const data = await res.json();
       if (res.ok) {
-        toast(approved ? "Lesson validated with empirical evidence" : "Lesson rejected", "success");
-        fetchLessons();
+        toast(approved ? "Lesson validated with empirical evidence" : "Lesson rejected / archived", "success");
+        await fetchLessons();
       } else {
         toast(data.error || "Validation failed", "error");
       }
@@ -153,9 +190,31 @@ export default function ProjectLearningPanel({ projectId }: { projectId: string 
       const data = await res.json();
       if (res.ok) {
         toast("Lesson applied as advisory project guide", "success");
-        fetchLessons();
+        await fetchLessons();
       } else {
         toast(data.error || "Application failed", "error");
+      }
+    } catch (e: any) {
+      toast(e.message, "error");
+    }
+  };
+
+  const handleArchive = async (lessonId: string) => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/projects/${projectId}/lessons/${lessonId}/archive`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ reason: "Archived from project learning review" }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast("Lesson archived.", "info");
+        await fetchLessons();
+      } else {
+        toast(data.error || "Failed to archive lesson", "error");
       }
     } catch (e: any) {
       toast(e.message, "error");
@@ -176,7 +235,7 @@ export default function ProjectLearningPanel({ projectId }: { projectId: string 
         <View style={{ flex: 1 }}>
           <Text style={styles.title}>Project Learning Loop</Text>
           <Text style={styles.subtitle}>
-            Extracts empirical lessons from completed tasks, schedules, and dependencies.
+            Extracts empirical lessons from completed tasks, schedules, dependencies, and capability patterns.
           </Text>
         </View>
         <Button
@@ -188,28 +247,64 @@ export default function ProjectLearningPanel({ projectId }: { projectId: string 
         />
       </View>
 
-      {/* Filter Tabs */}
+      {/* Analyzing Banner */}
+      {generating && (
+        <View style={styles.generatingBanner}>
+          <ActivityIndicator size="small" color="#fff" />
+          <Text style={styles.generatingText}>
+            Analyzing project execution history (tasks, dependencies, capacities, risks)...
+          </Text>
+        </View>
+      )}
+
+      {/* Filter Tabs with Live Authoritative Counts */}
       <View style={styles.filterRow}>
-        {["ALL", "CANDIDATE", "VALIDATED", "APPLIED", "ARCHIVED"].map((s) => (
-          <Pressable
-            key={s}
-            onPress={() => setFilterStatus(s)}
-            style={[styles.tabBtn, filterStatus === s && styles.tabBtnActive]}
-          >
-            <Text style={[styles.tabText, filterStatus === s && styles.tabTextActive]}>
-              {s}
-            </Text>
-          </Pressable>
-        ))}
+        {(["ALL", "CANDIDATE", "VALIDATED", "APPLIED", "ARCHIVED"] as const).map((s) => {
+          const count = counts[s.toLowerCase() as keyof typeof counts] ?? 0;
+          return (
+            <Pressable
+              key={s}
+              onPress={() => setFilterStatus(s)}
+              style={[styles.tabBtn, filterStatus === s && styles.tabBtnActive]}
+            >
+              <Text style={[styles.tabText, filterStatus === s && styles.tabTextActive]}>
+                {s} ({count})
+              </Text>
+            </Pressable>
+          );
+        })}
       </View>
 
-      {/* Lesson List */}
+      {/* Error state with retry */}
+      {error && (
+        <Card style={styles.errorCard}>
+          <Ionicons name="alert-circle-outline" size={24} color={colors.danger} />
+          <View style={{ flex: 1, marginLeft: spacing.xs }}>
+            <Text style={{ fontWeight: "700", color: colors.danger }}>Analysis Error</Text>
+            <Text style={{ fontSize: 13, color: colors.textMuted }}>{error}</Text>
+          </View>
+          <Button title="Retry" variant="secondary" small onPress={() => fetchLessons()} />
+        </Card>
+      )}
+
+      {/* Lesson List / Empty States */}
       {filtered.length === 0 ? (
-        <EmptyState
-          icon="school-outline"
-          title="No Lessons Found"
-          message="Click 'Generate Lessons' to analyze project execution history and identify recurring patterns."
-        />
+        counts.all === 0 ? (
+          <EmptyState
+            icon="school-outline"
+            title="No Execution Lessons Recorded Yet"
+            message="NexusFlow analyzes completed task hours, prerequisite cascades, unassigned critical work, and skill gaps to extract evidence-backed lessons. Click 'Generate Lessons' above to run the deterministic analysis."
+            actionLabel="Generate Lessons"
+            actionIcon="bulb-outline"
+            onAction={handleGenerate}
+          />
+        ) : (
+          <EmptyState
+            icon="file-tray-outline"
+            title={`No ${filterStatus.charAt(0) + filterStatus.slice(1).toLowerCase()} Lessons`}
+            message={`No lessons currently found in "${filterStatus}" status. Switch filters or generate new candidate lessons.`}
+          />
+        )
       ) : (
         filtered.map((l) => {
           const ratio = l.evidenceMetrics?.plannedVsActualRatio;
@@ -222,37 +317,54 @@ export default function ProjectLearningPanel({ projectId }: { projectId: string 
               ? colors.warning
               : colors.textMuted;
 
+          const confidencePct = Math.round((l.confidence || 0.7) * 100);
+
           return (
             <Card key={l._id} style={styles.lessonCard}>
               <View style={styles.cardHeader}>
                 <View style={{ flex: 1 }}>
                   <View style={styles.badgeRow}>
                     <Badge label={l.status} color={statusColor} />
-                    <Badge label={l.category.toUpperCase()} color={colors.primary} />
-                    <Text style={styles.confidenceText}>
-                      Confidence: {Math.round((l.confidence || 0.7) * 100)}%
-                    </Text>
+                    <Badge label={(l.category || "GENERAL").toUpperCase()} color={colors.primary} />
+                    <Text style={styles.confidenceText}>Confidence: {confidencePct}%</Text>
                   </View>
                   <Text style={styles.lessonTitle}>{l.title}</Text>
                 </View>
+              </View>
+
+              {/* Confidence Progress Bar */}
+              <View style={styles.confidenceBarBg}>
+                <View
+                  style={[
+                    styles.confidenceBarFill,
+                    {
+                      width: `${confidencePct}%`,
+                      backgroundColor:
+                        confidencePct >= 80 ? colors.success : confidencePct >= 60 ? colors.warning : colors.danger,
+                    },
+                  ]}
+                />
               </View>
 
               <Text style={styles.descriptionText}>{l.description}</Text>
 
               {/* Observed Pattern */}
               <View style={styles.patternBox}>
-                <Text style={styles.patternLabel}>Observed Pattern:</Text>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+                  <Ionicons name="analytics-outline" size={14} color={colors.primary} />
+                  <Text style={styles.patternLabel}>Observed Fact & Pattern:</Text>
+                </View>
                 <Text style={styles.patternText}>{l.observedPattern}</Text>
               </View>
 
               {/* Empirical Evidence */}
               <View style={styles.evidenceBox}>
-                <Text style={styles.evidenceTitle}>Empirical Evidence:</Text>
+                <Text style={styles.evidenceTitle}>Empirical Project Evidence:</Text>
                 <View style={styles.metricsRow}>
                   {l.evidenceMetrics?.sampleSize !== undefined && (
                     <View style={styles.metricItem}>
                       <Text style={styles.metricVal}>{l.evidenceMetrics.sampleSize}</Text>
-                      <Text style={styles.metricLbl}>Sample Tasks</Text>
+                      <Text style={styles.metricLbl}>Sample Size</Text>
                     </View>
                   )}
                   {ratio !== undefined && (
@@ -264,9 +376,19 @@ export default function ProjectLearningPanel({ projectId }: { projectId: string 
                   {l.evidenceMetrics?.varianceHours !== undefined && (
                     <View style={styles.metricItem}>
                       <Text style={styles.metricVal}>
-                        {l.evidenceMetrics.varianceHours > 0 ? `+${l.evidenceMetrics.varianceHours}` : l.evidenceMetrics.varianceHours}h
+                        {l.evidenceMetrics.varianceHours > 0
+                          ? `+${l.evidenceMetrics.varianceHours}`
+                          : l.evidenceMetrics.varianceHours}h
                       </Text>
-                      <Text style={styles.metricLbl}>Hours Variance</Text>
+                      <Text style={styles.metricLbl}>Variance Hours</Text>
+                    </View>
+                  )}
+                  {l.evidenceMetrics?.blockerCount !== undefined && l.evidenceMetrics.blockerCount > 0 && (
+                    <View style={styles.metricItem}>
+                      <Text style={[styles.metricVal, { color: colors.warning }]}>
+                        {l.evidenceMetrics.blockerCount}
+                      </Text>
+                      <Text style={styles.metricLbl}>Blocker Tasks</Text>
                     </View>
                   )}
                 </View>
@@ -275,9 +397,9 @@ export default function ProjectLearningPanel({ projectId }: { projectId: string 
               {/* Recommendation */}
               {!!l.recommendation && (
                 <View style={styles.recBox}>
-                  <Ionicons name="shield-checkmark-outline" size={16} color={colors.accentDark} />
+                  <Ionicons name="shield-checkmark" size={16} color={colors.primary} />
                   <Text style={styles.recText}>
-                    <Text style={{ fontWeight: "700" }}>Advisory Action: </Text>
+                    <Text style={{ fontWeight: "700", color: colors.primary }}>Advisory Action: </Text>
                     {l.recommendation}
                   </Text>
                 </View>
@@ -317,13 +439,46 @@ export default function ProjectLearningPanel({ projectId }: { projectId: string 
                   <Text style={styles.validatedNotice}>
                     Verified by {l.validationMetadata?.validatedBy || "Lead"}
                   </Text>
+                  <View style={{ flexDirection: "row", gap: spacing.xs }}>
+                    <Button
+                      title="Apply Recommendation"
+                      variant="primary"
+                      small
+                      icon="arrow-forward-circle-outline"
+                      onPress={() => handleApply(l._id)}
+                    />
+                    <Button
+                      title="Archive"
+                      variant="ghost"
+                      small
+                      icon="archive-outline"
+                      onPress={() => handleArchive(l._id)}
+                    />
+                  </View>
+                </View>
+              )}
+
+              {l.status === "APPLIED" && (
+                <View style={styles.applyRow}>
+                  <Badge label="Applied (Advisory Planning)" color={colors.info} />
                   <Button
-                    title="Apply to Planning"
-                    variant="primary"
+                    title="Archive"
+                    variant="ghost"
                     small
-                    icon="arrow-forward-circle-outline"
-                    onPress={() => handleApply(l._id)}
+                    icon="archive-outline"
+                    onPress={() => handleArchive(l._id)}
                   />
+                </View>
+              )}
+
+              {l.status === "ARCHIVED" && (
+                <View style={styles.applyRow}>
+                  <Badge label="Archived" color={colors.textMuted} />
+                  {!!l.validationMetadata?.rejectionReason && (
+                    <Text style={[styles.validatedNotice, { fontStyle: "italic" }]}>
+                      {l.validationMetadata.rejectionReason}
+                    </Text>
+                  )}
                 </View>
               )}
             </Card>
@@ -506,5 +661,42 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: colors.success,
     fontWeight: "600",
+  },
+  generatingBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: colors.primary,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.md,
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  generatingText: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "600",
+    flex: 1,
+  },
+  errorCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: colors.danger + "15",
+    borderColor: colors.danger + "44",
+    borderWidth: 1,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+    borderRadius: radius.md,
+  },
+  confidenceBarBg: {
+    height: 4,
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: 2,
+    marginVertical: spacing.xs,
+    overflow: "hidden",
+  },
+  confidenceBarFill: {
+    height: 4,
+    borderRadius: 2,
   },
 });

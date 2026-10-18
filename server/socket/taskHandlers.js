@@ -6,6 +6,7 @@ import { buildGraph, topologicalSort as topoSortGraph } from "../algorithms/grap
 
 import { verifyTeamAccess } from "../routes/teams.js";
 import { assertWaterfallTaskExecutable, getWaterfallPhaseStates } from "../services/phaseGateService.js";
+import { scanProjectRisks } from "../services/riskEngine.js";
 
 // createdBy is an ObjectId ref. Dev auth uses email as the user id, so only set
 // createdBy when it's actually a valid ObjectId — never crash Mongo validation.
@@ -36,11 +37,15 @@ export async function recomputeAndBroadcast(io, teamId) {
 async function notifyHealthAndRiskChange(io, teamId) {
   try {
     if (!io || !teamId) return;
+    const team = await Team.findById(teamId).select("activeProjectId").lean();
+    const targetScopeId = team?.activeProjectId || teamId;
+    if (targetScopeId) {
+      await scanProjectRisks(targetScopeId).catch(() => {});
+    }
     io.to(`team:${teamId}`).emit("project:health:updated", { teamId });
     io.to(`project:${teamId}`).emit("project:health:updated", { teamId });
     io.to(`team:${teamId}`).emit("project:risk:updated", { teamId });
     io.to(`project:${teamId}`).emit("project:risk:updated", { teamId });
-    const team = await Team.findById(teamId).select("activeProjectId").lean();
     if (team?.activeProjectId) {
       io.to(`project:${team.activeProjectId}`).emit("project:health:updated", { projectId: team.activeProjectId, teamId });
       io.to(`project:${team.activeProjectId}`).emit("project:risk:updated", { projectId: team.activeProjectId, teamId });

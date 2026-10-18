@@ -114,11 +114,20 @@ router.get("/projects/:projectId/lessons", requireAuth, async (req, res) => {
     const auth = await authorizeProjectAccess(req.params.projectId, req, res);
     if (!auth) return;
 
-    const lessons = await getProjectLessons(req.params.projectId, {
-      status: req.query.status,
-      category: req.query.category,
-    });
-    res.json({ lessons, count: lessons.length });
+    const statusParam = req.query.status;
+    const filterStatus = statusParam && statusParam.toUpperCase() !== "ALL" ? statusParam.toUpperCase() : null;
+
+    const allLessons = await getProjectLessons(req.params.projectId);
+    const counts = {
+      all: allLessons.length,
+      candidate: allLessons.filter((l) => l.status === "CANDIDATE").length,
+      validated: allLessons.filter((l) => l.status === "VALIDATED").length,
+      applied: allLessons.filter((l) => l.status === "APPLIED").length,
+      archived: allLessons.filter((l) => l.status === "ARCHIVED").length,
+    };
+
+    const lessons = filterStatus ? allLessons.filter((l) => l.status === filterStatus) : allLessons;
+    res.json({ lessons, counts, count: lessons.length });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

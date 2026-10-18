@@ -73,6 +73,7 @@ export default function TaskCard({
   onDelete,
   onDuplicate,
   locked,
+  lockReason,
 }: {
   task: Task;
   onCycle: (next: Task["status"]) => void;
@@ -86,6 +87,7 @@ export default function TaskCard({
   onDelete?: () => void;
   onDuplicate?: () => void;
   locked?: boolean;
+  lockReason?: string | null;
 }) {
   const score = task.priorityScore ?? 0;
   const key = taskPriorityKey(task);
@@ -103,6 +105,8 @@ export default function TaskCard({
     ? new Date(task.reminderAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
     : null;
 
+  const isBlocked = lockReason?.includes("Prerequisite") || lockReason?.includes("Predecessor");
+
   return (
     <View style={styles.card}>
       <Pressable style={styles.row} onPress={() => onCycle(NEXT[task.status])}>
@@ -113,9 +117,22 @@ export default function TaskCard({
           style={[styles.title, task.status === "done" && styles.done]}
         />
         {locked && task.status !== "done" && (
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 3, backgroundColor: "#FEF2F2", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: "#FCA5A5", marginRight: 4 }}>
-            <Ionicons name="lock-closed" size={10} color="#DC2626" />
-            <Text style={{ fontSize: 10, fontWeight: "600", color: "#DC2626" }}>LOCKED</Text>
+          <View style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 3,
+            backgroundColor: isBlocked ? "#FFFBEB" : "#FEF2F2",
+            paddingHorizontal: 6,
+            paddingVertical: 2,
+            borderRadius: 4,
+            borderWidth: 1,
+            borderColor: isBlocked ? "#FDE68A" : "#FCA5A5",
+            marginRight: 4
+          }}>
+            <Ionicons name={isBlocked ? "hourglass-outline" : "lock-closed"} size={10} color={isBlocked ? "#D97706" : "#DC2626"} />
+            <Text style={{ fontSize: 10, fontWeight: "600", color: isBlocked ? "#B45309" : "#DC2626" }}>
+              {isBlocked ? "BLOCKED" : "LOCKED"}
+            </Text>
           </View>
         )}
         <Text style={[styles.badge, { color: STATUS_COLOR[task.status] }]}>{LABEL[task.status]}</Text>

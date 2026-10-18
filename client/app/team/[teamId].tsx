@@ -291,7 +291,7 @@ export default function Workspace() {
           ) : isScrum ? (
             <ScrumPlanPanel teamId={teamId} projectId={team?.activeProjectId || teamId} />
           ) : (
-            <PlanPanel teamId={teamId} projectId={team?.activeProjectId || teamId} />
+            <PlanPanel teamId={teamId} projectId={team?.activeProjectId} onNavigateToTasks={() => setActive("tasks")} />
           )
         )}
         {teamId && active === "tasks" && (
@@ -300,7 +300,7 @@ export default function Workspace() {
           ) : isScrum ? (
             <ScrumTasksPanel teamId={teamId} onNavigatePlan={() => setActive("plan")} />
           ) : (
-            <TasksPanel teamId={teamId} onGenerateAI={() => setActive("advisor")} />
+            <TasksPanel teamId={teamId} projectId={team?.activeProjectId} onNavigatePlan={() => setActive("plan")} onGenerateAI={() => setActive("advisor")} />
           )
         )}
         {teamId && active === "timeline" && (
@@ -309,7 +309,7 @@ export default function Workspace() {
           ) : isScrum ? (
             <ScrumTimelinePanel teamId={teamId} />
           ) : (
-            <WaterfallTimelinePanel teamId={teamId} />
+            <WaterfallTimelinePanel teamId={teamId} projectId={team?.activeProjectId} onNavigatePlan={() => setActive("plan")} />
           )
         )}
         {teamId && active === "team" && (

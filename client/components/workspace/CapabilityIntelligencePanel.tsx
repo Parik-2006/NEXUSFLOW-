@@ -68,6 +68,7 @@ interface AssignmentPreview {
     taskId: string;
     taskTitle: string;
     currentAssigneeId: string | null;
+    isAlreadyAssigned?: boolean;
     recommendedMemberId: string;
     recommendedMemberName: string;
     fitCost: number;
@@ -138,22 +139,28 @@ export default function CapabilityIntelligencePanel({ projectId }: { projectId: 
     fetchPreview();
     const socket = getSocket(token);
     if (socket) {
-      socket.on("capability.updated", () => {
+      socket.emit("room:join:project", { projectId });
+      const handleRefresh = () => {
         fetchOverview();
         fetchPreview();
-      });
-      socket.on("assignment.accepted", () => {
-        fetchOverview();
-        fetchPreview();
-      });
+      };
+      socket.on("capability.updated", handleRefresh);
+      socket.on("assignment.accepted", handleRefresh);
+      socket.on("task:assigned", handleRefresh);
+      socket.on("task:updated", handleRefresh);
+      socket.on("tasks:updated", handleRefresh);
       return () => {
-        socket.off("capability.updated");
-        socket.off("assignment.accepted");
+        socket.off("capability.updated", handleRefresh);
+        socket.off("assignment.accepted", handleRefresh);
+        socket.off("task:assigned", handleRefresh);
+        socket.off("task:updated", handleRefresh);
+        socket.off("tasks:updated", handleRefresh);
       };
     }
-  }, [fetchOverview, fetchPreview, token]);
+  }, [fetchOverview, fetchPreview, token, projectId]);
 
   const handleAcceptAssignment = async (taskId: string, newAssigneeId: string) => {
+    if (acceptingId) return;
     try {
       setAcceptingId(taskId);
       const res = await fetch(`${API_BASE_URL}/api/projects/${projectId}/assignment/accept`, {
@@ -167,8 +174,7 @@ export default function CapabilityIntelligencePanel({ projectId }: { projectId: 
       const data = await res.json();
       if (res.ok) {
         toast(`Assignment accepted: ${data.assignedTo}`, "success");
-        fetchOverview();
-        fetchPreview();
+        await Promise.all([fetchOverview(), fetchPreview()]);
       } else {
         toast(data.error || "Failed to accept assignment", "error");
       }
@@ -263,13 +269,20 @@ export default function CapabilityIntelligencePanel({ projectId }: { projectId: 
                     </View>
                   </View>
 
-                  <Button
-                    title={isAccepting ? "Accepting..." : "Accept Assign"}
-                    variant="primary"
-                    small
-                    disabled={isAccepting}
-                    onPress={() => handleAcceptAssignment(a.taskId, a.recommendedMemberId)}
-                  />
+                  {a.isAlreadyAssigned || a.currentAssigneeId === a.recommendedMemberId ? (
+                    <View style={{ alignItems: "flex-end", gap: 4 }}>
+                      <Badge label={`Assigned to ${a.recommendedMemberName}`} color={colors.success} />
+                      <Text style={[styles.evidenceLabel, { color: colors.textMuted }]}>Authoritative Assignee</Text>
+                    </View>
+                  ) : (
+                    <Button
+                      title={isAccepting ? "Accepting..." : "Accept Assign"}
+                      variant="primary"
+                      small
+                      disabled={isAccepting}
+                      onPress={() => handleAcceptAssignment(a.taskId, a.recommendedMemberId)}
+                    />
+                  )}
                 </View>
 
                 {/* Candidate & Capacity Impact */}

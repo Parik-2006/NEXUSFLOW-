@@ -35,7 +35,12 @@ import { getItem } from "@/utils/storage";
 import { API_BASE_URL } from "@/utils/api";
 import { colors, radius, spacing, font } from "@/theme";
 import type { NewTeamInput } from "@/hooks/useTeams";
-import { MethodologyType, getMethodologyConfig } from "@/utils/methodologyConfig";
+import {
+  MethodologyType,
+  getMethodologyConfig,
+  ALL_METHODOLOGIES,
+  isMethodologyAllowedForNewProjects,
+} from "@/utils/methodologyConfig";
 
 export const DOMAINS = [
   { id: "AI", label: "AI / ML", icon: "sparkles-outline" },
@@ -46,45 +51,15 @@ export const DOMAINS = [
   { id: "Cybersecurity", label: "Security", icon: "shield-outline" },
 ];
 
-export const METHODOLOGY_OPTIONS: {
-  id: MethodologyType;
-  name: string;
-  badge: "ACTIVE" | "WIP";
-  tagline: string;
-  wipNotice?: string;
-}[] = [
-  {
-    id: "WATERFALL",
-    name: "Waterfall",
-    badge: "ACTIVE",
-    tagline: "Sequential phase gates & CPM schedule",
-  },
-  {
-    id: "CLASSIC",
-    name: "NexusFlow Classic",
-    badge: "ACTIVE",
-    tagline: "Original 12-tab V3 project workspace",
-  },
-  {
-    id: "SCRUM",
-    name: "Scrum",
-    badge: "ACTIVE",
-    tagline: "Sprints, backlog grooming & velocity",
-  },
-  {
-    id: "KANBAN",
-    name: "Kanban",
-    badge: "ACTIVE",
-    tagline: "Continuous flow & WIP limits",
-  },
-  {
-    id: "HYBRID",
-    name: "Hybrid",
-    badge: "WIP",
-    tagline: "Stage-gates & agile iterations",
-    wipNotice: "Hybrid environment is under development (NexusFlow V4.2). Selecting Hybrid will preview the WIP environment. Waterfall is recommended for active projects.",
-  },
-];
+export const METHODOLOGY_OPTIONS = ALL_METHODOLOGIES.map((m) => ({
+  id: m.id,
+  name: m.name,
+  badge: (m.allowNewProjects ? "ACTIVE" : "IN_PROGRESS") as "ACTIVE" | "IN_PROGRESS" | "WIP",
+  tagline: m.tagline,
+  allowNewProjects: Boolean(m.allowNewProjects),
+  statusMessage: m.statusMessage || (m.allowNewProjects ? "Available for production use" : "This methodology is currently in development and is not yet available in production."),
+  wipNotice: m.wipDetails?.description || m.statusMessage,
+}));
 
 // ── Broad categories consumed by the Branch & Bound assignment engine ────────
 const SKILL_CATEGORIES: { key: string; label: string; skills: string[] }[] = [
@@ -384,7 +359,10 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
   const selectTemplate = (template: ProjectTemplate) => {
     setProjectTitle(template.title);
     setDomain(template.domain);
-    setMethodology(template.methodology);
+    const chosenMethodology = isMethodologyAllowedForNewProjects(template.methodology)
+      ? template.methodology
+      : "WATERFALL";
+    setMethodology(chosenMethodology);
     setClientRequirements(template.clientRequirements);
     setDescription(template.description || "");
     setSelectedTemplate(template.id);
@@ -439,6 +417,10 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
     // FIX 2: Final validation for description length
     if (descTrimmed.length < DESC_MIN) {
       toast(`Description must contain at least ${DESC_MIN} characters.`, "error");
+      return;
+    }
+    if (!isMethodologyAllowedForNewProjects(methodology)) {
+      toast("This methodology is currently in development and cannot be used for new projects.", "error");
       return;
     }
     setBusy(true);
@@ -584,32 +566,43 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
           <View style={{ gap: 8 }}>
             <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
               <Text style={s.subSectionLabel}>Methodology</Text>
-              <Text style={s.subSectionHint}>Waterfall is fully active in V4.0</Text>
+              <Text style={s.subSectionHint}>Waterfall & Classic active in V4.0</Text>
             </View>
             <View style={s.methodologyGrid}>
               {METHODOLOGY_OPTIONS.map((m) => {
                 const active = methodology === m.id;
-                const isWip = m.badge === "WIP";
+                const isAllowed = m.allowNewProjects;
+                const isInProgress = !isAllowed;
                 return (
                   <Pressable
                     key={m.id}
-                    onPress={() => setMethodology(m.id)}
+                    disabled={!isAllowed}
+                    accessibilityState={{ disabled: !isAllowed }}
+                    accessibilityLabel={`${m.name} methodology (${isAllowed ? "Active" : "In Progress - Not available in production"})`}
+                    onPress={() => {
+                      if (isAllowed) setMethodology(m.id);
+                    }}
                     style={[
                       s.methCard,
                       active && s.methCardOn,
-                      active && !isWip && { borderColor: colors.primary },
-                      active && isWip && { borderColor: "#d97706" },
+                      active && { borderColor: colors.primary },
+                      isInProgress && s.methCardDisabled,
                     ]}
                   >
                     <View style={s.methCardTop}>
-                      <Text style={[s.methCardTitle, active && { color: colors.text }]}>{m.name}</Text>
-                      <View style={[s.methBadge, isWip ? s.methBadgeWip : s.methBadgeActive]}>
-                        <Text style={[s.methBadgeTxt, isWip ? s.methBadgeWipTxt : s.methBadgeActiveTxt]}>
-                          {m.badge}
+                      <Text style={[s.methCardTitle, active && { color: colors.text }, isInProgress && { color: colors.textMuted }]}>{m.name}</Text>
+                      <View style={[s.methBadge, isInProgress ? s.methBadgeWip : s.methBadgeActive]}>
+                        <Text style={[s.methBadgeTxt, isInProgress ? s.methBadgeWipTxt : s.methBadgeActiveTxt]}>
+                          {isInProgress ? "IN PROGRESS" : "ACTIVE"}
                         </Text>
                       </View>
                     </View>
                     <Text style={s.methCardTagline} numberOfLines={2}>{m.tagline}</Text>
+                    {isInProgress && (
+                      <Text style={s.methDisabledNote} numberOfLines={2}>
+                        In development • Unavailable in production
+                      </Text>
+                    )}
                   </Pressable>
                 );
               })}
@@ -1125,9 +1118,11 @@ const s = StyleSheet.create({
   methodologyGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   methCard: { width: "48%", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, padding: 10, gap: 4 },
   methCardOn: { backgroundColor: colors.primarySoft },
+  methCardDisabled: { opacity: 0.62, backgroundColor: "#FAF7EE" },
   methCardTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   methCardTitle: { fontSize: 13, fontWeight: "700", color: colors.text },
   methCardTagline: { fontSize: 11, color: colors.textMuted, lineHeight: 15 },
+  methDisabledNote: { fontSize: 10, color: "#b45309", fontWeight: "600", marginTop: 2 },
   methBadge: { paddingHorizontal: 6, paddingVertical: 1.5, borderRadius: radius.pill },
   methBadgeActive: { backgroundColor: colors.successSoft },
   methBadgeWip: { backgroundColor: "#fef3c7" },

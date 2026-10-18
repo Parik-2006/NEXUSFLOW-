@@ -423,12 +423,17 @@ const ProjectSchema = new mongoose.Schema(
     // Uploaded project artifacts (SRS, rubric, architecture, instructions)
     artifacts: [
       {
+        _id:              { type: mongoose.Schema.Types.ObjectId, default: () => new mongoose.Types.ObjectId() },
         name:             { type: String, required: true },
         artifactType:     { type: String, default: "document" }, // "srs", "teacher_instructions", "diagram", "spec", "notes", "other"
         content:          { type: String, default: "" },
         scope:            { type: String, enum: ["persistent", "temporary"], default: "persistent" },
         fileSize:         { type: Number, default: 0 },
         summary:          { type: String, default: "" },
+        approvalStatus:   { type: String, enum: ["pending", "approved", "rejected"], default: "pending" },
+        approvedAt:       { type: Date, default: null },
+        approvedBy:       { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+        approvedByName:   { type: String, default: "" },
         uploadedAt:       { type: Date, default: Date.now },
       },
     ],
@@ -472,12 +477,148 @@ const ProjectSchema = new mongoose.Schema(
           enum:    ["draft", "approved", "in_progress", "verified", "rejected"],
           default: "draft",
         },
+        approvedAt:       { type: Date, default: null },
+        approvedBy:       { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+        approvedByName:   { type: String, default: "" },
         assignedTo:       { type: String, default: null },
         priorityScore:    { type: Number, default: 0 },
         scoreExplanation: { type: String, default: "" },
         createdAt:        { type: Date, default: Date.now },
       },
     ],
+
+    // ── V4 Waterfall Plan Lifecycle & Scope Governance ───────────────────────
+    waterfallPlanLifecycle: {
+      type: new mongoose.Schema(
+        {
+          status: {
+            type: String,
+            enum: [
+              "ARTIFACTS_PENDING",
+              "ANALYSIS_PENDING",
+              "PLAN_REVIEW_REQUIRED",
+              "AWAITING_FINALIZATION",
+              "PLAN_FINALIZED",
+              "TASKS_GENERATED",
+              "IN_EXECUTION",
+              "COMPLETED",
+            ],
+            default: "ARTIFACTS_PENDING",
+          },
+          planRevision: { type: Number, default: 0 },
+          artifactAnalysisRevision: { type: Number, default: 0 },
+          finalizedPlanRevision: { type: Number, default: 0 },
+          taskGenerationRevision: { type: Number, default: 0 },
+          artifactsHash: { type: String, default: "" },
+          documentReadinessConfirmed: { type: Boolean, default: false },
+          readinessConfirmedAt: { type: Date, default: null },
+          readinessConfirmedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+          finalizedAt: { type: Date, default: null },
+          finalizedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+          conflicts: [
+            {
+              id: { type: String, required: true },
+              title: { type: String, required: true },
+              reason: { type: String, default: "" },
+              sourceA: { type: String, required: true },
+              statementA: { type: String, required: true },
+              sourceB: { type: String, required: true },
+              statementB: { type: String, required: true },
+              sourceDocumentA: { type: String, default: "" },
+              sourceDocumentB: { type: String, default: "" },
+              relatedArtifactIds: { type: [String], default: [] },
+              relatedRequirementIds: { type: [String], default: [] },
+              affectedCategory: { type: String, enum: ["goals", "deliverables", "constraints", "requirements"], default: "goals" },
+              status: { type: String, enum: ["unresolved", "resolved"], default: "unresolved" },
+              selectedResolution: { type: String, default: null },
+              resolutionNote: { type: String, default: "" },
+              resolutionType: {
+                type: String,
+                enum: [
+                  "interpretation_a",
+                  "interpretation_b",
+                  "decision_selection",
+                  "custom_rationale",
+                  "artifact_edited",
+                  "artifact_deleted",
+                  "artifact_added",
+                  "manual_recalculation",
+                  "automatic_resolution",
+                  null,
+                ],
+                default: null,
+              },
+              resolvedAt: { type: Date, default: null },
+              resolvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+              resolvedByName: { type: String, default: "" },
+              history: [
+                {
+                  action: { type: String, default: "resolved" },
+                  performedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+                  performedByName: { type: String, default: "" },
+                  timestamp: { type: Date, default: Date.now },
+                  notes: { type: String, default: "" },
+                },
+              ],
+            },
+          ],
+          scope: {
+            goals: [
+              {
+                id: { type: String, default: "" },
+                label: { type: String, required: true },
+                description: { type: String, default: "" },
+                sourceArtifact: { type: String, default: "" },
+                sourceReference: { type: String, default: "" },
+                isInferred: { type: Boolean, default: false },
+                isConfirmed: { type: Boolean, default: true },
+                status: { type: String, enum: ["draft", "confirmed", "removed"], default: "confirmed" },
+              },
+            ],
+            deliverables: [
+              {
+                id: { type: String, default: "" },
+                label: { type: String, required: true },
+                description: { type: String, default: "" },
+                sourceArtifact: { type: String, default: "" },
+                sourceReference: { type: String, default: "" },
+                isInferred: { type: Boolean, default: false },
+                isConfirmed: { type: Boolean, default: true },
+                status: { type: String, enum: ["draft", "confirmed", "removed"], default: "confirmed" },
+              },
+            ],
+            constraints: [
+              {
+                id: { type: String, default: "" },
+                label: { type: String, required: true },
+                description: { type: String, default: "" },
+                sourceArtifact: { type: String, default: "" },
+                sourceReference: { type: String, default: "" },
+                isInferred: { type: Boolean, default: false },
+                isConfirmed: { type: Boolean, default: true },
+                status: { type: String, enum: ["draft", "confirmed", "removed"], default: "confirmed" },
+              },
+            ],
+          },
+        },
+        { _id: false }
+      ),
+      default: () => ({
+        status: "ARTIFACTS_PENDING",
+        planRevision: 0,
+        artifactAnalysisRevision: 0,
+        finalizedPlanRevision: 0,
+        taskGenerationRevision: 0,
+        artifactsHash: "",
+        documentReadinessConfirmed: false,
+        readinessConfirmedAt: null,
+        readinessConfirmedBy: null,
+        finalizedAt: null,
+        finalizedBy: null,
+        conflicts: [],
+        scope: { goals: [], deliverables: [], constraints: [] },
+      }),
+    },
 
     // ── Denormalized Counters (for dashboard, performance) ──────────────────
     // Mirrors the team-level taskCount but scoped to this project.
@@ -493,6 +634,31 @@ const ProjectSchema = new mongoose.Schema(
 ProjectSchema.index({ teamId: 1, createdAt: -1 });
 
 // Status filter: "show me all active projects for this team"
-ProjectSchema.index({ teamId: 1, status: 1 });
+// Ensure all embedded requirements, artifacts, and conflicts have non-empty unique identifiers
+ProjectSchema.pre("save", function (next) {
+  if (Array.isArray(this.requirements)) {
+    this.requirements.forEach((r, idx) => {
+      if (!r.reqId || !r.reqId.trim()) {
+        const suffix = r._id ? r._id.toString().slice(-4).toUpperCase() : String(idx + 1).padStart(3, "0");
+        r.reqId = `REQ-${suffix}`;
+      }
+    });
+  }
+  if (Array.isArray(this.artifacts)) {
+    this.artifacts.forEach((a, idx) => {
+      if (!a._id) {
+        a._id = new mongoose.Types.ObjectId();
+      }
+    });
+  }
+  if (this.waterfallPlanLifecycle && Array.isArray(this.waterfallPlanLifecycle.conflicts)) {
+    this.waterfallPlanLifecycle.conflicts.forEach((c, idx) => {
+      if (!c.id || !c.id.trim()) {
+        c.id = `CONF-${String(idx + 1).padStart(2, "0")}`;
+      }
+    });
+  }
+  next();
+});
 
 export default mongoose.model("Project", ProjectSchema);

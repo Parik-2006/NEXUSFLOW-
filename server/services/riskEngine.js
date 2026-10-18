@@ -20,6 +20,7 @@ import Team from "../models/Team.js";
 import Task from "../models/Task.js";
 import Risk from "../models/Risk.js";
 import User from "../models/User.js";
+import SkillVerification from "../models/SkillVerification.js";
 import { resolveProjectAndTeam } from "./teamHealth.js";
 import { logger } from "../utils/logger.js";
 
@@ -36,6 +37,28 @@ function fp(s) {
     h = Math.imul(h, 16777619);
   }
   return (h >>> 0).toString(36);
+}
+
+// Canonical task status helpers
+export function isTaskDone(t) {
+  if (!t) return false;
+  const s = String(t.status || "").toLowerCase().trim();
+  if (s === "done" || s === "completed" || s === "closed") return true;
+  const ss = String(t.scrumStatus || "").toUpperCase().trim();
+  if (ss === "DONE") return true;
+  const ks = String(t.kanbanStatus || "").toUpperCase().trim();
+  if (ks === "DONE") return true;
+  if (t.completedAt && s !== "todo" && s !== "in_progress") return true;
+  return false;
+}
+
+export function isTaskCancelled(t) {
+  if (!t) return false;
+  const s = String(t.status || "").toLowerCase().trim();
+  if (s === "cancelled" || s === "canceled" || s === "archived") return true;
+  const ss = String(t.scrumStatus || "").toUpperCase().trim();
+  if (ss === "CANCELLED" || ss === "CANCELED") return true;
+  return false;
 }
 
 /**
@@ -57,12 +80,15 @@ export async function scanProjectRisks(id) {
   const detected = [];
 
   // ── Helpers ───────────────────────────────────────────────────────────────
-  const isDone = (t) => t.status === "done";
-  const hours  = (t) => Number(t.estimatedHours) || 4;
+  const isDone     = (t) => isTaskDone(t);
+  const isInactive = (t) => isTaskDone(t) || isTaskCancelled(t);
+  const hours      = (t) => Number(t.estimatedHours) || 4;
+
+  const activeTasks = allTasks.filter((t) => !isInactive(t));
+  const activeTaskIds = new Set(activeTasks.map((t) => String(t._id)));
 
   // ── 1. Overdue tasks ───────────────────────────────────────────────────────
-  const overdue = allTasks.filter((t) => {
-    if (isDone(t)) return false;
+  const overdue = activeTasks.filter((t) => {
     const due = t.dueDate || t.deadline;
     if (!due) return false;
     return new Date(due).getTime() < now;
@@ -87,8 +113,7 @@ export async function scanProjectRisks(id) {
   }
 
   // ── 2. Approaching deadline ────────────────────────────────────────────────
-  const approaching = allTasks.filter((t) => {
-    if (isDone(t)) return false;
+  const approaching = activeTasks.filter((t) => {
     const due = t.dueDate || t.deadline;
     if (!due) return false;
     const daysLeft = (new Date(due).getTime() - now) / 86_400_000;
@@ -123,18 +148,31 @@ export async function scanProjectRisks(id) {
   }
 
   // ── 3. Blocked tasks ───────────────────────────────────────────────────────
-  const blocked = allTasks.filter((t) => {
-    if (isDone(t)) return false;
-    const deps = Array.isArray(t.dependencies) ? t.dependencies.length : 0;
-    return deps > 0 || (t.dependencyCount || 0) > 0;
+  const blocked = activeTasks.filter((t) => {
+    const incompleteDeps = (t.dependencies || []).filter((d) => {
+      const depId = (typeof d === "object" ? d._id : d)?.toString();
+      const u = allTasks.find((x) => String(x._id) === depId);
+      return u && !isInactive(u);
+    });
+    const hasUnresolvedDepCount = (!t.dependencies || t.dependencies.length === 0) && (t.dependencyCount || 0) > 0;
+    const isExplicitlyBlocked = t.isBlocked === true ||
+      String(t.scrumStatus || "").toUpperCase() === "BLOCKED" ||
+      String(t.kanbanStatus || "").toUpperCase() === "BLOCKED";
+    return incompleteDeps.length > 0 || hasUnresolvedDepCount || isExplicitlyBlocked;
   });
   for (const t of blocked) {
+    const incompleteDeps = (t.dependencies || []).filter((d) => {
+      const depId = (typeof d === "object" ? d._id : d)?.toString();
+      const u = allTasks.find((x) => String(x._id) === depId);
+      return u && !isInactive(u);
+    });
+    const depCount = incompleteDeps.length || (t.dependencies?.length === 0 ? t.dependencyCount : 0) || 1;
     detected.push({
       title: `Blocked: "${t.title}"`,
       explanation:
         `"${t.title}" cannot move forward right now. ` +
         `If it stays blocked, other tasks depending on it may also be delayed.`,
-      evidence: `${(t.dependencies?.length || t.dependencyCount || 0)} upstream dependency(ies).`,
+      evidence: `${depCount} upstream incomplete dependency(ies).`,
       affectedArea: t.title,
       category: "blocked_tasks",
       severity: "medium",
@@ -144,23 +182,21 @@ export async function scanProjectRisks(id) {
   }
 
   // ── 4. Dependency cascade ──────────────────────────────────────────────────
-  const idSet = new Set(allTasks.map((t) => String(t._id)));
-  const downstreamCount = (id) =>
-    allTasks.filter((t) => (t.dependencies || []).some((d) => String(d) === String(id))).length;
-  const cascade = allTasks.filter((t) => {
-    if (isDone(t)) return false;
+  const downstreamActiveCount = (id) =>
+    activeTasks.filter((t) => (t.dependencies || []).some((d) => String(d?._id || d) === String(id))).length;
+  const cascade = activeTasks.filter((t) => {
     const due = t.dueDate || t.deadline;
     const late = due && new Date(due).getTime() < now;
     const depsBlocked =
       (t.dependencies || []).length > 0 &&
       (t.dependencies || []).some((d) => {
-        const u = allTasks.find((x) => String(x._id) === String(d));
-        return u && !isDone(u);
+        const u = allTasks.find((x) => String(x._id) === String(d?._id || d));
+        return u && !isInactive(u);
       });
-    return (late || depsBlocked) && downstreamCount(t._id) >= 1 && idSet.has(String(t._id));
+    return (late || depsBlocked) && downstreamActiveCount(t._id) >= 1 && activeTaskIds.has(String(t._id));
   });
   for (const t of cascade.slice(0, 5)) {
-    const downstream = downstreamCount(t._id);
+    const downstream = downstreamActiveCount(t._id);
     detected.push({
       title: `Cascade risk: "${t.title}" affects ${downstream} downstream task(s)`,
       explanation:
@@ -182,8 +218,8 @@ export async function scanProjectRisks(id) {
     const score = t.priorityScore || 0;
     return score >= 70; // matches Greedy thresholds
   };
-  const unassignedHigh = allTasks.filter(
-    (t) => !isDone(t) && !t.assignedTo && isHighPri(t)
+  const unassignedHigh = activeTasks.filter(
+    (t) => (!t.assignedTo || String(t.assignedTo).trim() === "") && isHighPri(t)
   );
   for (const t of unassignedHigh.slice(0, 5)) {
     detected.push({
@@ -211,15 +247,14 @@ export async function scanProjectRisks(id) {
       };
     }
   }
-  for (const t of allTasks) {
-    if (isDone(t)) continue;
+  for (const t of activeTasks) {
     const uid = (t.assignedTo?._id || t.assignedTo)?.toString();
     if (uid && memberLoad[uid]) memberLoad[uid].assigned += hours(t);
   }
   for (const [uid, m] of Object.entries(memberLoad)) {
     if (m.assigned > m.capacity * OVERLOAD_RATIO) {
-      const memberTasks = allTasks.filter(
-        (t) => !isDone(t) && ((t.assignedTo?._id || t.assignedTo)?.toString() === uid)
+      const memberTasks = activeTasks.filter(
+        (t) => ((t.assignedTo?._id || t.assignedTo)?.toString() === uid)
       );
       detected.push({
         title: `${m.name} is overloaded (${m.assigned}h vs ${m.capacity}h)`,
@@ -249,16 +284,26 @@ export async function scanProjectRisks(id) {
   }
 
   // ── 7. Skill gap ───────────────────────────────────────────────────────────
-  const requiredSkills = new Set(allTasks.flatMap((t) => t.requiredSkills || []));
-  const memberUserIds = (team.members || []).map((m) => m.userId).filter(Boolean);
-  const memberUsers = await User.find({ _id: { $in: memberUserIds } })
-    .select("skills")
-    .lean();
-  const teamSkills = new Set(
-    memberUsers.flatMap((u) =>
+  // Evaluated strictly against remaining unfinished work
+  const requiredSkills = new Set(activeTasks.flatMap((t) => t.requiredSkills || []));
+  const memberUserIds = (team.members || []).map((m) => m.userId?._id || m.userId).filter(Boolean);
+  const [memberUsers, verifications] = await Promise.all([
+    User.find({ _id: { $in: memberUserIds } }).select("skills").lean(),
+    SkillVerification.find({
+      userId: { $in: memberUserIds },
+      verified: true,
+    }).lean().catch(() => []),
+  ]);
+  const teamSkills = new Set([
+    ...memberUsers.flatMap((u) =>
       (u.skills || []).map((s) => String(s).toLowerCase().trim())
-    )
-  );
+    ),
+    ...verifications.flatMap((v) => [
+      String(v.skill || "").toLowerCase().trim(),
+      String(v.skillName || "").toLowerCase().trim(),
+      String(v.skillId || "").toLowerCase().trim(),
+    ]).filter(Boolean),
+  ]);
   const missing = [...requiredSkills].filter(
     (s) => !teamSkills.has(String(s).toLowerCase().trim())
   );
@@ -278,9 +323,7 @@ export async function scanProjectRisks(id) {
   }
 
   // ── 8. Sprint capacity overload ────────────────────────────────────────────
-  const totalActiveHours = allTasks
-    .filter((t) => !isDone(t))
-    .reduce((s, t) => s + hours(t), 0);
+  const totalActiveHours = activeTasks.reduce((s, t) => s + hours(t), 0);
   const totalCapacity = (team.members || []).reduce(
     (s, m) => s + (m.capacity || 40),
     0
@@ -302,8 +345,7 @@ export async function scanProjectRisks(id) {
   }
 
   // ── 9. Stalled progress ────────────────────────────────────────────────────
-  const stalled = allTasks.filter((t) => {
-    if (isDone(t)) return false;
+  const stalled = activeTasks.filter((t) => {
     if (!t.updatedAt) return false;
     return (now - new Date(t.updatedAt).getTime()) / 86_400_000 > STALE_DAYS;
   });
@@ -323,7 +365,7 @@ export async function scanProjectRisks(id) {
   }
 
   // ── 10. High-priority unfinished work ──────────────────────────────────────
-  const highUnfinished = allTasks.filter((t) => !isDone(t) && isHighPri(t));
+  const highUnfinished = activeTasks.filter((t) => isHighPri(t));
   if (highUnfinished.length > 0) {
     detected.push({
       title: `${highUnfinished.length} high-priority task(s) still open`,
@@ -411,9 +453,10 @@ export async function scanProjectRisks(id) {
               category: d.category,
               severity: d.severity,
               recommendation: d.recommendation,
-              // If previously resolved, re-open automatically — the
-              // condition has resurfaced in a fresh scan.
-              ...(prev.status === "resolved" || prev.status === "acknowledged"
+              // Preserve human-acknowledged and manually resolved statuses
+              ...(prev.status === "acknowledged" || (prev.status === "resolved" && prev.resolvedBy)
+                ? {}
+                : prev.status === "resolved"
                 ? { status: "open", resolvedBy: null, resolvedAt: null }
                 : {}),
             },
@@ -434,21 +477,37 @@ export async function scanProjectRisks(id) {
     }
   }
 
-  // Resolve: any previously-open risk whose fingerprint isn't in the fresh
-  // scan and whose status is still open gets marked resolved automatically.
+  // Resolve: any previously-open or acknowledged risk whose fingerprint isn't in the fresh
+  // scan gets marked resolved automatically.
   for (const r of existing) {
-    if (!detectedFps.has(r.fingerprint) && r.status === "open") {
-      ops.push({
-        updateOne: {
-          filter: { _id: r._id },
-          update: {
-            $set: {
-              status: "resolved",
-              resolvedAt: new Date(),
+    if (!detectedFps.has(r.fingerprint)) {
+      if (r.status === "open") {
+        ops.push({
+          updateOne: {
+            filter: { _id: r._id },
+            update: {
+              $set: {
+                status: "resolved",
+                resolvedAt: new Date(),
+                resolutionReason: "Underlying task condition completed or resolved",
+              },
             },
           },
-        },
-      });
+        });
+      } else if (r.status === "acknowledged") {
+        ops.push({
+          updateOne: {
+            filter: { _id: r._id },
+            update: {
+              $set: {
+                status: "resolved",
+                resolvedAt: new Date(),
+                resolutionReason: "Underlying task condition verified resolved after acknowledgement",
+              },
+            },
+          },
+        });
+      }
     }
   }
 
@@ -469,8 +528,10 @@ export async function scanProjectRisks(id) {
               category: d.category,
               severity: d.severity,
               recommendation: d.recommendation,
-              ...(prev.status === "resolved" || prev.status === "acknowledged"
-                ? { status: "open", resolvedBy: null, resolvedAt: null }
+              ...(prev.status === "acknowledged" || (prev.status === "resolved" && prev.resolvedBy)
+                ? {}
+                : prev.status === "resolved"
+                ? { status: "open", resolvedBy: null, resolvedAt: null, resolutionReason: "" }
                 : {}),
             },
           });
@@ -484,11 +545,30 @@ export async function scanProjectRisks(id) {
         }
       }
       for (const r of existing) {
-        if (!detectedFps.has(r.fingerprint) && r.status === "open") {
-          await Risk.updateOne(
-            { _id: r._id },
-            { $set: { status: "resolved", resolvedAt: new Date() } }
-          );
+        if (!detectedFps.has(r.fingerprint)) {
+          if (r.status === "open") {
+            await Risk.updateOne(
+              { _id: r._id },
+              {
+                $set: {
+                  status: "resolved",
+                  resolvedAt: new Date(),
+                  resolutionReason: "Underlying task condition completed or resolved",
+                },
+              }
+            );
+          } else if (r.status === "acknowledged") {
+            await Risk.updateOne(
+              { _id: r._id },
+              {
+                $set: {
+                  status: "resolved",
+                  resolvedAt: new Date(),
+                  resolutionReason: "Underlying task condition verified resolved after acknowledgement",
+                },
+              }
+            );
+          }
         }
       }
     }

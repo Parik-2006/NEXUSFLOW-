@@ -22,6 +22,7 @@ import Risk from "../models/Risk.js";
 import ArchitectureComponent from "../models/ArchitectureComponent.js";
 import { recordProjectEvent } from "./eventService.js";
 import { mapCategoryOrTitleToWaterfallPhase } from "../algorithms/projectDecomposer.js";
+import { normalizeWaterfallPhase } from "./requirementService.js";
 
 export const WATERFALL_PHASES = [
   "requirements",
@@ -81,10 +82,8 @@ export async function getWaterfallPhaseStates(projectId, teamId = null) {
   }
 
   for (const t of tasks) {
-    const rawPhase = (t.phase || "").toLowerCase().trim();
-    const mapped = tasksByPhase.has(rawPhase)
-      ? rawPhase
-      : mapCategoryOrTitleToWaterfallPhase(t.category, t.title);
+    const rawPhase = (t.phase || t.waterfallPhase || "").toLowerCase().trim();
+    const mapped = normalizeWaterfallPhase(rawPhase || mapCategoryOrTitleToWaterfallPhase(t.category, t.title));
     if (tasksByPhase.has(mapped)) {
       tasksByPhase.get(mapped).push(t);
     } else {
@@ -116,7 +115,7 @@ export async function getWaterfallPhaseStates(projectId, teamId = null) {
         status = gateSatisfied ? "CLEARED" : "ACTIVE";
       } else {
         status = "LOCKED";
-        lockedReason = `${firstUnclearedPhase?.name || "Previous phase"} gate not cleared`;
+        lockedReason = `Complete ${firstUnclearedPhase?.name || "previous"} phase before entering ${def.name}.`;
       }
     }
 
@@ -170,33 +169,94 @@ export async function getWaterfallPhaseStates(projectId, teamId = null) {
 
 /**
  * Enforces server-side sequential Waterfall gate rules:
- * Tasks in a LOCKED phase cannot be transitioned to 'in_progress' or 'done'.
+ * - Rejects starting a task if Waterfall plan is not finalized
+ * - Tasks in a LOCKED phase cannot be transitioned to 'in_progress' or 'done'
+ * - A task cannot be started until all predecessor dependencies are 'done'
+ * - Sequential execution order within the phase must be respected
  */
-export async function assertWaterfallTaskExecutable(task, targetStatus) {
-  if (!task || !targetStatus) return;
-  if (targetStatus !== "in_progress" && targetStatus !== "done") return;
-  if (task.status === "done" && targetStatus === "done") return; // preserve done history
+export async function assertWaterfallTaskExecutable(taskOrId, targetStatusOrProject, maybeStatus) {
+  let task = taskOrId;
+  if (taskOrId && (typeof taskOrId === "string" || mongoose.isValidObjectId(taskOrId)) && !taskOrId.title) {
+    task = await Task.findById(taskOrId).lean();
+  }
+
+  let project = null;
+  let targetStatus = null;
+  if (typeof targetStatusOrProject === "string") {
+    targetStatus = targetStatusOrProject;
+  } else if (targetStatusOrProject?.requestedStatus) {
+    targetStatus = targetStatusOrProject.requestedStatus;
+  } else {
+    project = targetStatusOrProject;
+    targetStatus = maybeStatus;
+  }
+
+  if (!task || !targetStatus) return { executable: true };
+  if (targetStatus !== "in_progress" && targetStatus !== "done") return { executable: true };
+  if (task.status === "done" && targetStatus === "done") return { executable: true }; // preserve done history
 
   let isWaterfall = false;
-  if (task.projectId) {
-    const p = await Project.findById(task.projectId).select("methodology teamId").lean();
-    if (p && p.methodology === "WATERFALL") isWaterfall = true;
+  const pId = task.projectId || task.project;
+  if (project) {
+    if ((project.methodology || "").toUpperCase() === "WATERFALL") isWaterfall = true;
+  } else if (pId) {
+    project = await Project.findById(pId).lean();
+    if (project && (project.methodology || "").toUpperCase() === "WATERFALL") isWaterfall = true;
   }
   if (!isWaterfall && task.teamId) {
     const t = await Team.findById(task.teamId).select("methodology activeProjectId").lean();
-    if (t && (t.methodology === "WATERFALL" || !t.methodology)) isWaterfall = true;
+    if (t && ((t.methodology || "").toUpperCase() === "WATERFALL" || !t.methodology)) {
+      isWaterfall = true;
+      if (!project && t.activeProjectId) {
+        project = await Project.findById(t.activeProjectId).lean();
+      }
+    }
   }
-  if (!isWaterfall) return;
+  if (!isWaterfall) return { executable: true };
 
+  // 1. Check if Waterfall plan is finalized
+  if (project && project.waterfallPlanLifecycle) {
+    const lifecycleStatus = project.waterfallPlanLifecycle.status;
+    const allowedExecution = ["PLAN_FINALIZED", "TASKS_GENERATED", "IN_EXECUTION", "COMPLETED"];
+    if (lifecycleStatus && !allowedExecution.includes(lifecycleStatus)) {
+      const err = new Error("Cannot start task. Waterfall plan is not finalized. Complete artifact analysis and finalize the plan before starting execution.");
+      err.statusCode = 403;
+      err.code = "PLAN_NOT_FINALIZED";
+      err.lifecycleStatus = lifecycleStatus;
+      throw err;
+    }
+  }
+
+  // 2. Check Phase Gate status (LOCKED vs ACTIVE / CLEARED)
   const states = await getWaterfallPhaseStates(task.projectId, task.teamId);
-  const taskPhase = (task.phase || "").toLowerCase().trim() || mapCategoryOrTitleToWaterfallPhase(task.category, task.title);
+  const taskPhase = normalizeWaterfallPhase(task.phase || task.waterfallPhase || mapCategoryOrTitleToWaterfallPhase(task.category, task.title));
   const phaseInfo = states.phases.find((p) => p.phase === taskPhase);
   if (phaseInfo && phaseInfo.status === "LOCKED") {
-    const err = new Error(`Cannot transition task in locked phase "${phaseInfo.name}". ${phaseInfo.lockedReason || "Complete prior phase gates first."}`);
+    const err = new Error(`Cannot start task in locked phase "${phaseInfo.name}". ${phaseInfo.lockedReason || "Complete prior phase gates first."}`);
     err.statusCode = 403;
     err.phase = phaseInfo.phase;
+    err.code = "PHASE_LOCKED";
     throw err;
   }
+
+  // 3. Check Prerequisite Task Dependencies (all dependencies must be 'done')
+  if (Array.isArray(task.dependencies) && task.dependencies.length > 0) {
+    const uncompletedDeps = await Task.find({
+      _id: { $in: task.dependencies },
+      status: { $ne: "done" },
+    }).select("title phase status requirementId").lean();
+
+    if (uncompletedDeps.length > 0) {
+      const depTitles = uncompletedDeps.map((d) => `"${d.title}"`).join(", ");
+      const err = new Error(`Cannot start task "${task.title}". Prerequisite tasks must be completed first: ${depTitles}.`);
+      err.statusCode = 403;
+      err.code = "PREREQUISITES_NOT_MET";
+      err.uncompletedDependencies = uncompletedDeps;
+      throw err;
+    }
+  }
+
+  return { executable: true };
 }
 
 export const evaluatePhaseGate = evaluateProjectPhaseGate;
@@ -273,8 +333,23 @@ export async function evaluateProjectPhaseGate(projectId) {
       });
       if (!hasContext) warnings.push("Project context or problem statement is empty.");
 
+      // 4. Requirements phase tasks completion
+      const reqTasks = tasks.filter((t) => (t.phase || "").toLowerCase() === "requirements" || (t.waterfallPhase || "").toLowerCase() === "requirements");
+      const doneReqTasks = reqTasks.filter((t) => t.status === "done").length;
+      const allReqTasksDone = reqTasks.length === 0 || doneReqTasks === reqTasks.length;
+      checks.push({
+        id: "req_tasks_done",
+        label: "All Requirements phase tasks completed",
+        passed: allReqTasksDone,
+        details: reqTasks.length > 0 ? `${doneReqTasks} of ${reqTasks.length} requirements tasks finished (${Math.round((doneReqTasks / reqTasks.length) * 100)}%)` : "No requirements tasks generated",
+        required: true,
+      });
+      if (!allReqTasksDone) {
+        blockers.push(`All Requirements phase tasks must be completed before advancing (${doneReqTasks}/${reqTasks.length} done).`);
+      }
+
       completion = Math.round(
-        ((hasReqs ? 50 : 0) + (approvalsPass ? 35 : 0) + (hasContext ? 15 : 0))
+        ((hasReqs ? 30 : 0) + (approvalsPass ? 30 : 0) + (hasContext ? 10 : 0) + (allReqTasksDone ? 30 : 0))
       );
       break;
     }

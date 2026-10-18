@@ -46,6 +46,10 @@ export interface MethodologyConfig {
   name: string;
   tagline: string;
   status: MethodologyStatus;
+  badge?: "ACTIVE" | "IN_PROGRESS" | "WIP";
+  allowNewProjects?: boolean;
+  statusMessage?: string;
+  reason?: string;
   primaryTabs: MethodologyTab[];
   workflowStates: { id: string; label: string; order: number; description: string }[];
   planningRules: {
@@ -88,6 +92,9 @@ export const WATERFALL_CONFIG: MethodologyConfig = {
   name: "Waterfall",
   tagline: "Sequential, phase-gated engineering and predictable delivery",
   status: "ACTIVE",
+  badge: "ACTIVE",
+  allowNewProjects: true,
+  statusMessage: "Available for production use.",
   primaryTabs: [
     {
       key: "overview",
@@ -221,12 +228,16 @@ export const WATERFALL_CONFIG: MethodologyConfig = {
   },
 };
 
-// ── 2. SCRUM CONFIGURATION (ACTIVE & FULLY IMPLEMENTED) ───────────────────────
+// ── 2. SCRUM CONFIGURATION (IN PROGRESS FOR V4.1) ──────────────────────────────
 export const SCRUM_CONFIG: MethodologyConfig = {
   id: "SCRUM",
   name: "Scrum",
   tagline: "Time-boxed iterations, product backlog burndown, and team velocity",
-  status: "ACTIVE",
+  status: "WIP",
+  badge: "IN_PROGRESS",
+  allowNewProjects: false,
+  statusMessage: "This methodology is currently in development and is not yet available in production.",
+  reason: "Scrum Agile planning and ceremony workflows are undergoing stabilization.",
   primaryTabs: [
     { key: "overview", label: "Overview", icon: "rocket", description: "Sprint goals, burndown summary, and daily standup" },
     { key: "plan", label: "Plan", icon: "document-text", description: "Product Backlog, user stories, and DAA candidate scoring" },
@@ -285,14 +296,30 @@ export const SCRUM_CONFIG: MethodologyConfig = {
       "Ceremony Facilitation & Blocker Removal",
     ],
   },
+  wipDetails: {
+    targetRelease: "NexusFlow V4.1",
+    headline: "Scrum Agile Environment In Progress",
+    description: "NexusFlow is prioritizing Waterfall in V4.0. Agile Scrum iterations, burndown, and sprint planning are in active development for V4.1.",
+    previewFeatures: [
+      "Sprint Backlog & Knapsack Capacity",
+      "Dynamic Velocity & Burndown Trajectory",
+      "Daily Standup & Impediment Tracking",
+      "Sprint Retrospective Ceremony Integration",
+    ],
+    recommendedMethodology: "WATERFALL",
+  },
 };
 
-// ── 3. KANBAN CONFIGURATION (ACTIVE & FULLY IMPLEMENTED) ───────────────────────
+// ── 3. KANBAN CONFIGURATION (IN PROGRESS FOR V4.1) ─────────────────────────────
 export const KANBAN_CONFIG: MethodologyConfig = {
   id: "KANBAN",
   name: "Kanban",
   tagline: "Continuous flow, explicit WIP limits, and cycle-time optimization",
-  status: "ACTIVE",
+  status: "WIP",
+  badge: "IN_PROGRESS",
+  allowNewProjects: false,
+  statusMessage: "This methodology is currently in development and is not yet available in production.",
+  reason: "Continuous flow CFD analytics and dynamic WIP limits are undergoing stabilization.",
   primaryTabs: [
     { key: "overview", label: "Overview", icon: "water", description: "Lead time, cycle time, and throughput summary" },
     { key: "board", label: "Board", icon: "albums", description: "Swimlanes, WIP-limited columns, and pull queues" },
@@ -341,6 +368,18 @@ export const KANBAN_CONFIG: MethodologyConfig = {
     systemRole: "Continuous Flow Optimization AI",
     focusAreas: ["Bottleneck Detection", "WIP Limit Calibration", "Queue Starvation Prevention"],
   },
+  wipDetails: {
+    targetRelease: "NexusFlow V4.1",
+    headline: "Kanban Continuous-Flow Environment In Progress",
+    description: "NexusFlow is prioritizing Waterfall in V4.0. Continuous flow CFD analytics, replenishment queues, and dynamic WIP limits are in active development for V4.1.",
+    previewFeatures: [
+      "Explicit WIP Limits & Column Capacity",
+      "Cumulative Flow Diagram (CFD) Analytics",
+      "Little's Law Cycle Time Optimization",
+      "Continuous Pull Replenishment Queue",
+    ],
+    recommendedMethodology: "WATERFALL",
+  },
 };
 
 // ── 4. HYBRID CONFIGURATION (WORK IN PROGRESS) ────────────────────────────────
@@ -349,6 +388,10 @@ export const HYBRID_CONFIG: MethodologyConfig = {
   name: "Hybrid",
   tagline: "Phase-gated governance combined with agile sprint execution",
   status: "WIP",
+  badge: "IN_PROGRESS",
+  allowNewProjects: false,
+  statusMessage: "This methodology is currently in development and is not yet available in production.",
+  reason: "Stage-gate macro governance combined with micro-sprint execution is scheduled for V4.2.",
   primaryTabs: [
     { key: "overview", label: "Hybrid Roadmap", icon: "map", description: "Phase milestones mapped over agile iterations" },
     { key: "governance", label: "Stage-Gates", icon: "shield-checkmark", description: "High-level stage approval and client sign-off" },
@@ -416,6 +459,9 @@ export const CLASSIC_CONFIG: MethodologyConfig = {
   name: "NexusFlow Classic",
   tagline: "Original 12-tab NexusFlow V3 project experience with sprint and kanban workflows",
   status: "ACTIVE",
+  badge: "ACTIVE",
+  allowNewProjects: true,
+  statusMessage: "Available for production use.",
   primaryTabs: [
     { key: "overview", label: "Overview", icon: "grid", description: "V3 Project Summary" },
     { key: "advisor", label: "Project AI", icon: "sparkles", description: "AI Project Copilot" },
@@ -508,8 +554,47 @@ export function getMethodologyConfig(methodology?: string | null): MethodologyCo
 }
 
 /**
+ * Normalizes an arbitrary methodology string to its canonical uppercase ID.
+ *
+ * SAFEGUARD B:
+ * - Missing/null/undefined/empty input returns "WATERFALL" as safe backward-compatible default.
+ * - Recognized methodologies and valid aliases return their canonical ID.
+ * - Unknown, non-empty values return null.
+ */
+export function normalizeMethodologyId(input?: string | null): MethodologyType | null {
+  if (input === null || input === undefined) return "WATERFALL";
+  const trimmed = String(input).trim();
+  if (!trimmed) return "WATERFALL";
+
+  const s = trimmed.toUpperCase();
+  if (s === "WATERFALL") return "WATERFALL";
+  if (s === "CLASSIC" || s === "NEXUSFLOW" || s === "V3") return "CLASSIC";
+  if (s === "SCRUM" || s === "AGILE") return "SCRUM";
+  if (s === "KANBAN") return "KANBAN";
+  if (s === "HYBRID") return "HYBRID";
+
+  return null;
+}
+
+export function isValidMethodologyId(input?: string | null): boolean {
+  return normalizeMethodologyId(input) !== null;
+}
+
+/**
  * Checks whether a given methodology is currently active / fully supported.
  */
 export function isMethodologyActive(methodology?: string | null): boolean {
-  return getMethodologyConfig(methodology).status === "ACTIVE";
+  const norm = normalizeMethodologyId(methodology);
+  if (!norm) return false;
+  return getMethodologyConfig(norm).status === "ACTIVE";
+}
+
+/**
+ * Authoritative check whether a given methodology is allowed for creating
+ * new projects under current environment rules.
+ */
+export function isMethodologyAllowedForNewProjects(methodology?: string | null): boolean {
+  const norm = normalizeMethodologyId(methodology);
+  if (!norm) return false;
+  return Boolean(getMethodologyConfig(norm).allowNewProjects);
 }

@@ -1,18 +1,14 @@
 import React, { useState } from "react";
 import { View, Text, StyleSheet, Pressable, ScrollView } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import TeamHealthPanel from "@/components/workspace/TeamHealthPanel";
+import UnifiedProjectHealthPanel from "@/components/workspace/UnifiedProjectHealthPanel";
 import RiskPanel from "@/components/workspace/RiskPanel";
 import GraphPanel from "@/components/workspace/GraphPanel";
-import RetroPanel from "@/components/workspace/RetroPanel";
-import AnalyticsPanel from "@/components/workspace/AnalyticsPanel";
-import ProjectEventTimeline from "@/components/workspace/ProjectEventTimeline";
-import ProjectHealth2Panel from "@/components/workspace/ProjectHealth2Panel";
 import ProjectLearningPanel from "@/components/workspace/ProjectLearningPanel";
 import CapabilityIntelligencePanel from "@/components/workspace/CapabilityIntelligencePanel";
 import { colors, spacing, radius, font } from "@/theme";
 
-type InsightSubTab = "health2" | "learning" | "capability" | "health" | "risks" | "dag" | "retro" | "analytics" | "history";
+type InsightSubTab = "health" | "learning" | "capability" | "risks" | "dag";
 
 interface InsightTabOption {
   key: InsightSubTab;
@@ -22,15 +18,11 @@ interface InsightTabOption {
 }
 
 const SUB_TABS: InsightTabOption[] = [
-  { key: "health2",   label: "Health 2.0",    icon: "shield-half-outline",  color: colors.primary },
-  { key: "learning",  label: "Learning Loop", icon: "school-outline",       color: colors.greedy },
-  { key: "capability",label: "Capability",    icon: "people-outline",       color: colors.branch },
-  { key: "health",    label: "Team Health",   icon: "heart-outline",        color: colors.success },
-  { key: "risks",     label: "Risk Radar",    icon: "shield-checkmark-outline", color: colors.warning },
-  { key: "dag",       label: "Dependency DAG",icon: "git-network-outline",   color: colors.topo },
-  { key: "retro",     label: "Retrospectives",icon: "clipboard-outline",    color: colors.info },
-  { key: "analytics", label: "Analytics",     icon: "stats-chart-outline",  color: colors.merge },
-  { key: "history",   label: "Event History", icon: "time-outline",         color: colors.accent },
+  { key: "health",    label: "Project Health",icon: "shield-checkmark-outline", color: colors.primary },
+  { key: "learning",  label: "Learning Loop", icon: "school-outline",           color: colors.greedy },
+  { key: "capability",label: "Capability",    icon: "people-outline",           color: colors.branch },
+  { key: "risks",     label: "Risk Radar",    icon: "alert-circle-outline",     color: colors.warning },
+  { key: "dag",       label: "Dependency DAG",icon: "git-network-outline",       color: colors.topo },
 ];
 
 export default function WaterfallInsightsPanel({
@@ -86,8 +78,8 @@ export default function WaterfallInsightsPanel({
 
       {/* Content Area */}
       <View style={s.content}>
-        {activeSubTab === "health2" && (
-          <ProjectHealth2Panel projectId={projectId || teamId} />
+        {activeSubTab === "health" && (
+          <UnifiedProjectHealthPanel projectId={projectId || teamId} teamId={teamId} />
         )}
         {activeSubTab === "learning" && (
           <ProjectLearningPanel projectId={projectId || teamId} />
@@ -95,20 +87,10 @@ export default function WaterfallInsightsPanel({
         {activeSubTab === "capability" && (
           <CapabilityIntelligencePanel projectId={projectId || teamId} />
         )}
-        {activeSubTab === "health" && (
-          <TeamHealthPanel teamId={teamId} projectId={projectId} />
-        )}
         {activeSubTab === "risks" && (
           <RiskPanel teamId={teamId} projectId={projectId} />
         )}
         {activeSubTab === "dag" && <GraphPanel teamId={teamId} />}
-        {activeSubTab === "retro" && (
-          <RetroPanel teamId={teamId} projectId={projectId} />
-        )}
-        {activeSubTab === "analytics" && <AnalyticsPanel teamId={teamId} />}
-        {activeSubTab === "history" && (
-          <ProjectEventTimeline projectId={projectId || teamId} />
-        )}
       </View>
     </View>
   );

@@ -27,17 +27,20 @@ import { useTeam } from "@/hooks/useTeam";
 import { useDependencyGraph } from "@/hooks/useDependencyGraph";
 import { colors, spacing, radius, font, WATERFALL_PHASE_META, PRIORITY_META, taskPriorityKey } from "@/theme";
 import { WhyButton, AlgoExplainSheet, type AlgoEntry } from "@/components/AlgoExplain";
+import { useWaterfallPlanLifecycle } from "@/hooks/useWaterfallPlanLifecycle";
 
 interface WaterfallTimelinePanelProps {
   teamId: string;
   projectId?: string;
+  onNavigatePlan?: () => void;
   onSelectTask?: (taskId: string) => void;
 }
 
-export default function WaterfallTimelinePanel({ teamId, projectId, onSelectTask }: WaterfallTimelinePanelProps) {
+export default function WaterfallTimelinePanel({ teamId, projectId, onNavigatePlan, onSelectTask }: WaterfallTimelinePanelProps) {
   const { tasks, rawTasks, loading } = useTeamTasks(teamId);
   const { team, members } = useTeam(teamId);
   const { graph } = useDependencyGraph(teamId);
+  const { lifecycle, isUnlocked, loading: lifecycleLoading, methodology } = useWaterfallPlanLifecycle(teamId, projectId);
 
   const [explain, setExplain] = useState<AlgoEntry[] | null>(null);
   const [selectedPhase, setSelectedPhase] = useState<string>("all");
@@ -61,7 +64,7 @@ export default function WaterfallTimelinePanel({ teamId, projectId, onSelectTask
 
     for (let i = 0; i < phases.length; i++) {
       const pKey = phases[i];
-      const pTasks = rawTasks.filter((t) => (t.phase || "requirements") === pKey);
+      const pTasks = rawTasks.filter((t) => (t.phase || "requirements").toLowerCase().trim() === pKey);
       const doneCount = pTasks.filter((t) => t.status === "done").length;
       const totalCount = pTasks.length;
       const isCleared = totalCount > 0 ? doneCount >= totalCount : true;
@@ -216,6 +219,42 @@ export default function WaterfallTimelinePanel({ teamId, projectId, onSelectTask
   const doneTasks = rawTasks.filter((t) => t.status === "done").length;
   const overallProgress = totalTasks > 0 ? Math.round((doneTasks / totalTasks) * 100) : 0;
 
+  // ── Waterfall Locked State (Before Plan Finalization) ──────────────────────
+  if (methodology === "WATERFALL" && !isUnlocked && !lifecycleLoading) {
+    const status = lifecycle?.status || "ARTIFACTS_PENDING";
+    let statusMsg = "Complete artifact analysis and finalize the Waterfall plan to unlock the execution timeline.";
+    if (status === "ARTIFACTS_PENDING") {
+      statusMsg = "No project documents uploaded yet. Upload SRS or brief documents in the Waterfall Plan tab.";
+    } else if (status === "ANALYSIS_PENDING") {
+      statusMsg = "Artifacts uploaded but not analyzed. Run artifact analysis in the Waterfall Plan tab.";
+    } else if (status === "PLAN_REVIEW_REQUIRED") {
+      statusMsg = "Artifact analysis completed. Review extracted scope cards (Executive Goals, Key Deliverables, Constraints) in the Plan tab.";
+    } else if (status === "AWAITING_FINALIZATION") {
+      statusMsg = "Scope reviewed. Resolve any scope contradictions and confirm document readiness to finalize the plan.";
+    }
+
+    return (
+      <View style={s.lockedContainer}>
+        <View style={s.lockedCard}>
+          <View style={s.lockIconCircle}>
+            <Ionicons name="lock-closed" size={32} color={colors.warning} />
+          </View>
+          <Text style={s.lockedTitle}>Timeline Tab Locked — Plan Not Finalized</Text>
+          <Text style={s.lockedDesc}>{statusMsg}</Text>
+          <View style={s.lockedStatusPill}>
+            <Text style={s.lockedStatusPillText}>LIFECYCLE STATUS: {status.replace(/_/g, " ")}</Text>
+          </View>
+          {onNavigatePlan && (
+            <Pressable style={s.goToPlanBtn} onPress={onNavigatePlan}>
+              <Ionicons name="document-text-outline" size={16} color="#FFF" />
+              <Text style={s.goToPlanBtnText}>Go to Waterfall Plan & Review Scope →</Text>
+            </Pressable>
+          )}
+        </View>
+      </View>
+    );
+  }
+
   return (
     <ScrollView style={s.container} contentContainerStyle={s.contentContainer}>
       {/* Header Banner */}
@@ -287,8 +326,9 @@ export default function WaterfallTimelinePanel({ teamId, projectId, onSelectTask
                 label: t.phase || "Phase",
                 color: colors.primary,
               };
+              const cpmKey = t._id || (t as any).id || `cpm-${idx}`;
               return (
-                <React.Fragment key={t._id}>
+                <React.Fragment key={cpmKey}>
                   <View style={[s.cpmChainItem, t.status === "done" && s.cpmChainItemDone]}>
                     <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
                       {t.requirementId && (
@@ -397,7 +437,7 @@ export default function WaterfallTimelinePanel({ teamId, projectId, onSelectTask
                 </View>
               ) : (
                 <View style={s.laneContent}>
-                  {phaseTasks.map((t) => {
+                  {phaseTasks.map((t, idx) => {
                     const isCritical = cpmAnalysis.criticalTaskIds.has(t._id);
                     const isDone = t.status === "done";
                     const isInProgress = t.status === "in_progress";
@@ -405,10 +445,11 @@ export default function WaterfallTimelinePanel({ teamId, projectId, onSelectTask
                     const assignee = memberMap.get(t.assignedTo || "") || "Unassigned";
                     const pKeyTier = taskPriorityKey(t);
                     const tier = PRIORITY_META[pKeyTier];
+                    const taskKey = t._id || (t as any).id || `gantt-${pKey}-${idx}`;
 
                     return (
                       <Pressable
-                        key={t._id}
+                        key={taskKey}
                         style={[
                           s.ganttTaskRow,
                           isCritical && s.ganttTaskRowCritical,
@@ -829,5 +870,73 @@ const s = StyleSheet.create({
     color: colors.textMuted,
     width: 32,
     textAlign: "right",
+  },
+
+  // Locked Waterfall Tab Surface
+  lockedContainer: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: spacing.xl,
+    backgroundColor: colors.bg,
+  },
+  lockedCard: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.lg,
+    padding: spacing.xl,
+    alignItems: "center",
+    maxWidth: 500,
+    width: "100%",
+  },
+  lockIconCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: colors.warning + "18",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: spacing.md,
+  },
+  lockedTitle: {
+    ...font.h2,
+    color: colors.text,
+    textAlign: "center",
+    marginBottom: spacing.xs,
+  },
+  lockedDesc: {
+    ...font.body,
+    color: colors.textMuted,
+    textAlign: "center",
+    marginBottom: spacing.md,
+    lineHeight: 20,
+  },
+  lockedStatusPill: {
+    backgroundColor: colors.border,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 3,
+    borderRadius: radius.pill,
+    marginBottom: spacing.lg,
+  },
+  lockedStatusPillText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: colors.textFaint,
+    letterSpacing: 0.5,
+  },
+  goToPlanBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: colors.primary,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm + 2,
+    borderRadius: radius.md,
+  },
+  goToPlanBtnText: {
+    color: "#FFF",
+    fontWeight: "700",
+    fontSize: 13,
   },
 });

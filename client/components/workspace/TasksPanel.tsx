@@ -11,7 +11,7 @@
  * Create / Edit / Delete / Duplicate all persist to MongoDB, emit socket updates
  * and trigger algorithm recomputation (Greedy/Topo) on the server.
  */
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useCallback } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTeamTasks, Task, TaskFields } from "@/hooks/useTeamTasks";
@@ -25,6 +25,7 @@ import { searchTasks } from "@/utils/boyerMoore";
 import { SearchBar, Chip, FAB, EmptyState, Badge, Field, Button, Stepper, Skeleton } from "@/components/ui";
 import { ModalSheet, useToast, useConfirm } from "@/components/feedback";
 import { colors, spacing, radius, font, PRIORITY_META, PriorityKey, taskPriorityKey, deadlineMeta, deadlineScore, greedyBreakdown, WATERFALL_PHASE_META } from "@/theme";
+import { useWaterfallPlanLifecycle } from "@/hooks/useWaterfallPlanLifecycle";
 
 type TaskView = "phases" | "all" | "priority" | "deadline" | "progress";
 const VIEWS: { key: TaskView; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
@@ -71,9 +72,20 @@ const reminderParts = (iso?: string | null) => {
   return { date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`, time: `${pad(d.getHours())}:${pad(d.getMinutes())}` };
 };
 
-export default function TasksPanel({ teamId, onGenerateAI }: { teamId: string; onGenerateAI: () => void }) {
+export default function TasksPanel({
+  teamId,
+  projectId,
+  onNavigatePlan,
+  onGenerateAI,
+}: {
+  teamId: string;
+  projectId?: string;
+  onNavigatePlan?: () => void;
+  onGenerateAI: () => void;
+}) {
   const { tasks, rawTasks, loading, setStatus, setTaskPriority, createTask, updateTask, deleteTask, duplicateTask, aiSuggest } = useTeamTasks(teamId);
   const { members } = useTeam(teamId);
+  const { lifecycle, isUnlocked, loading: lifecycleLoading, methodology } = useWaterfallPlanLifecycle(teamId, projectId);
   const toast = useToast();
   const confirm = useConfirm();
 
@@ -127,6 +139,44 @@ export default function TasksPanel({ teamId, onGenerateAI }: { teamId: string; o
     }
     return map;
   }, [rawTasks]);
+
+  // ── Sequential Task & Prerequisite Gate Checker ─────────────────────────────
+  const getTaskLockReason = useCallback((t: Task): string | null => {
+    if (methodology !== "WATERFALL") return null;
+    const taskPhase = (t.phase || "requirements").toLowerCase().trim();
+    const phaseGate = phaseGateMap[taskPhase] || phaseGateMap["requirements"];
+    if (phaseGate?.status === "LOCKED") {
+      return phaseGate.lockedReason || "Phase is locked. Complete prior phase gates first.";
+    }
+    if (t.dependencies && t.dependencies.length > 0) {
+      for (const dep of t.dependencies) {
+        const depId = typeof dep === "object" ? (dep as any)._id : dep;
+        const depTask = rawTasks.find((rt) => rt._id === depId);
+        if (depTask && depTask.status !== "done") {
+          return `Prerequisite task "${depTask.title}" must be completed first.`;
+        }
+      }
+    }
+    return null;
+  }, [methodology, phaseGateMap, rawTasks]);
+
+  const handleMoveTask = useCallback(
+    (taskId: string, targetStatus: Task["status"]) => {
+      const t = rawTasks.find((item) => item._id === taskId);
+      if (!t) return;
+      if (targetStatus === "in_progress" || targetStatus === "done") {
+        const lockReason = getTaskLockReason(t);
+        if (lockReason) {
+          toast(lockReason, "error");
+          return;
+        }
+      }
+      setStatus(taskId, targetStatus, (serverErr) => {
+        toast(serverErr, "error");
+      });
+    },
+    [rawTasks, getTaskLockReason, setStatus, toast]
+  );
 
   // ── Create / edit form ──────────────────────────────────────────────────────
   const openCreate = () => { setEditId(null); setDraft(EMPTY_DRAFT); setShowForm(true); };
@@ -229,19 +279,22 @@ export default function TasksPanel({ teamId, onGenerateAI }: { teamId: string; o
 
   // Common card renderer for the All view.
   const renderCard = (t: Task) => {
-    const isLocked = phaseGateMap[t.phase || "requirements"]?.status === "LOCKED";
+    const lockReason = getTaskLockReason(t);
+    const isLocked = Boolean(lockReason);
+    const stableKey = t._id || (t as any).id || `card-${t.title.replace(/\s+/g, "_")}`;
     return (
       <TaskCard
-        key={t._id}
+        key={stableKey}
         task={t}
         showMeta
         locked={isLocked}
+        lockReason={lockReason}
         assigneeName={memberName(t.assignedTo)}
         assigneeImage={memberImage(t.assignedTo)}
         highlight={searching ? trimmed : undefined}
         onCycle={(next) => {
           if (isLocked && t.status !== "done") {
-            toast(phaseGateMap[t.phase || "requirements"]?.lockedReason || "Phase is locked. Complete prior phase gates first.", "error");
+            toast(lockReason || "Task is locked by sequential waterfall rules.", "error");
             return;
           }
           setStatus(t._id, next);
@@ -256,6 +309,42 @@ export default function TasksPanel({ teamId, onGenerateAI }: { teamId: string; o
 
   if (loading) {
     return <View style={{ padding: spacing.lg, gap: spacing.sm }}>{[1, 2, 3].map((i) => <Skeleton key={i} height={84} />)}</View>;
+  }
+
+  // ── Waterfall Locked State (Before Plan Finalization) ──────────────────────
+  if (methodology === "WATERFALL" && !isUnlocked && !lifecycleLoading) {
+    const status = lifecycle?.status || "ARTIFACTS_PENDING";
+    let statusMsg = "Complete artifact analysis and finalize the Waterfall plan to unlock execution tabs.";
+    if (status === "ARTIFACTS_PENDING") {
+      statusMsg = "No project documents uploaded yet. Upload SRS or brief documents in the Waterfall Plan tab.";
+    } else if (status === "ANALYSIS_PENDING") {
+      statusMsg = "Artifacts uploaded but not analyzed. Run artifact analysis in the Waterfall Plan tab.";
+    } else if (status === "PLAN_REVIEW_REQUIRED") {
+      statusMsg = "Artifact analysis completed. Review extracted scope cards (Executive Goals, Key Deliverables, Constraints) in the Plan tab.";
+    } else if (status === "AWAITING_FINALIZATION") {
+      statusMsg = "Scope reviewed. Resolve any scope contradictions and confirm document readiness to finalize the plan.";
+    }
+
+    return (
+      <View style={s.lockedContainer}>
+        <View style={s.lockedCard}>
+          <View style={s.lockIconCircle}>
+            <Ionicons name="lock-closed" size={32} color={colors.warning} />
+          </View>
+          <Text style={s.lockedTitle}>Tasks Tab Locked — Plan Not Finalized</Text>
+          <Text style={s.lockedDesc}>{statusMsg}</Text>
+          <View style={s.lockedStatusPill}>
+            <Text style={s.lockedStatusPillText}>LIFECYCLE STATUS: {status.replace(/_/g, " ")}</Text>
+          </View>
+          {onNavigatePlan && (
+            <Pressable style={s.goToPlanBtn} onPress={onNavigatePlan}>
+              <Ionicons name="document-text-outline" size={16} color="#FFF" />
+              <Text style={s.goToPlanBtnText}>Go to Waterfall Plan & Review Scope →</Text>
+            </Pressable>
+          )}
+        </View>
+      </View>
+    );
   }
 
   const empty = rawTasks.length === 0;
@@ -373,12 +462,15 @@ export default function TasksPanel({ teamId, onGenerateAI }: { teamId: string; o
                       </Text>
                     ) : (
                       <View style={{ gap: 6, marginTop: 4 }}>
-                        {phaseTasks.map((t) => (
-                          <View key={t._id} style={{ gap: 4 }}>
-                            {renderCard(t)}
-                            <GreedyBar task={t} />
-                          </View>
-                        ))}
+                        {phaseTasks.map((t, tIdx) => {
+                          const stableKey = t._id || (t as any).id || `task-phase-${pKey}-${tIdx}`;
+                          return (
+                            <View key={stableKey} style={{ gap: 4 }}>
+                              {renderCard(t)}
+                              <GreedyBar task={t} />
+                            </View>
+                          );
+                        })}
                       </View>
                     )}
                   </View>
@@ -392,18 +484,21 @@ export default function TasksPanel({ teamId, onGenerateAI }: { teamId: string; o
             if (!group.length) return null;
             const meta = PRIORITY_META[key];
             return (
-              <View key={key} style={{ gap: spacing.sm }}>
+              <View key={`priority-tier-${key}`} style={{ gap: spacing.sm }}>
                 <View style={s.groupHead}>
                   <View style={[s.groupDot, { backgroundColor: meta.color }]} />
                   <Text style={[s.groupTitle, { color: meta.color }]}>{meta.label}</Text>
                   <Badge label={`${group.length}`} color={meta.color} bg={meta.bg} />
                 </View>
-                {group.map((t) => (
-                  <View key={t._id} style={{ gap: 4 }}>
-                    {renderCard(t)}
-                    <GreedyBar task={t} />
-                  </View>
-                ))}
+                {group.map((t, tIdx) => {
+                  const stableKey = t._id || (t as any).id || `task-priority-${key}-${tIdx}`;
+                  return (
+                    <View key={stableKey} style={{ gap: 4 }}>
+                      {renderCard(t)}
+                      <GreedyBar task={t} />
+                    </View>
+                  );
+                })}
               </View>
             );
           })}
@@ -438,12 +533,15 @@ export default function TasksPanel({ teamId, onGenerateAI }: { teamId: string; o
                 {buckets.filter((b) => b.items.length).map((b) => {
                   const ranked = [...b.items].sort((a, c) => score(c) - score(a));
                   return (
-                    <View key={b.key} style={{ gap: spacing.sm }}>
+                    <View key={`deadline-bucket-${b.key}`} style={{ gap: spacing.sm }}>
                       <View style={s.groupHead}>
                         <Text style={s.groupTitle}>{b.title}</Text>
                         <Badge label={`${b.items.length}`} color={colors.primary} bg={colors.primarySoft} />
                       </View>
-                      {ranked.map((t) => <DeadlineCard key={t._id} task={t} onEdit={() => openEdit(t)} />)}
+                      {ranked.map((t, tIdx) => {
+                        const stableKey = t._id || (t as any).id || `task-deadline-${b.key}-${tIdx}`;
+                        return <DeadlineCard key={stableKey} task={t} onEdit={() => openEdit(t)} />;
+                      })}
                     </View>
                   );
                 })}
@@ -452,7 +550,14 @@ export default function TasksPanel({ teamId, onGenerateAI }: { teamId: string; o
           })()}
 
           {/* ── Progress (drag-and-drop Kanban, Feature 2) ── */}
-          {view === "progress" && <KanbanBoard tasks={visible} onMove={(id, status) => setStatus(id, status)} />}
+          {view === "progress" && (
+            <KanbanBoard
+              tasks={visible}
+              onMove={handleMoveTask}
+              getLockReason={getTaskLockReason}
+              methodology={methodology}
+            />
+          )}
         </ScrollView>
       )}
 
@@ -537,8 +642,20 @@ export default function TasksPanel({ teamId, onGenerateAI }: { teamId: string; o
           <View style={{ gap: 8 }}>
             <Text style={s.formLabel}>Assignee</Text>
             <View style={s.chipRow}>
-              <Chip label="Unassigned" active={!draft.assignedTo} onPress={() => setDraft((d) => ({ ...d, assignedTo: null }))} />
-              {members.map((m) => <Chip key={m.userId} label={m.name ?? "Member"} color={colors.branch} active={draft.assignedTo === m.userId} onPress={() => setDraft((d) => ({ ...d, assignedTo: m.userId }))} />)}
+              {members.map((m, mIdx) => {
+                const rawUid = typeof m.userId === "object" ? (m.userId as any)?._id : m.userId;
+                const memberKey = rawUid ? String(rawUid) : (m as any)?._id ? String((m as any)._id) : `member-${mIdx}`;
+                const mUid = rawUid ? String(rawUid) : null;
+                return (
+                  <Chip
+                    key={memberKey}
+                    label={m.name ?? "Member"}
+                    color={colors.branch}
+                    active={Boolean(draft.assignedTo && draft.assignedTo === mUid)}
+                    onPress={() => setDraft((d) => ({ ...d, assignedTo: mUid }))}
+                  />
+                );
+              })}
             </View>
           </View>
         )}
@@ -675,4 +792,72 @@ const s = StyleSheet.create({
   dlChipTxt: { fontSize: 9, fontWeight: "800", letterSpacing: 0.3 },
   dlProgress: { fontSize: 11, fontWeight: "600", color: colors.textMuted },
   dlOverdue: { fontSize: 11, fontWeight: "800", color: colors.danger, marginLeft: "auto" },
+
+  // Locked Waterfall Tab Surface
+  lockedContainer: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: spacing.xl,
+    backgroundColor: colors.bg,
+  },
+  lockedCard: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.lg,
+    padding: spacing.xl,
+    alignItems: "center",
+    maxWidth: 500,
+    width: "100%",
+  },
+  lockIconCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: colors.warning + "18",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: spacing.md,
+  },
+  lockedTitle: {
+    ...font.h2,
+    color: colors.text,
+    textAlign: "center",
+    marginBottom: spacing.xs,
+  },
+  lockedDesc: {
+    ...font.body,
+    color: colors.textMuted,
+    textAlign: "center",
+    marginBottom: spacing.md,
+    lineHeight: 20,
+  },
+  lockedStatusPill: {
+    backgroundColor: colors.border,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 3,
+    borderRadius: radius.pill,
+    marginBottom: spacing.lg,
+  },
+  lockedStatusPillText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: colors.textFaint,
+    letterSpacing: 0.5,
+  },
+  goToPlanBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: colors.primary,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm + 2,
+    borderRadius: radius.md,
+  },
+  goToPlanBtnText: {
+    color: "#FFF",
+    fontWeight: "700",
+    fontSize: 13,
+  },
 });

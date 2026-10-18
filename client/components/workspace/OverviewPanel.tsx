@@ -35,6 +35,7 @@ import { PieChart, type Datum } from "@/components/charts";
 import WaterfallPhaseCanvas, { PhaseNodeData } from "@/components/workspace/WaterfallPhaseCanvas";
 import PhaseGateModal from "@/components/workspace/PhaseGateModal";
 import ChangeImpactModal from "@/components/workspace/ChangeImpactModal";
+import WaterfallGuideBanner from "@/components/WaterfallGuideBanner";
 import { getMethodologyConfig } from "@/utils/methodologyConfig";
 import {
   colors,
@@ -310,6 +311,9 @@ export default function OverviewPanel({ teamId, onNavigate }: { teamId: string; 
         <SkeletonCard />
       ) : (
         <>
+          {/* Guide Entry Point */}
+          <WaterfallGuideBanner onNavigateTab={onNavigate} style={{ marginBottom: spacing.sm }} />
+
           {/* 1. EXECUTIVE PROJECT SUMMARY CARD */}
           <Card style={s.summaryCard}>
             <View style={s.summaryTopRow}>
