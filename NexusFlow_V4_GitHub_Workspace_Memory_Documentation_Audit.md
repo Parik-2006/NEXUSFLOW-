@@ -207,13 +207,13 @@ Attempts to create projects under Scrum, Kanban, or Hybrid in production are rej
 ## 10. Commit SHAs and Push/Promotion Status
 
 ### Development Branch (`version4.0`)
-- **Staged Files:** All modified backend routes, models, services, client components, documentation pages, and test suites.
+- **Implementation Commit SHA:** `9bea0fe`
 - **Commit Message:** `feat(v4): add workspace repository intelligence, memory and documentation redesign`
 - **Pushed to:** `origin/version4.0`
 
 ### Production Branch (`main`)
-- **Promotion Method:** Fast-forward / merge promotion from `version4.0`.
-- **Pushed to:** `origin/main`
+- **Promotion Method:** Fast-forward promotion from `version4.0`.
+- **Target Remote:** `origin/main`
 
 ---
 
