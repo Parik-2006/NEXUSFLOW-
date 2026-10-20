@@ -23,6 +23,8 @@ import Risk from "../models/Risk.js";
 import Decision from "../models/Decision.js";
 import ProjectMemory from "../models/ProjectMemory.js";
 import ProjectEvent from "../models/ProjectEvent.js";
+import ChatMessage from "../models/ChatMessage.js";
+import TemporaryContext from "../models/TemporaryContext.js";
 import { getRepositoryIntelligence } from "./repositoryIndexingService.js";
 import { omniRouteGenerate } from "./omniRoute.js";
 import { logger } from "../utils/logger.js";
@@ -34,28 +36,37 @@ import { logger } from "../utils/logger.js";
 export async function assembleWorkspaceContext({ projectId, query = "", maxChars = 12000 }) {
   if (!mongoose.isValidObjectId(projectId)) return null;
 
-  const project = await Project.findById(projectId)
+  let project = await Project.findById(projectId)
     .select("title description domain status currentPhase methodology teamId requirements artifacts")
     .lean();
+
+  if (!project) {
+    project = await Project.findOne({ teamId: projectId })
+      .select("title description domain status currentPhase methodology teamId requirements artifacts")
+      .lean();
+  }
 
   if (!project) return null;
 
   const normalizedQuery = (query || "").toLowerCase();
   const queryTokens = normalizedQuery.split(/\s+/).filter((w) => w.length > 2);
 
+  const actualProjectId = project._id;
+  const teamId = project.teamId;
+
   // Parallel retrieval of workspace data sources
-  const [tasks, decisions, memories, risks, events, repoIntel] = await Promise.all([
-    Task.find({ projectId })
+  const [tasks, decisions, memories, risks, events, repoIntel, recentChat, tempContexts] = await Promise.all([
+    Task.find({ projectId: actualProjectId })
       .select("title category status urgency impact estimatedHours dependencies businessValue phase assignedTo")
       .sort({ updatedAt: -1 })
       .limit(40)
       .lean(),
-    Decision.find({ projectId })
+    Decision.find({ projectId: actualProjectId })
       .sort({ createdAt: -1 })
       .limit(15)
       .lean(),
     ProjectMemory.find({
-      projectId,
+      projectId: actualProjectId,
       scope: "persistent",
       status: { $in: ["active", "restored"] },
       isStale: { $ne: true },
@@ -63,15 +74,27 @@ export async function assembleWorkspaceContext({ projectId, query = "", maxChars
       .sort({ createdAt: -1 })
       .limit(20)
       .lean(),
-    Risk.find({ projectId })
+    Risk.find({ projectId: actualProjectId })
       .sort({ severity: -1, createdAt: -1 })
       .limit(15)
       .lean(),
-    ProjectEvent.find({ projectId })
+    ProjectEvent.find({ projectId: actualProjectId })
       .sort({ timestamp: -1 })
       .limit(15)
       .lean(),
-    getRepositoryIntelligence(projectId),
+    getRepositoryIntelligence(actualProjectId),
+    teamId
+      ? ChatMessage.find({ teamId, deletedAt: null })
+          .select("senderName message createdAt type")
+          .sort({ createdAt: -1 })
+          .limit(10)
+          .lean()
+      : Promise.resolve([]),
+    TemporaryContext.find({ projectId: actualProjectId, processingState: "ready" })
+      .select("sourceIdentifier fileType extractedText fileSize createdAt")
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .lean(),
   ]);
 
   // Scoring helper
@@ -164,12 +187,38 @@ export async function assembleWorkspaceContext({ projectId, query = "", maxChars
     sections.push(`### 5. Persistent Workspace Memory\n${memList}`);
   }
 
+  // Uploaded Project Artifacts & Specifications
+  const rawArtifacts = project.artifacts || [];
+  const scoredArtifacts = rawArtifacts.map((a) => ({
+    ...a,
+    _score: scoreItem(`${a.name || ""} ${a.summary || ""} ${a.content || ""}`),
+  }));
+  scoredArtifacts.sort((a, b) => b._score - a._score);
+  const relevantArtifacts = scoredArtifacts.slice(0, 5);
+
+  if (relevantArtifacts.length > 0 || (tempContexts && tempContexts.length > 0)) {
+    const artLines = [];
+    if (relevantArtifacts.length > 0) {
+      relevantArtifacts.forEach((a) => {
+        const snippet = a.content ? `\n  Content: ${a.content.slice(0, 300).replace(/\n/g, " ")}` : (a.summary ? `\n  Summary: ${a.summary}` : "");
+        artLines.push(`- **${a.name}** [Type: ${a.artifactType || "document"}, Status: ${a.approvalStatus || "pending"}]${snippet}`);
+      });
+    }
+    if (tempContexts && tempContexts.length > 0) {
+      tempContexts.forEach((tc) => {
+        const snippet = tc.extractedText ? `\n  Snippet: ${tc.extractedText.slice(0, 250).replace(/\n/g, " ")}` : "";
+        artLines.push(`- Attachment **${tc.sourceIdentifier}** (${tc.fileType})${snippet}`);
+      });
+    }
+    sections.push(`### 6. Uploaded Project Artifacts & Specifications\n${artLines.join("\n")}`);
+  }
+
   // Approved Requirements
   if (relevantReqs.length > 0) {
     const reqList = relevantReqs
       .map((r) => `- [${r.reqId || "REQ"}] **${r.title}**: ${r.description || ""} (Status: ${r.status || "approved"})`)
       .join("\n");
-    sections.push(`### 6. Approved Requirements\n${reqList}`);
+    sections.push(`### 7. Approved Requirements\n${reqList}`);
   }
 
   // Tasks & Backlog Execution
@@ -177,7 +226,7 @@ export async function assembleWorkspaceContext({ projectId, query = "", maxChars
     const taskList = relevantTasks
       .map((t) => `- Task \`${t._id.toString().slice(-6)}\`: **${t.title}** [Status: ${t.status}, Category: ${t.category || "General"}, DAA Urgency/Impact: ${t.urgency}/${t.impact}]`)
       .join("\n");
-    sections.push(`### 7. Project Tasks & Execution\n${taskList}`);
+    sections.push(`### 8. Project Tasks & Execution\n${taskList}`);
   }
 
   // Accepted Decisions
@@ -185,7 +234,7 @@ export async function assembleWorkspaceContext({ projectId, query = "", maxChars
     const decList = relevantDecisions
       .map((d) => `- Decision **${d.title}**: ${d.decision || d.selectedOption || ""} (Rationale: ${d.rationale || "None recorded"})`)
       .join("\n");
-    sections.push(`### 8. Accepted Architectural & Design Decisions\n${decList}`);
+    sections.push(`### 9. Accepted Architectural & Design Decisions\n${decList}`);
   }
 
   // Active Risks vs Resolved
@@ -199,7 +248,16 @@ export async function assembleWorkspaceContext({ projectId, query = "", maxChars
       riskLines.push("**Historical Resolved Risks (not currently active):**");
       resolvedRisks.slice(0, 2).forEach((r) => riskLines.push(`- [RESOLVED] ${r.title}`));
     }
-    sections.push(`### 9. Risk Radar\n${riskLines.join("\n")}`);
+    sections.push(`### 10. Risk Radar\n${riskLines.join("\n")}`);
+  }
+
+  // Recent Workspace Team Discussions
+  if (recentChat && recentChat.length > 0) {
+    const chatList = recentChat
+      .slice(0, 8)
+      .map((m) => `- **${m.senderName || "Teammate"}** (${new Date(m.createdAt).toLocaleDateString()}): ${m.message.slice(0, 200).replace(/\n/g, " ")}`)
+      .join("\n");
+    sections.push(`### 11. Recent Workspace Team Discussions\n${chatList}`);
   }
 
   // Assemble and bound context text
@@ -214,7 +272,10 @@ export async function assembleWorkspaceContext({ projectId, query = "", maxChars
     relevantTasks.length +
     memories.length +
     relevantDecisions.length +
-    relevantRepoFiles.length;
+    relevantRepoFiles.length +
+    relevantArtifacts.length +
+    (tempContexts ? tempContexts.length : 0) +
+    (recentChat ? recentChat.length : 0);
 
   const hasSufficientEvidence = totalEvidencePoints > 0 || Boolean(repoIntel?.connected);
 

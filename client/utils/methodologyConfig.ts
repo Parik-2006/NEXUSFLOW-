@@ -171,6 +171,20 @@ export const WATERFALL_CONFIG: MethodologyConfig = {
       icon: "chatbubbles",
       description: "Project collaboration, team channels, and phase gate reviews",
     },
+    {
+      key: "github",
+      label: "GitHub",
+      icon: "logo-github",
+      description: "Connected repository intelligence, code inspection, commit history, and persistent workspace memory",
+      subTabs: [
+        { key: "overview", label: "Repository Overview" },
+        { key: "code", label: "Code Intelligence" },
+        { key: "commits", label: "Commits & Branches" },
+        { key: "prs", label: "Pull Requests & Issues" },
+        { key: "ai", label: "Workspace AI & Memory" },
+        { key: "sync", label: "Sync & Activity" },
+      ],
+    },
   ],
   workflowStates: [
     { id: "requirements", label: "1. Requirements", order: 1, description: "Capture teacher/client requirements & SRS specifications" },

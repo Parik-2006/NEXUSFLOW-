@@ -10,9 +10,9 @@
  *
  * Covers:
  *   - 6 Canonical Waterfall Phases
- *   - 7 Main Workspace Tabs (Overview, Project AI, Team, Tasks, Timeline, Insights, Chat)
+ *   - 8 Main Workspace Tabs (Overview, Project AI, Team, Tasks, Timeline, Insights, Chat, GitHub)
  *   - 5 Insights Sub-tabs (Project Health, Learning Loop, Capability, Risk Radar, Dependency DAG)
- *   - Natural progression sequence: Overview -> Plan -> Tasks -> Timeline -> Team -> Insights
+ *   - Natural progression sequence: Overview -> Plan -> Tasks -> Timeline -> Team -> Insights -> Chat -> GitHub
  * ============================================================================
  */
 
@@ -124,7 +124,7 @@ export const WATERFALL_PHASES: WaterfallPhaseGuide[] = [
   },
 ];
 
-// ── 2. STEP-BY-STEP WATERFALL WORKSPACE TABS GUIDE (EXACTLY 7 PRIMARY TABS) ─
+// ── 2. STEP-BY-STEP WATERFALL WORKSPACE TABS GUIDE (8 PRIMARY TABS) ─────────
 export const WATERFALL_TAB_GUIDES: WaterfallTabGuide[] = [
   {
     tabKey: "overview",
@@ -319,7 +319,34 @@ export const WATERFALL_TAB_GUIDES: WaterfallTabGuide[] = [
       "Post updates when critical prerequisite tasks are completed.",
       "Coordinate phase gate review sign-offs with your team lead or capstone supervisor.",
     ],
-    whatComesNext: "Return to Overview to monitor updated project progress and health scores.",
+    whatComesNext: "Open GitHub to inspect code intelligence, repository commits, and persistent workspace memory.",
+  },
+  {
+    tabKey: "github",
+    tabName: "GitHub",
+    navKey: "github",
+    icon: "logo-github",
+    order: 8,
+    purpose: "Connect an authorized GitHub repository to unlock code architecture intelligence, commit tracking, PR inspection, and persistent codebase memory.",
+    whenToUse: "When connecting your repository, exploring indexed source files, checking commit changes, or querying the repository with Workspace AI.",
+    steps: [
+      "Connect your GitHub repository using OAuth or direct repository owner/name selection.",
+      "Inspect the indexed code architecture, structural modules (Auth, API, Models, Services), and detected tech stack.",
+      "Track commit history, changed files, and open pull requests directly inside your workspace.",
+      "Query Workspace AI & Memory with questions grounded in your repository code, requirements, and decisions.",
+      "Run incremental synchronization to keep project memory aligned with remote code changes.",
+    ],
+    whatComesNext: "Return to Overview to monitor updated project progress and plan readiness.",
+    keyConcepts: [
+      {
+        term: "One Active Repository",
+        explanation: "Each workspace maintains an isolated connection to exactly one active repository, allowing the same user to connect distinct repositories across workspaces.",
+      },
+      {
+        term: "Persistent Code Intelligence",
+        explanation: "Code files, architecture summaries, and commit provenance are persisted in MongoDB to ground Project AI guidance in verifiable facts.",
+      },
+    ],
   },
 ];
 
@@ -332,5 +359,6 @@ export const WATERFALL_WORKFLOW_SEQUENCE = [
   { step: 5, tab: "Timeline", label: "Track Schedule & CPM", desc: "Ensure dates align with phase gates and zero-slack critical path." },
   { step: 6, tab: "Insights", label: "Audit Health & Risks", desc: "Review composite health, resolve risks, and capture validated lessons." },
   { step: 7, tab: "Chat", label: "Collaborate & Deliver", desc: "Coordinate deliverables and verify phase gate handoffs with team." },
+  { step: 8, tab: "GitHub", label: "Repository Intelligence & Memory", desc: "Link codebase, analyze architecture, inspect commits, and synchronize persistent repository memory." },
 ];
 

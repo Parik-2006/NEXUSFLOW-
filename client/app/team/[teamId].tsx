@@ -75,6 +75,7 @@ const WATERFALL_PRIMARY_TABS: { key: TabKey; label: string; icon: keyof typeof I
   { key: "timeline",  label: "Timeline",   icon: "calendar",            color: colors.topo },
   { key: "insights",  label: "Insights",   icon: "analytics",           color: colors.merge },
   { key: "chat",      label: "Chat",       icon: "chatbubbles",         color: colors.info },
+  { key: "github",    label: "GitHub",     icon: "logo-github",         color: colors.primary },
 ];
 
 const SCRUM_PRIMARY_TABS: { key: TabKey; label: string; icon: keyof typeof Ionicons.glyphMap; color: string }[] = [
@@ -394,6 +395,9 @@ export default function Workspace() {
         {teamId && active === "chat" && (
           <ChatPanel teamId={teamId} />
         )}
+        {teamId && active === "github" && (
+          <GitHubPanel teamId={teamId} projectId={team?.activeProjectId || teamId} />
+        )}
 
         {/* Legacy aliases if directly opened */}
         {teamId && active === "sprint" && (
@@ -404,7 +408,6 @@ export default function Workspace() {
         {teamId && active === "analytics" && <AnalyticsPanel teamId={teamId} />}
         {teamId && active === "health" && <TeamHealthPanel teamId={teamId} projectId={team?.activeProjectId || teamId} />}
         {teamId && active === "risks" && <RiskPanel teamId={teamId} projectId={team?.activeProjectId || teamId} />}
-        {teamId && active === "github" && <GitHubPanel teamId={teamId} projectId={team?.activeProjectId || teamId} />}
       </View>
     </View>
   );

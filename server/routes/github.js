@@ -60,7 +60,30 @@ async function verifyProjectAccess(projectId, userId, res) {
     return null;
   }
 
-  const project = await Project.findById(projectId).lean();
+  let project = await Project.findById(projectId).lean();
+  if (!project) {
+    project = await Project.findOne({ teamId: projectId }).sort({ updatedAt: -1 }).lean();
+  }
+  if (!project) {
+    const teamDoc = await Team.findById(projectId).lean();
+    if (teamDoc) {
+      if (teamDoc.activeProjectId) {
+        project = await Project.findById(teamDoc.activeProjectId).lean();
+      }
+      if (!project) {
+        const newProj = await Project.create({
+          title: teamDoc.projectTitle || teamDoc.name || "Workspace Project",
+          description: teamDoc.projectDescription || "",
+          teamId: teamDoc._id,
+          methodology: teamDoc.methodology || "WATERFALL",
+          status: "active",
+        });
+        project = newProj.toObject();
+        await Team.findByIdAndUpdate(teamDoc._id, { activeProjectId: newProj._id });
+      }
+    }
+  }
+
   if (!project) {
     res.status(404).json({ error: "Project not found" });
     return null;
@@ -220,8 +243,10 @@ router.post("/projects/:projectId/github/connect", requireAuth, async (req, res)
   const repoUrl = `https://github.com/${cleanOwner}/${cleanName}`;
 
   try {
+    const targetProjectId = project._id;
+
     // Locate token from current project integration OR from user's other connections
-    let tokenDoc = await GitHubIntegration.findOne({ projectId })
+    let tokenDoc = await GitHubIntegration.findOne({ projectId: targetProjectId })
       .select("+encryptedToken");
 
     if (!tokenDoc?.encryptedToken) {
@@ -232,7 +257,7 @@ router.post("/projects/:projectId/github/connect", requireAuth, async (req, res)
 
     // Upsert the single active integration for this project
     const integration = await GitHubIntegration.findOneAndUpdate(
-      { projectId },
+      { projectId: targetProjectId },
       {
         $set: {
           userId,
@@ -257,7 +282,7 @@ router.post("/projects/:projectId/github/connect", requireAuth, async (req, res)
     );
 
     // Trigger initial indexing asynchronously in background
-    indexRepositoryForProject({ projectId, force: true, userId }).catch((idxErr) => {
+    indexRepositoryForProject({ projectId: targetProjectId, force: true, userId }).catch((idxErr) => {
       logger.warn(`[github/connect] Background indexing warning for ${repoFullName}: ${idxErr.message}`);
     });
 
@@ -288,8 +313,10 @@ router.get("/projects/:projectId/github/status", requireAuth, async (req, res) =
 
   const authResult = await verifyProjectAccess(projectId, userId, res);
   if (!authResult) return;
+  const { project } = authResult;
+  const targetProjectId = project._id;
 
-  const integration = await GitHubIntegration.findOne({ projectId, isActive: true }).lean();
+  const integration = await GitHubIntegration.findOne({ projectId: targetProjectId, isActive: true }).lean();
 
   if (!integration) {
     return res.json({
@@ -327,9 +354,11 @@ router.get("/projects/:projectId/github/summary", requireAuth, async (req, res) 
 
   const authResult = await verifyProjectAccess(projectId, userId, res);
   if (!authResult) return;
+  const { project } = authResult;
+  const targetProjectId = project._id;
 
   try {
-    const integration = await GitHubIntegration.findOne({ projectId, isActive: true })
+    const integration = await GitHubIntegration.findOne({ projectId: targetProjectId, isActive: true })
       .select("+encryptedToken");
 
     if (!integration?.encryptedToken) {
@@ -369,10 +398,12 @@ router.post(["/projects/:projectId/github/sync", "/projects/:projectId/github/re
 
   const authResult = await verifyProjectAccess(projectId, userId, res);
   if (!authResult) return;
+  const { project } = authResult;
+  const targetProjectId = project._id;
 
   try {
     const result = await indexRepositoryForProject({
-      projectId,
+      projectId: targetProjectId,
       force: true,
       userId,
     });
@@ -395,10 +426,12 @@ router.delete("/projects/:projectId/github", requireAuth, async (req, res) => {
 
   const authResult = await verifyProjectAccess(projectId, userId, res);
   if (!authResult) return;
+  const { project } = authResult;
+  const targetProjectId = project._id;
 
   // Soft-disconnect active integration to preserve audit trail
   await GitHubIntegration.findOneAndUpdate(
-    { projectId, isActive: true },
+    { projectId: targetProjectId, isActive: true },
     {
       $set: {
         isActive: false,
@@ -411,7 +444,7 @@ router.delete("/projects/:projectId/github", requireAuth, async (req, res) => {
 
   // Mark repository index as stale/inactive
   await RepositoryIndex.findOneAndUpdate(
-    { projectId, isActive: true },
+    { projectId: targetProjectId, isActive: true },
     {
       $set: {
         isActive: false,
@@ -433,8 +466,10 @@ router.get("/projects/:projectId/github/tree", requireAuth, async (req, res) => 
 
   const authResult = await verifyProjectAccess(projectId, userId, res);
   if (!authResult) return;
+  const { project } = authResult;
+  const targetProjectId = project._id;
 
-  const repoIndex = await RepositoryIndex.findOne({ projectId, isActive: true })
+  const repoIndex = await RepositoryIndex.findOne({ projectId: targetProjectId, isActive: true })
     .select("files techStack architectureSummary keyModuleLocations lastIndexedAt lastIndexedCommitSha");
 
   if (!repoIndex) {
@@ -461,10 +496,12 @@ router.post("/projects/:projectId/context/query", requireAuth, async (req, res) 
 
   const authResult = await verifyProjectAccess(projectId, userId, res);
   if (!authResult) return;
+  const { project } = authResult;
+  const targetProjectId = project._id;
 
   try {
     const result = await answerWorkspaceQuery({
-      projectId,
+      projectId: targetProjectId,
       userId,
       query: query || "",
     });
@@ -487,10 +524,12 @@ router.get("/projects/:projectId/context/snapshot", requireAuth, async (req, res
 
   const authResult = await verifyProjectAccess(projectId, userId, res);
   if (!authResult) return;
+  const { project } = authResult;
+  const targetProjectId = project._id;
 
   try {
     const contextData = await assembleWorkspaceContext({
-      projectId,
+      projectId: targetProjectId,
       query: typeof query === "string" ? query : "",
     });
 

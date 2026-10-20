@@ -245,19 +245,24 @@ async function main() {
     assert.ok(pmContent.includes("Context-Grounded AI Assistance & Project Memory"), "AI Assistance & Memory present");
   });
 
-  runTest("Waterfall 7-tab canonical order is maintained and no obsolete 8-tab claims exist in docs", () => {
+  runTest("Waterfall 8-tab canonical order is maintained with dedicated GitHub tab immediately after Chat", () => {
     const docsCode = fs.readFileSync(path.join(__dirname, "../../client/app/docs.tsx"), "utf8");
     const guideCode = fs.readFileSync(path.join(__dirname, "../../client/constants/waterfallGuideData.ts"), "utf8");
+    const teamCode = fs.readFileSync(path.join(__dirname, "../../client/app/team/[teamId].tsx"), "utf8");
+    const configCode = fs.readFileSync(path.join(__dirname, "../../client/utils/methodologyConfig.ts"), "utf8");
 
-    assert.ok(!docsCode.includes("8-tab workspace"), "docs.tsx does not claim 8-tab workspace");
-    assert.ok(!guideCode.includes("8 Main Workspace Tabs"), "waterfallGuideData does not claim 8 Main Workspace Tabs");
-    assert.ok(guideCode.includes("7 Main Workspace Tabs"), "waterfallGuideData specifies 7 Main Workspace Tabs");
+    assert.ok(teamCode.includes('key: "github"'), "teamId.tsx contains github tab key in WATERFALL_PRIMARY_TABS");
+    assert.ok(teamCode.includes('icon: "logo-github"'), "teamId.tsx uses logo-github icon for GitHub tab");
+    assert.ok(guideCode.includes("8 Main Workspace Tabs"), "waterfallGuideData specifies 8 Main Workspace Tabs");
+    assert.ok(guideCode.includes('tabKey: "github"'), "waterfallGuideData defines github tab guide");
+    assert.ok(configCode.includes('key: "github"'), "methodologyConfig defines github primary tab in WATERFALL_CONFIG");
+    assert.ok(docsCode.includes("8-tab workspace"), "docs.tsx reflects 8-tab workspace");
   });
 
   // ── GROUP 5: GITHUB PANEL CLIENT COMPONENT ─────────────────────────────────
   console.log("\nGroup 5: GitHubPanel Client Component Capabilities");
 
-  runTest("GitHubPanel.tsx supports OAuth, repo selection, sync, disconnect, and tabs", () => {
+  runTest("GitHubPanel.tsx supports OAuth, repo selection, sync, disconnect, and 6 internal sub-tabs", () => {
     const panelCode = fs.readFileSync(path.join(__dirname, "../../client/components/workspace/GitHubPanel.tsx"), "utf8");
 
     assert.ok(panelCode.includes("/api/github/auth/init"), "Initiates GitHub OAuth");
@@ -268,6 +273,10 @@ async function main() {
     assert.ok(panelCode.includes("Code Intelligence"), "Code Intelligence tab exists");
     assert.ok(panelCode.includes("Recent Commits"), "Recent Commits tab exists");
     assert.ok(panelCode.includes("PRs & Issues"), "PRs & Issues tab exists");
+    assert.ok(panelCode.includes("Workspace AI & Memory"), "Workspace AI & Memory tab exists");
+    assert.ok(panelCode.includes("Sync & Activity"), "Sync & Activity tab exists");
+    assert.ok(panelCode.includes("/api/projects/${projectId}/context/query"), "Queries grounded workspace context");
+    assert.ok(panelCode.includes("/api/projects/${projectId}/context/snapshot"), "Fetches workspace context snapshot");
     assert.ok(panelCode.includes("lastSyncCommitSha"), "Displays analyzed commit SHA");
     assert.ok(panelCode.includes("staleBanner"), "Renders stale index state");
     assert.ok(panelCode.includes("errorBanner"), "Renders error and retry state");

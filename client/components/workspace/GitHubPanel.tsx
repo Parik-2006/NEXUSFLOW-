@@ -9,6 +9,7 @@ import {
   Platform,
   Pressable,
   Modal,
+  TextInput,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/context/AuthContext";
@@ -89,6 +90,7 @@ interface ConnectionStatus {
   lastAttemptedSyncAt?: string | null;
   lastSyncError?: string;
   isStale?: boolean;
+  indexingVersion?: string;
 }
 
 export default function GitHubPanel({
@@ -123,8 +125,32 @@ export default function GitHubPanel({
   const [confirmDisconnectModal, setConfirmDisconnectModal] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
 
-  // Active view tab
-  const [activeTab, setActiveTab] = useState<"overview" | "code" | "commits" | "prs">("overview");
+  // Active view tab (6 canonical sub-tabs)
+  const [activeTab, setActiveTab] = useState<"overview" | "code" | "commits" | "prs" | "ai" | "sync">("overview");
+
+  // File search & inspection in Code tab
+  const [codeSearch, setCodeSearch] = useState("");
+  const [selectedFile, setSelectedFile] = useState<{
+    path: string;
+    name: string;
+    language: string;
+    size: number;
+    contentSnippet?: string;
+    relatedTaskIds?: string[];
+  } | null>(null);
+
+  // Workspace AI & Memory tab state
+  const [aiQuery, setAiQuery] = useState("");
+  const [aiResponse, setAiResponse] = useState<{
+    answer: string;
+    provider?: string;
+    tier?: string;
+    hasSufficientEvidence?: boolean;
+    repoFullName?: string;
+  } | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [contextSnapshot, setContextSnapshot] = useState<any | null>(null);
+  const [loadingSnapshot, setLoadingSnapshot] = useState(false);
 
   // Fetch status and summary
   const fetchStatusAndData = useCallback(async () => {
@@ -314,6 +340,57 @@ export default function GitHubPanel({
       toast(e.message || "Disconnection failed", "error");
     } finally {
       setDisconnecting(false);
+    }
+  };
+
+  // Load workspace context snapshot
+  const loadContextSnapshot = useCallback(async () => {
+    if (!projectId) return;
+    setLoadingSnapshot(true);
+    try {
+      const res = await fetch(`${API}/api/projects/${projectId}/context/snapshot`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setContextSnapshot(data.context || null);
+      }
+    } catch {
+      // non-fatal
+    } finally {
+      setLoadingSnapshot(false);
+    }
+  }, [projectId, token]);
+
+  // Query Workspace AI with grounded codebase context
+  const handleAskWorkspaceAI = async (queryText?: string) => {
+    const textToAsk = (queryText || aiQuery).trim();
+    if (!textToAsk || !projectId) {
+      toast("Please enter a question for Workspace AI", "info");
+      return;
+    }
+    setAiLoading(true);
+    setAiResponse(null);
+    try {
+      const res = await fetch(`${API}/api/projects/${projectId}/context/query`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ query: textToAsk }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAiResponse(data);
+      } else {
+        const err = await res.json();
+        toast(err.error || "Workspace query failed", "error");
+      }
+    } catch (e: any) {
+      toast(e.message || "Failed to query workspace intelligence", "error");
+    } finally {
+      setAiLoading(false);
     }
   };
 
@@ -619,6 +696,25 @@ export default function GitHubPanel({
             <Ionicons name="git-pull-request-outline" size={16} color={activeTab === "prs" ? colors.primary : colors.textMuted} />
             <Text style={[s.tabLabel, activeTab === "prs" && s.tabLabelActive]}>PRs & Issues</Text>
           </Pressable>
+
+          <Pressable
+            style={[s.tabItem, activeTab === "ai" && s.tabItemActive]}
+            onPress={() => {
+              setActiveTab("ai");
+              if (!contextSnapshot) loadContextSnapshot();
+            }}
+          >
+            <Ionicons name="sparkles-outline" size={16} color={activeTab === "ai" ? colors.primary : colors.textMuted} />
+            <Text style={[s.tabLabel, activeTab === "ai" && s.tabLabelActive]}>Workspace AI & Memory</Text>
+          </Pressable>
+
+          <Pressable
+            style={[s.tabItem, activeTab === "sync" && s.tabItemActive]}
+            onPress={() => setActiveTab("sync")}
+          >
+            <Ionicons name="refresh-circle-outline" size={16} color={activeTab === "sync" ? colors.primary : colors.textMuted} />
+            <Text style={[s.tabLabel, activeTab === "sync" && s.tabLabelActive]}>Sync & Activity</Text>
+          </Pressable>
         </View>
       </Card>
 
@@ -728,28 +824,58 @@ export default function GitHubPanel({
             </View>
           </Card>
 
-          {/* Indexed File Listings */}
+          {/* Indexed File Listings with Search Filter */}
           <Card style={s.card}>
             <View style={s.sectionHeader}>
               <Ionicons name="document-text-outline" size={18} color={colors.info} />
-              <Text style={font.h3}>Indexed Files ({treeData?.totalFiles ?? 0})</Text>
+              <Text style={font.h3}>
+                Indexed Files ({((treeData?.files || []).filter((f) => !codeSearch.trim() || f.path.toLowerCase().includes(codeSearch.toLowerCase()) || f.name.toLowerCase().includes(codeSearch.toLowerCase()))).length} of {treeData?.totalFiles ?? 0})
+              </Text>
             </View>
+
+            {/* Search Filter */}
+            <View style={s.searchWrap}>
+              <Ionicons name="search-outline" size={16} color={colors.textMuted} />
+              <TextInput
+                style={s.searchInput}
+                placeholder="Search indexed files by path or name..."
+                placeholderTextColor={colors.textFaint}
+                value={codeSearch}
+                onChangeText={setCodeSearch}
+              />
+              {codeSearch ? (
+                <Pressable onPress={() => setCodeSearch("")} hitSlop={8}>
+                  <Ionicons name="close-circle" size={16} color={colors.textMuted} />
+                </Pressable>
+              ) : null}
+            </View>
+
             {(!treeData?.files || treeData.files.length === 0) ? (
               <Text style={[font.small, { color: colors.textMuted }]}>No files indexed yet. Run sync to index files.</Text>
             ) : (
-              treeData.files.slice(0, 20).map((f, i) => (
-                <View key={i} style={s.fileRow}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[font.small, { fontFamily: "monospace", fontWeight: "700" }]}>{f.path}</Text>
-                    {f.contentSnippet ? (
-                      <Text style={[font.caption, { color: colors.textMuted, marginTop: 2 }]} numberOfLines={2}>
-                        {f.contentSnippet.slice(0, 150)}
-                      </Text>
-                    ) : null}
-                  </View>
-                  <Badge label={f.language || "text"} color={colors.textMuted} />
-                </View>
-              ))
+              (treeData.files || [])
+                .filter((f) => !codeSearch.trim() || f.path.toLowerCase().includes(codeSearch.toLowerCase()) || f.name.toLowerCase().includes(codeSearch.toLowerCase()))
+                .slice(0, 30)
+                .map((f, i) => (
+                  <Pressable
+                    key={i}
+                    style={s.fileRow}
+                    onPress={() => setSelectedFile(f)}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={[font.small, { fontFamily: "monospace", fontWeight: "700" }]}>{f.path}</Text>
+                      {f.contentSnippet ? (
+                        <Text style={[font.caption, { color: colors.textMuted, marginTop: 2 }]} numberOfLines={2}>
+                          {f.contentSnippet.slice(0, 150)}
+                        </Text>
+                      ) : null}
+                    </View>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                      <Badge label={f.language || "text"} color={colors.textMuted} />
+                      <Ionicons name="eye-outline" size={16} color={colors.primary} />
+                    </View>
+                  </Pressable>
+                ))
             )}
           </Card>
         </View>
@@ -835,6 +961,270 @@ export default function GitHubPanel({
           </Card>
         </View>
       )}
+
+      {/* ── TAB 5: WORKSPACE AI & MEMORY ────────────────────────────────────── */}
+      {activeTab === "ai" && (
+        <View style={{ gap: spacing.md }}>
+          {/* Ask Copilot Card */}
+          <Card style={s.card}>
+            <View style={s.sectionHeader}>
+              <Ionicons name="sparkles" size={18} color={colors.accentDark} />
+              <Text style={font.h3}>Workspace AI & Codebase Intelligence</Text>
+              <Badge label="OmniRoute · $0 Cost" color={colors.accentDark} />
+            </View>
+            <Text style={[font.small, { color: colors.textMuted, marginBottom: spacing.md }]}>
+              Ask grounded questions about this repository's architecture, dependencies, tasks, approved requirements, decisions, and risks.
+            </Text>
+
+            {/* Quick Prompt Chips */}
+            <View style={s.promptChipsWrap}>
+              {[
+                "Explain this repository's architecture.",
+                "Where is authentication implemented?",
+                "What changed in the latest commit?",
+                "Which files relate to active tasks?",
+                "What are our approved requirements?",
+                "What active risks exist in this workspace?",
+              ].map((promptText, idx) => (
+                <Pressable
+                  key={idx}
+                  style={s.promptChip}
+                  onPress={() => {
+                    setAiQuery(promptText);
+                    handleAskWorkspaceAI(promptText);
+                  }}
+                >
+                  <Ionicons name="chatbubble-ellipses-outline" size={13} color={colors.primary} />
+                  <Text style={s.promptChipTxt}>{promptText}</Text>
+                </Pressable>
+              ))}
+            </View>
+
+            {/* Query Input */}
+            <View style={s.aiInputRow}>
+              <TextInput
+                style={s.aiTextInput}
+                placeholder="Ask about architecture, commits, tasks, requirements..."
+                placeholderTextColor={colors.textFaint}
+                value={aiQuery}
+                onChangeText={setAiQuery}
+                onSubmitEditing={() => handleAskWorkspaceAI()}
+              />
+              <Button
+                title={aiLoading ? "Thinking..." : "Ask Copilot"}
+                icon="send"
+                variant="primary"
+                small
+                onPress={() => handleAskWorkspaceAI()}
+                disabled={aiLoading || !aiQuery.trim()}
+              />
+            </View>
+          </Card>
+
+          {/* AI Response Card */}
+          {aiResponse && (
+            <Card style={s.aiResponseCard}>
+              <View style={s.sectionHeader}>
+                <Ionicons name="checkmark-circle" size={18} color={colors.success} />
+                <Text style={font.h3}>Grounded Copilot Guidance</Text>
+                {aiResponse.provider && (
+                  <Badge label={`${aiResponse.provider} (${aiResponse.tier || "$0 Cost"})`} color={colors.primary} />
+                )}
+                {aiResponse.hasSufficientEvidence && (
+                  <Badge label="Grounded in Evidence" color={colors.success} />
+                )}
+              </View>
+
+              <Text style={[font.body, { color: colors.text, lineHeight: 22 }]}>
+                {aiResponse.answer}
+              </Text>
+            </Card>
+          )}
+
+          {/* Assembled Workspace Context & Memory Snapshot */}
+          <Card style={s.card}>
+            <View style={[s.sectionHeader, { justifyContent: "space-between" }]}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                <Ionicons name="server-outline" size={18} color={colors.primary} />
+                <Text style={font.h3}>MongoDB Workspace Memory Snapshot</Text>
+              </View>
+              <Button
+                title={loadingSnapshot ? "Refreshing..." : "Refresh Context"}
+                icon="refresh"
+                variant="secondary"
+                small
+                onPress={loadContextSnapshot}
+                disabled={loadingSnapshot}
+              />
+            </View>
+            <Text style={[font.caption, { color: colors.textMuted, marginBottom: spacing.sm }]}>
+              Authoritative project records assembled from MongoDB across requirements, tasks, decisions, risks, chat, and repository indexes:
+            </Text>
+
+            {contextSnapshot?.assembledContext ? (
+              <ScrollView style={s.snapshotScroll}>
+                <Text style={[font.caption, { fontFamily: "monospace", color: colors.text, lineHeight: 18 }]}>
+                  {contextSnapshot.assembledContext}
+                </Text>
+              </ScrollView>
+            ) : (
+              <Text style={[font.small, { color: colors.textMuted }]}>
+                {loadingSnapshot ? "Loading workspace context snapshot..." : "Click 'Refresh Context' to inspect assembled workspace records."}
+              </Text>
+            )}
+          </Card>
+        </View>
+      )}
+
+      {/* ── TAB 6: SYNCHRONIZATION & ACTIVITY ───────────────────────────────── */}
+      {activeTab === "sync" && (
+        <View style={{ gap: spacing.md }}>
+          {/* Status Overview Card */}
+          <Card style={s.card}>
+            <View style={s.sectionHeader}>
+              <Ionicons name="refresh-circle" size={18} color={colors.primary} />
+              <Text style={font.h3}>Synchronization Status & Checkpoint</Text>
+              <Badge
+                label={status.status || "connected"}
+                color={hasError ? colors.danger : isSyncing ? colors.accentDark : colors.success}
+              />
+            </View>
+
+            <View style={s.detailsGrid}>
+              <View style={s.detailItem}>
+                <Text style={s.detailLabel}>Repository</Text>
+                <Text style={s.detailValue}>{repo?.fullName || "Not Connected"}</Text>
+              </View>
+              <View style={s.detailItem}>
+                <Text style={s.detailLabel}>Active Branch</Text>
+                <Text style={s.detailValue}>{repo?.selectedBranch || repo?.defaultBranch || "main"}</Text>
+              </View>
+              <View style={s.detailItem}>
+                <Text style={s.detailLabel}>Last Analyzed Commit SHA</Text>
+                <Text style={[s.detailValue, { fontFamily: "monospace" }]}>
+                  {status.lastSyncCommitSha ? status.lastSyncCommitSha.slice(0, 10) : "None"}
+                </Text>
+              </View>
+              <View style={s.detailItem}>
+                <Text style={s.detailLabel}>Last Successful Sync</Text>
+                <Text style={s.detailValue}>
+                  {status.lastSyncAt ? new Date(status.lastSyncAt).toLocaleString() : "Never"}
+                </Text>
+              </View>
+              <View style={s.detailItem}>
+                <Text style={s.detailLabel}>Last Attempted Sync</Text>
+                <Text style={s.detailValue}>
+                  {status.lastAttemptedSyncAt ? new Date(status.lastAttemptedSyncAt).toLocaleString() : "Never"}
+                </Text>
+              </View>
+              <View style={s.detailItem}>
+                <Text style={s.detailLabel}>Total Indexed Files</Text>
+                <Text style={s.detailValue}>{treeData?.totalFiles ?? 0} files</Text>
+              </View>
+              <View style={s.detailItem}>
+                <Text style={s.detailLabel}>Indexing Version</Text>
+                <Text style={s.detailValue}>{status.indexingVersion || "4.0.0"}</Text>
+              </View>
+              <View style={s.detailItem}>
+                <Text style={s.detailLabel}>Index Freshness</Text>
+                <Text style={[s.detailValue, { color: isStale ? colors.warning : colors.success }]}>
+                  {isStale ? "Stale (Sync Recommended)" : "Up to Date"}
+                </Text>
+              </View>
+            </View>
+          </Card>
+
+          {/* Sync Actions Card */}
+          <Card style={s.card}>
+            <View style={s.sectionHeader}>
+              <Ionicons name="settings-outline" size={18} color={colors.primary} />
+              <Text style={font.h3}>Synchronization Actions</Text>
+            </View>
+            <Text style={[font.small, { color: colors.textMuted, marginBottom: spacing.md }]}>
+              Trigger an incremental synchronization to pull remote commits, update file indexes, and ground workspace AI in latest changes.
+            </Text>
+
+            <View style={{ flexDirection: "row", gap: spacing.sm, flexWrap: "wrap" }}>
+              <Button
+                title={isSyncing ? "Synchronizing Codebase..." : "Run Incremental Sync"}
+                icon="refresh"
+                variant="primary"
+                onPress={handleSync}
+                disabled={isSyncing}
+              />
+              <Button
+                title="Disconnect Repository"
+                icon="trash-outline"
+                variant="secondary"
+                onPress={() => setConfirmDisconnectModal(true)}
+              />
+            </View>
+          </Card>
+
+          {/* Data Retention & Isolation Policy Card */}
+          <Card style={s.card}>
+            <View style={s.sectionHeader}>
+              <Ionicons name="shield-checkmark-outline" size={18} color={colors.success} />
+              <Text style={font.h3}>Workspace Isolation & Retention Policy</Text>
+            </View>
+            <View style={{ gap: spacing.xs }}>
+              <Text style={[font.small, { color: colors.text }]}>
+                • <Text style={{ fontWeight: "700" }}>One Active Repo Per Workspace:</Text> This workspace is strictly bound to <Text style={{ fontFamily: "monospace" }}>{repo?.fullName}</Text>. Other workspaces can connect different repositories from your account.
+              </Text>
+              <Text style={[font.small, { color: colors.text }]}>
+                • <Text style={{ fontWeight: "700" }}>Safe Disconnection:</Text> Disconnecting halts future sync operations and marks repository records inactive. Unrelated artifacts, tasks, requirements, and team chat are permanently preserved.
+              </Text>
+              <Text style={[font.small, { color: colors.text }]}>
+                • <Text style={{ fontWeight: "700" }}>Security & Privacy:</Text> GitHub tokens are encrypted with AES-256-CBC, never exposed to the frontend, and secret files (.env, keys) are strictly excluded from indexing.
+              </Text>
+            </View>
+          </Card>
+        </View>
+      )}
+
+      {/* File Inspection Modal */}
+      <Modal
+        visible={Boolean(selectedFile)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSelectedFile(null)}
+      >
+        <View style={s.modalOverlay}>
+          <Card style={s.fileModalContent}>
+            <View style={s.modalHeader}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flex: 1 }}>
+                <Ionicons name="document-text" size={20} color={colors.primary} />
+                <Text style={[font.h3, { flex: 1, fontFamily: "monospace" }]} numberOfLines={1}>
+                  {selectedFile?.path}
+                </Text>
+              </View>
+              <Pressable onPress={() => setSelectedFile(null)} hitSlop={10}>
+                <Ionicons name="close" size={22} color={colors.textMuted} />
+              </Pressable>
+            </View>
+
+            <View style={{ flexDirection: "row", gap: spacing.xs, marginVertical: spacing.sm }}>
+              <Badge label={selectedFile?.language || "file"} color={colors.primary} />
+              <Badge label={`${Math.round((selectedFile?.size || 0) / 1024)} KB`} color={colors.textMuted} />
+            </View>
+
+            <ScrollView style={{ maxHeight: 320, backgroundColor: colors.surfaceAlt, padding: spacing.sm, borderRadius: radius.sm }}>
+              <Text style={[font.caption, { fontFamily: "monospace", color: colors.text, lineHeight: 18 }]}>
+                {selectedFile?.contentSnippet || "No preview snippet available for this file."}
+              </Text>
+            </ScrollView>
+
+            <View style={{ marginTop: spacing.md, alignItems: "flex-end" }}>
+              <Button
+                title="Close"
+                variant="secondary"
+                small
+                onPress={() => setSelectedFile(null)}
+              />
+            </View>
+          </Card>
+        </View>
+      </Modal>
 
       {/* Disconnect Confirmation Modal */}
       <Modal
@@ -1060,5 +1450,107 @@ const s = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
+  },
+  searchWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    backgroundColor: colors.surfaceAlt,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  searchInput: {
+    flex: 1,
+    paddingVertical: Platform.OS === "ios" ? 10 : 8,
+    fontSize: 13,
+    color: colors.text,
+  },
+  promptChipsWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.xs,
+    marginBottom: spacing.md,
+  },
+  promptChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingVertical: 5,
+    paddingHorizontal: 9,
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  promptChipTxt: {
+    fontSize: 11.5,
+    color: colors.primary,
+    fontWeight: "600",
+  },
+  aiInputRow: {
+    flexDirection: "row",
+    gap: spacing.xs,
+    alignItems: "center",
+  },
+  aiTextInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: Platform.OS === "ios" ? 10 : 8,
+    fontSize: 13,
+    backgroundColor: colors.surfaceAlt,
+    color: colors.text,
+  },
+  aiResponseCard: {
+    padding: spacing.lg,
+    backgroundColor: colors.surface,
+    borderLeftWidth: 4,
+    borderLeftColor: colors.primary,
+    gap: spacing.sm,
+  },
+  snapshotScroll: {
+    maxHeight: 280,
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: radius.sm,
+    padding: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  detailsGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.md,
+    marginTop: spacing.xs,
+  },
+  detailItem: {
+    flex: 1,
+    minWidth: 200,
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: radius.sm,
+    padding: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  detailLabel: {
+    fontSize: 11,
+    color: colors.textMuted,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    marginBottom: 2,
+  },
+  detailValue: {
+    fontSize: 13,
+    color: colors.text,
+    fontWeight: "600",
+  },
+  fileModalContent: {
+    width: "100%",
+    maxWidth: 680,
+    padding: spacing.lg,
   },
 });

@@ -500,7 +500,7 @@ function MethodologiesSection({ initialGuide }: { initialGuide?: string }) {
               </View>
             </View>
             <Text style={s.paragraph}>
-              Waterfall in NexusFlow V4 delivers a modern, disciplined engineering process. Work progresses cleanly through 6 sequential phases, governed by a 7-tab workspace with specialized algorithmic insights.
+              Waterfall in NexusFlow V4 delivers a modern, disciplined engineering process. Work progresses cleanly through 6 sequential phases, governed by an 8-tab workspace with specialized algorithmic insights and connected GitHub repository intelligence.
             </Text>
           </Card>
 
@@ -590,7 +590,7 @@ function MethodologiesSection({ initialGuide }: { initialGuide?: string }) {
           <Card style={{ gap: spacing.md }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
               <Ionicons name="layers-outline" size={20} color={colors.primary} />
-              <Text style={font.h3}>Interactive Workspace Tabs Guide (7 Tabs)</Text>
+              <Text style={font.h3}>Interactive Workspace Tabs Guide (8 Tabs)</Text>
             </View>
             <Text style={s.subText}>
               Select any workspace tab below to see its exact purpose, when to use it, step-by-step actions, and downstream workflow:
