@@ -510,20 +510,33 @@ export const CLASSIC_CONFIG: MethodologyConfig = {
   },
 };
 
+// ── 6. NEXUSFLOW CONFIGURATION (INTELLIGENT ALGORITHMIC ORCHESTRATION) ────────
+export const NEXUSFLOW_CONFIG: MethodologyConfig = {
+  ...CLASSIC_CONFIG,
+  id: "NEXUSFLOW",
+  name: "NexusFlow",
+  tagline: "Intelligent algorithmic orchestration with DAA scheduling and persistent project memory",
+  status: "ACTIVE",
+  badge: "ACTIVE",
+  allowNewProjects: true,
+  statusMessage: "Available for production use.",
+};
+
 // ── REGISTRY & SELECTOR HELPERS ───────────────────────────────────────────────
 
 export const METHODOLOGIES: Record<MethodologyType, MethodologyConfig> = {
   WATERFALL: WATERFALL_CONFIG,
+  CLASSIC:   CLASSIC_CONFIG,
+  NEXUSFLOW: NEXUSFLOW_CONFIG,
   SCRUM:     SCRUM_CONFIG,
   KANBAN:    KANBAN_CONFIG,
   HYBRID:    HYBRID_CONFIG,
-  CLASSIC:   CLASSIC_CONFIG,
-  NEXUSFLOW: CLASSIC_CONFIG,
 };
 
 export const ALL_METHODOLOGIES: MethodologyConfig[] = [
   WATERFALL_CONFIG,
   CLASSIC_CONFIG,
+  NEXUSFLOW_CONFIG,
   SCRUM_CONFIG,
   KANBAN_CONFIG,
   HYBRID_CONFIG,

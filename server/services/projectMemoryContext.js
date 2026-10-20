@@ -35,6 +35,7 @@ import ProjectMemory from "../models/ProjectMemory.js";
 import Decision from "../models/Decision.js";
 import DecisionFeedback from "../models/DecisionFeedback.js";
 import ProjectEvent from "../models/ProjectEvent.js";
+import { getRepositoryIntelligence } from "./repositoryIndexingService.js";
 import { buildProjectBrainContext } from "./projectBrain.js";
 
 /**
@@ -64,7 +65,7 @@ export async function getProjectContext(projectId) {
   ]);
 
   // Fetch related data from existing infrastructure
-  const [decisions, requirements, artifacts, phaseHistory, events, copilotMemory] =
+  const [decisions, requirements, artifacts, phaseHistory, events, copilotMemory, repositoryIntelligence] =
     await Promise.all([
       Decision.find({ projectId })
         .sort({ createdAt: -1 })
@@ -90,6 +91,7 @@ export async function getProjectContext(projectId) {
         .select("copilotMemory")
         .lean()
         .then((p) => p?.copilotMemory || []),
+      getRepositoryIntelligence(projectId).catch(() => null),
     ]);
 
   return {
@@ -113,6 +115,7 @@ export async function getProjectContext(projectId) {
     phaseHistory,
     events,
     copilotMemory,
+    repositoryIntelligence,
     _generatedAt: new Date().toISOString(),
   };
 }
@@ -272,6 +275,14 @@ export async function buildMemoryContextForPrompt(projectId) {
     lines.push("\n### Key Decisions");
     for (const d of context.decisions) {
       lines.push(`- [${d.status || "accepted"}] ${d.title}: ${d.decision || d.selectedOption || ""}`);
+    }
+  }
+
+  const repoIntel = await getRepositoryIntelligence(projectId).catch(() => null);
+  if (repoIntel && repoIntel.connected) {
+    lines.push(`\n### Connected GitHub Repository: ${repoIntel.repoFullName}`);
+    if (repoIntel.architectureSummary) {
+      lines.push(repoIntel.architectureSummary);
     }
   }
 

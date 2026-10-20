@@ -37,7 +37,7 @@ import {
 } from "../services/projectMemoryContext.js";
 import { MEMORY_CATEGORIES, MEMORY_SCOPE, MEMORY_STATUS } from "../models/ProjectMemory.js";
 
-const MONGO_URI = process.env.MONGO_URI || "mongodb://localhost:27017/nexusflow";
+const MONGO_URI = process.env.MONGO_URI || process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/nexusflow";
 
 let passed = 0;
 let failed = 0;

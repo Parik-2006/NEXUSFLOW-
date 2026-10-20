@@ -10,7 +10,7 @@
  *
  * Covers:
  *   - 6 Canonical Waterfall Phases
- *   - 8 Main Workspace Tabs (Overview, Plan, Tasks, Timeline, Team, Insights, Project AI, Chat)
+ *   - 7 Main Workspace Tabs (Overview, Project AI, Team, Tasks, Timeline, Insights, Chat)
  *   - 5 Insights Sub-tabs (Project Health, Learning Loop, Capability, Risk Radar, Dependency DAG)
  *   - Natural progression sequence: Overview -> Plan -> Tasks -> Timeline -> Team -> Insights
  * ============================================================================

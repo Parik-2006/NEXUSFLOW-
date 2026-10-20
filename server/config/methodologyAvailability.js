@@ -22,6 +22,7 @@
 export const METHODOLOGY_IDS = {
   WATERFALL: "WATERFALL",
   CLASSIC: "CLASSIC",
+  NEXUSFLOW: "NEXUSFLOW",
   SCRUM: "SCRUM",
   KANBAN: "KANBAN",
   HYBRID: "HYBRID",
@@ -70,6 +71,17 @@ export function getMethodologyRegistry() {
       tagline: "Original 12-tab comprehensive engineering workspace",
       statusMessage: "Available for production use.",
       reason: "Production-ready original multi-tab workspace with sprint and kanban capabilities.",
+      phases: ["To Do", "In Progress", "Blocked", "Done"],
+    },
+    NEXUSFLOW: {
+      id: "NEXUSFLOW",
+      name: "NexusFlow",
+      status: "AVAILABLE",
+      badge: "ACTIVE",
+      allowNewProjects: true,
+      tagline: "Intelligent algorithmic orchestration with DAA scheduling and persistent project memory",
+      statusMessage: "Available for production use.",
+      reason: "Production-ready intelligent algorithmic orchestration workspace.",
       phases: ["To Do", "In Progress", "Blocked", "Done"],
     },
     SCRUM: {
@@ -163,8 +175,10 @@ export function isMethodologyAllowedForNewProjects(methodology) {
  * Returns availability metadata for a specific methodology.
  */
 export function getMethodologyAvailability(methodology) {
-  const norm = normalizeMethodologyId(methodology);
+  const trimmed = String(methodology || "").trim().toUpperCase();
   const registry = getMethodologyRegistry();
+  if (trimmed === "NEXUSFLOW") return registry.NEXUSFLOW;
+  const norm = normalizeMethodologyId(methodology);
   return (norm && registry[norm]) ? registry[norm] : null;
 }
 

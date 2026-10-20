@@ -43,10 +43,10 @@ interface DocSection {
 
 const SECTIONS: DocSection[] = [
   { key: "getting-started", title: "Getting Started", subtitle: "Core concepts, signup, login & workspace setup", icon: "rocket-outline", badge: "Start Here" },
-  { key: "methodologies", title: "Methodologies", subtitle: "Waterfall, Classic, Scrum, Kanban & Hybrid guide", icon: "git-branch-outline", badge: "Guide & Phases" },
-  { key: "project-management", title: "Project Management", subtitle: "Teams, projects, backlogs, sprints & roles", icon: "grid-outline" },
+  { key: "project-management", title: "Project Management", subtitle: "Teams, workspaces, hierarchy, lifecycles & collaboration", icon: "grid-outline" },
+  { key: "methodologies", title: "Methodologies", subtitle: "Waterfall, Classic, NexusFlow, Scrum, Kanban & Hybrid guide", icon: "git-branch-outline", badge: "Guide & Phases" },
+  { key: "daa", title: "DAA Algorithms", subtitle: "Boyer-Moore, Greedy, 0/1 Knapsack, Merge Sort, Topo Sort, B&B", icon: "school-outline", badge: "v1.0" },
   { key: "project-ai", title: "Project AI Hub", subtitle: "Briefs, AI guidance, Copilot, research, APIs & tools", icon: "sparkles-outline", badge: "AI 2.0" },
-  { key: "daa", title: "DAA Algorithms", subtitle: "Boyer-Moore, Greedy, 0/1 Knapsack, Merge Sort, Topo Sort, B&B", icon: "school-outline", badge: "Core Algorithms" },
 ];
 
 export default function Documentation() {
@@ -55,7 +55,7 @@ export default function Documentation() {
   const params = useLocalSearchParams<{ section?: string; tab?: string; guide?: string }>();
   const initialSection = (params.section || params.tab) as SectionKey;
   const [activeSection, setActiveSection] = useState<SectionKey>(
-    initialSection && ["getting-started", "methodologies", "project-management", "project-ai", "daa"].includes(initialSection)
+    initialSection && ["getting-started", "project-management", "methodologies", "daa", "project-ai"].includes(initialSection)
       ? initialSection
       : "getting-started"
   );
@@ -215,21 +215,6 @@ interface MethodologyDocDetail {
 
 const METHODOLOGY_DOCS: MethodologyDocDetail[] = [
   {
-    id: "WATERFALL",
-    name: "Waterfall (Phased Engineering & Formal Gates)",
-    tagline: "Sequential, milestone-driven development with formal phase gate reviews and requirements approval.",
-    badge: "ACTIVE",
-    badgeLabel: "Available (Production)",
-    accentColor: colors.primary,
-    icon: "water-outline",
-    whatIsIt: "Waterfall is a disciplined, linear-sequential engineering methodology where project execution flows downstream through structured, chronological phases: Requirements, System Design, Implementation, Testing, Deployment, and Review. Each phase requires clear deliverables and formal stakeholder approval before the team advances to the next stage.",
-    whenToUse: "Use Waterfall for engineering capstones, hardware or embedded systems, client deliverables with fixed specifications, regulated environments, or projects where architecture, API contracts, and requirements must be locked before heavy coding begins.",
-    howItWorks: "In NexusFlow, Waterfall projects feature an 8-tab workspace (Overview, Plan, Tasks, Timeline, Team, Insights, Project AI, Chat). Planning begins in the Plan tab, where uploaded briefs and SRS requirements must reach 100% Plan Readiness and stakeholder sign-off. Clicking 'Convert All to Tasks' generates prioritized tasks directly traceable to approved requirements, enforcing phase boundaries and critical path scheduling.",
-    howItDiffers: "Unlike Scrum or Kanban where scope evolves continuously across sprints, Waterfall locks specifications early to eliminate scope creep. Tasks carry permanent requirement traceability links (REQ-01, REQ-02) and strict dependency DAG boundaries, preventing premature coding before architectural sign-off.",
-    availability: "Available for production use. Fully supported with deterministic Plan readiness checks, bulk requirement-to-task conversion, 3D phase cascades, unified health grading, and CPM timeline scheduling.",
-    nextSteps: "Switch to the 'Waterfall Step-by-Step Guide' tab above to learn the complete 8-tab workflow, or create a new team workspace and select Waterfall as your project template.",
-  },
-  {
     id: "CLASSIC",
     name: "Classic (Algorithmic Backlog & Hybrid DAA)",
     tagline: "Dynamic greedy task scoring, 0/1 knapsack sprint packing, and topological dependency ordering.",
@@ -245,33 +230,63 @@ const METHODOLOGY_DOCS: MethodologyDocDetail[] = [
     nextSteps: "Create a new project workspace and select the Classic methodology to take advantage of automated DAA sprint optimization.",
   },
   {
+    id: "NEXUSFLOW",
+    name: "NexusFlow (Intelligent Algorithmic Orchestration)",
+    tagline: "Comprehensive engineering workspace blending DAA mathematical optimization with Project AI intelligence.",
+    badge: "ACTIVE",
+    badgeLabel: "Available (Production)",
+    accentColor: colors.primary,
+    icon: "git-network-outline",
+    whatIsIt: "NexusFlow is the core intelligent orchestration methodology. It unifies project management, Design and Analysis of Algorithms (DAA), and multi-tiered Project AI to automate backlog decomposition, sprint planning, member workload balancing, and repository intelligence.",
+    whenToUse: "Use NexusFlow for engineering teams, university capstones, hackathons, and collaborative software projects that require high visibility, algorithmic fairness, and context-aware AI guidance without rigid phase-gate locks.",
+    howItWorks: "Combines dynamic greedy task scoring, Kahn's topological dependency ordering, 0/1 knapsack sprint optimization, and branch-and-bound member assignments with persistent workspace memory and GitHub repository intelligence.",
+    howItDiffers: "Unlike traditional static project trackers, NexusFlow's algorithmic engine continuously verifies dependency cycles, computes team health across 8 dimensions, scans for delivery risks, and grounds AI copilot answers in authoritative project data.",
+    availability: "Available for production use. Fully supported with algorithmic task scheduling, team health analytics, GitHub repository intelligence, and persistent project memory.",
+    nextSteps: "Create a new project workspace and choose NexusFlow to unlock automated algorithmic orchestration and repository intelligence.",
+  },
+  {
+    id: "WATERFALL",
+    name: "Waterfall (Phased Engineering & Formal Gates)",
+    tagline: "Sequential, milestone-driven development with formal phase gate reviews and requirements approval.",
+    badge: "ACTIVE",
+    badgeLabel: "Available (Production)",
+    accentColor: colors.primary,
+    icon: "water-outline",
+    whatIsIt: "Waterfall is a disciplined, linear-sequential engineering methodology where project execution flows downstream through structured, chronological phases: 1. Requirements, 2. System Design, 3. Implementation, 4. Verification/Testing, 5. Deployment, and 6. Maintenance & Review. Each phase requires clear deliverables and formal stakeholder approval before the team advances to the next stage.",
+    whenToUse: "Use Waterfall for engineering capstones, hardware or embedded systems, client deliverables with fixed specifications, regulated environments, or projects where architecture, API contracts, and requirements must be locked before heavy coding begins.",
+    howItWorks: "In NexusFlow, Waterfall projects feature an integrated 7-tab workspace in exact sequence: 1. Overview (with embedded Project Setup & Plan), 2. Project AI, 3. Team, 4. Tasks, 5. Timeline, 6. Insights, and 7. Chat. Planning begins in Overview under Project Setup & Plan, where uploaded briefs and SRS requirements must reach 100% Plan Readiness and stakeholder sign-off. Clicking 'Convert All to Tasks' generates prioritized tasks directly traceable to approved requirements, enforcing phase boundaries and critical path scheduling.",
+    howItDiffers: "Unlike Scrum or Kanban where scope evolves continuously across sprints, Waterfall locks specifications early to eliminate scope creep. Tasks carry permanent requirement traceability links (REQ-01, REQ-02) and strict dependency DAG boundaries, preventing premature coding before architectural sign-off.",
+    availability: "Available for production use. Fully supported with deterministic Plan readiness checks, bulk requirement-to-task conversion, 3D phase cascades, unified health grading, and CPM timeline scheduling.",
+    nextSteps: "Switch to the 'Waterfall Step-by-Step Guide' tab above to learn the complete 7-tab workflow, or create a new team workspace and select Waterfall as your project template.",
+  },
+  {
     id: "SCRUM",
     name: "Scrum (Sprint-Driven Agile Delivery)",
     tagline: "Time-boxed iterative delivery with sprint backlogs, velocity tracking, and agile retrospectives.",
     badge: "IN_PROGRESS",
-    badgeLabel: "In Progress (In Development)",
+    badgeLabel: "In Progress",
     accentColor: colors.branch,
     icon: "refresh-circle-outline",
     whatIsIt: "Scrum is an agile framework that structures complex product development into fixed-duration iterations (typically 1 to 4 weeks) known as Sprints. Each sprint delivers a potentially shippable increment of product functionality.",
     whenToUse: "Scrum is optimal for projects with rapidly changing requirements, dynamic user feedback loops, and teams that operate on fixed sprint cadences.",
     howItWorks: "Teams maintain a prioritized Product Backlog, commit to a subset of stories during Sprint Planning, hold daily standups, review deliverables in Sprint Reviews, and inspect process improvements in Sprint Retrospectives.",
     howItDiffers: "Unlike Waterfall's milestone-based phase gates, Scrum delivers functional software iteratively every sprint. Unlike Kanban, Scrum strictly time-boxes work into synchronized iterations.",
-    availability: "In Progress / In Development. To protect production stability and prevent incomplete agile states, new Scrum project creation is temporarily restricted in production environments. Engine models and sprint services remain fully preserved in codebase.",
-    nextSteps: "For active projects, select Waterfall or Classic. If you have existing Scrum projects, their data is preserved and accessible. Development teams can enable experimental access via ENABLE_EXPERIMENTAL_METHODOLOGIES='true'.",
+    availability: "In Progress. This methodology is currently under active development and is unavailable for unsupported new production workflows. Underlying agile models, sprint services, and velocity tracking engines remain preserved in the codebase.",
+    nextSteps: "For active projects, select Classic, NexusFlow, or Waterfall. If you have existing Scrum projects, their data is preserved and accessible. Development teams can enable experimental access via ENABLE_EXPERIMENTAL_METHODOLOGIES='true'.",
   },
   {
     id: "KANBAN",
     name: "Kanban (Continuous Flow & WIP Limits)",
     tagline: "Visual workflow management with strict Work-In-Progress limits and cycle-time optimization.",
     badge: "IN_PROGRESS",
-    badgeLabel: "In Progress (In Development)",
+    badgeLabel: "In Progress",
     accentColor: colors.accent,
     icon: "swap-horizontal-outline",
     whatIsIt: "Kanban is a lean workflow management method designed to visualize work, limit Work-In-Progress (WIP), and optimize flow efficiency from start to finish.",
     whenToUse: "Ideal for continuous operations, maintenance teams, DevOps pipelines, customer support escalations, and teams whose work arrives unpredictably.",
     howItWorks: "Tasks flow horizontally across columns on a Kanban board (Backlog → Ready → Doing → Review → Done). Columns enforce explicit WIP limits to prevent multitasking and identify delivery bottlenecks.",
     howItDiffers: "Kanban features neither fixed-duration sprints nor rigid sequential phase gates. Tasks are pulled on-demand whenever downstream capacity becomes available.",
-    availability: "In Progress / In Development. New project creation is restricted in production releases while the full interactive column board is being finalized. Underlying data structures remain intact.",
+    availability: "In Progress. This methodology is currently under active development and is unavailable for unsupported new production workflows. Continuous flow algorithms, CFD analytics, and WIP limit models remain preserved in the codebase.",
     nextSteps: "For board-style task tracking in active projects, use Waterfall's Phase Kanban view or Classic task boards.",
   },
   {
@@ -279,14 +294,14 @@ const METHODOLOGY_DOCS: MethodologyDocDetail[] = [
     name: "Hybrid (Waterfall Planning + Agile Sprints)",
     tagline: "Combines upfront architectural rigor and phase gates with iterative, sprint-based coding.",
     badge: "IN_PROGRESS",
-    badgeLabel: "In Progress (In Development)",
+    badgeLabel: "In Progress",
     accentColor: colors.greedy,
     icon: "git-network-outline",
     whatIsIt: "Hybrid blends the structured planning and governance of Waterfall with the flexible execution velocity of Agile/Scrum. Requirements and architecture are locked early, while implementation proceeds in iterative sprints.",
     whenToUse: "Ideal for enterprise software, hardware-software co-design, capstone projects with fixed academic deadlines, and products requiring both contract stability and agile adaptation.",
     howItWorks: "The project kicks off with formal Waterfall phases for Requirements and High-Level Design. Once the architectural baseline is approved, the implementation phase switches to agile 2-week development sprints.",
     howItDiffers: "Provides the safety and predictability of Waterfall planning while avoiding the risk of late discovery by releasing working software increments through agile sprints.",
-    availability: "In Progress / In Development. Engine integration for dual-mode transitions is actively underway. Code and service layers are preserved.",
+    availability: "In Progress. This methodology is currently under active development and is unavailable for unsupported new production workflows. Stage-gate transition engines and dual-mode scheduling remain preserved in the codebase.",
     nextSteps: "Use Waterfall in NexusFlow V4. Its Plan and Overview tabs provide the structured architecture review and requirements approval needed for hybrid workflows.",
   },
 ];
@@ -485,7 +500,7 @@ function MethodologiesSection({ initialGuide }: { initialGuide?: string }) {
               </View>
             </View>
             <Text style={s.paragraph}>
-              Waterfall in NexusFlow V4 delivers a modern, disciplined engineering process. Work progresses cleanly through 6 sequential phases, governed by an 8-tab workspace with specialized algorithmic insights.
+              Waterfall in NexusFlow V4 delivers a modern, disciplined engineering process. Work progresses cleanly through 6 sequential phases, governed by a 7-tab workspace with specialized algorithmic insights.
             </Text>
           </Card>
 
@@ -723,49 +738,220 @@ function MethodologiesSection({ initialGuide }: { initialGuide?: string }) {
   );
 }
 
-// ── 3. PROJECT MANAGEMENT ────────────────────────────────────────────────────
+// ── 2. PROJECT MANAGEMENT ────────────────────────────────────────────────────
 function ProjectManagementSection() {
   return (
     <View style={{ gap: spacing.lg }}>
-      <Card style={{ gap: spacing.md }}>
-        <Text style={font.h2}>Project Management & Workspaces</Text>
+      {/* A. What NexusFlow Project Management Is */}
+      <Card style={{ gap: spacing.md, borderLeftWidth: 4, borderLeftColor: colors.primary }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+          <Ionicons name="grid-outline" size={24} color={colors.primary} />
+          <Text style={font.h2}>The NexusFlow Project Management Ecosystem</Text>
+        </View>
         <Text style={s.paragraph}>
-          NEXUSFLOW manages engineering deliverables through hierarchical scopes:
+          NexusFlow is an intelligent engineering project management platform built to bridge the gap between initial ideation, structured specification, task execution, and verified delivery.
         </Text>
-        <View style={s.codeBox}>
-          <Text style={s.codeTxt}>User → Team (Workspace) → Project → Tasks → Sprints & AI Artifacts</Text>
+        <Text style={s.paragraph}>
+          Unlike traditional to-do lists or static issue trackers, NexusFlow continuously links project planning, mathematical scheduling optimization, real-time team coordination, and context-grounded AI guidance into one unified workspace.
+        </Text>
+      </Card>
+
+      {/* B. Who Uses NexusFlow */}
+      <Card style={{ gap: spacing.md }}>
+        <Text style={font.h3}>Who Uses NexusFlow?</Text>
+        <Text style={s.subText}>
+          NexusFlow is designed to support real engineering stakeholders throughout their workflows:
+        </Text>
+
+        <View style={{ gap: spacing.sm }}>
+          <View style={s.bulletItem}>
+            <Ionicons name="school" size={20} color={colors.primary} />
+            <View style={{ flex: 1 }}>
+              <Text style={s.bold}>Students & Capstone Teams</Text>
+              <Text style={s.subText}>Semester-long engineering teams that need clear deliverables, formal SRS requirements, verifiable member contributions, and phase-gate milestones.</Text>
+            </View>
+          </View>
+
+          <View style={s.bulletItem}>
+            <Ionicons name="rocket" size={20} color={colors.accentDark} />
+            <View style={{ flex: 1 }}>
+              <Text style={s.bold}>Hackathon Teams & Innovators</Text>
+              <Text style={s.subText}>Rapid 24-to-48-hour build teams that need instant backlog decomposition, automated priority scoring, and zero-overhead coordination.</Text>
+            </View>
+          </View>
+
+          <View style={s.bulletItem}>
+            <Ionicons name="shield-checkmark" size={20} color={colors.greedy} />
+            <View style={{ flex: 1 }}>
+              <Text style={s.bold}>Team Leaders & Project Owners</Text>
+              <Text style={s.subText}>Leaders who define scope, finalize plans, balance member workloads based on verified skills, and track multi-dimensional health metrics.</Text>
+            </View>
+          </View>
+
+          <View style={s.bulletItem}>
+            <Ionicons name="code-slash" size={20} color={colors.topo} />
+            <View style={{ flex: 1 }}>
+              <Text style={s.bold}>Developers & QA Engineers</Text>
+              <Text style={s.subText}>Engineers picking up unblocked tasks, inspecting connected GitHub code trees, testing acceptance criteria, and collaborating in real-time chat.</Text>
+            </View>
+          </View>
+
+          <View style={s.bulletItem}>
+            <Ionicons name="ribbon" size={20} color={colors.branch} />
+            <View style={{ flex: 1 }}>
+              <Text style={s.bold}>Faculty, Mentors & Evaluators</Text>
+              <Text style={s.subText}>Academic evaluators reviewing student progress, phase gate clearances, verified skill demonstrations, and fair team contribution audits.</Text>
+            </View>
+          </View>
         </View>
       </Card>
 
+      {/* C. Workspace & Project Hierarchy */}
       <Card style={{ gap: spacing.md }}>
-        <Text style={font.h3}>Core Capabilities</Text>
-        <View style={s.bulletItem}>
-          <Ionicons name="list" size={18} color={colors.greedy} />
-          <View style={{ flex: 1 }}>
-            <Text style={s.bold}>Tasks & Greedy Priority</Text>
-            <Text style={s.subText}>Tasks contain estimated hours, business value, urgency (1–5), impact (1–5), and dependency counts. The Greedy Scheduler scores each task from 0 to 100.</Text>
+        <Text style={font.h3}>Workspace & Data Model Hierarchy</Text>
+        <Text style={s.paragraph}>
+          NexusFlow maintains clean relational boundaries and workspace isolation in MongoDB:
+        </Text>
+        <View style={s.codeBox}>
+          <Text style={s.codeTxt}>
+            User Account & Profile{"\n"}
+            └── Team / Workspace (Collaborative container & member roles){"\n"}
+                └── Project (Scoped to a methodology: Classic, NexusFlow, Waterfall){"\n"}
+                    ├── Requirements & Artifacts (Approved SRS, briefs, conflict checks){"\n"}
+                    ├── Tasks & Dependencies (Priority score, assignees, DAG edges){"\n"}
+                    ├── Timeline & Milestones (CPM Critical Path, Gantt schedules){"\n"}
+                    ├── Connected GitHub Repository (1 active repo per workspace){"\n"}
+                    └── Persistent Workspace Memory (Decisions, code intel, lessons)
+          </Text>
+        </View>
+        <Text style={s.subText}>
+          Each workspace is strictly isolated: team members only see their authorized repositories, tasks, conversations, and AI project memories.
+        </Text>
+      </Card>
+
+      {/* D. Project Lifecycle */}
+      <Card style={{ gap: spacing.md }}>
+        <Text style={font.h3}>The Project Lifecycle</Text>
+        <View style={{ gap: spacing.md }}>
+          <View style={s.lifecycleStep}>
+            <Badge label="Step 1" color={colors.primary} />
+            <View style={{ flex: 1 }}>
+              <Text style={s.bold}>Workspace Kickoff & Repository Connection</Text>
+              <Text style={s.subText}>Create a team workspace, invite collaborators, and link an authorized GitHub repository to track source code, commits, and PRs.</Text>
+            </View>
+          </View>
+
+          <View style={s.lifecycleStep}>
+            <Badge label="Step 2" color={colors.primary} />
+            <View style={{ flex: 1 }}>
+              <Text style={s.bold}>Requirements & Artifact Baseline</Text>
+              <Text style={s.subText}>Upload project briefs, SRS documents, and architecture specifications. Run plan readiness checks to approve requirements and resolve conflicts.</Text>
+            </View>
+          </View>
+
+          <View style={s.lifecycleStep}>
+            <Badge label="Step 3" color={colors.primary} />
+            <View style={{ flex: 1 }}>
+              <Text style={s.bold}>Task Generation & Traceable Conversion</Text>
+              <Text style={s.subText}>Convert approved specifications into prioritized tasks. Every generated task carries a permanent traceability link to its source requirement (e.g. REQ-01).</Text>
+            </View>
+          </View>
+
+          <View style={s.lifecycleStep}>
+            <Badge label="Step 4" color={colors.primary} />
+            <View style={{ flex: 1 }}>
+              <Text style={s.bold}>Execution, Capacity Balancing & Dependencies</Text>
+              <Text style={s.subText}>Match tasks to team competencies, resolve workload bottlenecks, and execute work following prerequisite dependency chains.</Text>
+            </View>
+          </View>
+
+          <View style={s.lifecycleStep}>
+            <Badge label="Step 5" color={colors.primary} />
+            <View style={{ flex: 1 }}>
+              <Text style={s.bold}>Verification, Phase Gates & Release Delivery</Text>
+              <Text style={s.subText}>Validate deliverables against acceptance criteria, clear formal phase gates, stage production builds, and capture validated institutional lessons.</Text>
+            </View>
           </View>
         </View>
-        <View style={s.bulletItem}>
-          <Ionicons name="git-network" size={18} color={colors.topo} />
-          <View style={{ flex: 1 }}>
-            <Text style={s.bold}>Dependency Directed Acyclic Graph (DAG)</Text>
-            <Text style={s.subText}>Tasks declare prerequisite blockers. Kahn’s algorithm detects cycles and derives the valid topological execution sequence.</Text>
+      </Card>
+
+      {/* E. Collaboration & Visibility */}
+      <Card style={{ gap: spacing.md }}>
+        <Text style={font.h3}>Collaboration, Governance & Visibility</Text>
+        <Text style={s.paragraph}>
+          NexusFlow replaces disconnected spreadsheets and opaque status meetings with continuous real-time visibility across dedicated workspace tabs:
+        </Text>
+        <View style={{ gap: spacing.sm }}>
+          <View style={s.bulletItem}>
+            <Ionicons name="speedometer" size={18} color={colors.primary} />
+            <View style={{ flex: 1 }}>
+              <Text style={s.bold}>Unified Health & Risk Radar</Text>
+              <Text style={s.subText}>Monitors composite project health across 8 dimensions. The automated Risk Radar flags impending deadlines, overloaded members, and stalled GitHub activity before they become crises.</Text>
+            </View>
+          </View>
+
+          <View style={s.bulletItem}>
+            <Ionicons name="chatbubbles" size={18} color={colors.accentDark} />
+            <View style={{ flex: 1 }}>
+              <Text style={s.bold}>Integrated Real-Time Collaboration</Text>
+              <Text style={s.subText}>Team chat rooms synchronize discussions with project events. Decisions agreed upon during discussions are explicitly saved into persistent workspace memory.</Text>
+            </View>
+          </View>
+
+          <View style={s.bulletItem}>
+            <Ionicons name="git-branch" size={18} color={colors.greedy} />
+            <View style={{ flex: 1 }}>
+              <Text style={s.bold}>Traceable Phase Gate Governance</Text>
+              <Text style={s.subText}>In Waterfall projects, phase gates ensure high-quality handoffs between requirements, design, implementation, and testing, preventing costly late defects.</Text>
+            </View>
           </View>
         </View>
-        <View style={s.bulletItem}>
-          <Ionicons name="rocket" size={18} color={colors.knapsack} />
-          <View style={{ flex: 1 }}>
-            <Text style={s.bold}>Sprint Optimization (0/1 Knapsack)</Text>
-            <Text style={s.subText}>Given team sprint capacity (e.g. 40 hours), dynamic programming selects the exact subset of tasks that maximizes total business value.</Text>
+      </Card>
+
+      {/* F. Academic & Hackathon Scenarios */}
+      <Card style={{ gap: spacing.md }}>
+        <Text style={font.h3}>Practical Scenarios: Capstones vs. Hackathons</Text>
+        <View style={s.twoCol}>
+          <View style={s.scenarioCard}>
+            <Badge label="Academic Capstone" color={colors.primary} />
+            <Text style={[s.bold, { marginTop: 6 }]}>Structured 16-Week Progression</Text>
+            <Text style={[s.subText, { marginTop: 4, lineHeight: 18 }]}>
+              • Weeks 1–3: Upload SRS, resolve conflicting specs, finalize approved plan.{"\n"}
+              • Weeks 4–6: System design, architecture tradeoffs, database schemas.{"\n"}
+              • Weeks 7–12: Implementation across Greedy-prioritized tasks, weekly health checks.{"\n"}
+              • Weeks 13–15: Verification, defect fixes, and deployment staging.{"\n"}
+              • Week 16: Final review, retrospective, and audit presentation.
+            </Text>
+          </View>
+
+          <View style={s.scenarioCard}>
+            <Badge label="Rapid Hackathon" color={colors.accentDark} />
+            <Text style={[s.bold, { marginTop: 6 }]}>High-Velocity 24–48 Hour Sprint</Text>
+            <Text style={[s.subText, { marginTop: 4, lineHeight: 18 }]}>
+              • Hour 0–2: Define project brief, auto-decompose idea into essential tasks.{"\n"}
+              • Hour 2–6: Match tasks to member strengths, link GitHub repository.{"\n"}
+              • Hour 6–18: Parallel coding of core features, real-time unblock updates.{"\n"}
+              • Hour 18–22: Integration, smoke tests, and live deployment.{"\n"}
+              • Hour 22–24: Polish demo presentation deck with AI advisor.
+            </Text>
           </View>
         </View>
-        <View style={s.bulletItem}>
-          <Ionicons name="people" size={18} color={colors.branch} />
-          <View style={{ flex: 1 }}>
-            <Text style={s.bold}>Member Assignment (Branch & Bound)</Text>
-            <Text style={s.subText}>Builds a cost matrix matching task skill demands (Frontend, Backend, ML, Hardware, DevOps) with member competencies to optimize workload balance.</Text>
-          </View>
+      </Card>
+
+      {/* G. AI Assistance & Persistent Memory */}
+      <Card style={{ gap: spacing.md, backgroundColor: colors.surfaceAlt }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <Ionicons name="sparkles" size={20} color={colors.primary} />
+          <Text style={font.h3}>Context-Grounded AI Assistance & Project Memory</Text>
+        </View>
+        <Text style={s.paragraph}>
+          NexusFlow Project AI never operates in a vacuum. It accesses your workspace's current authoritative records — approved requirements, active tasks, accepted technical decisions, risk states, and connected GitHub repository intelligence.
+        </Text>
+        <View style={{ gap: 6 }}>
+          <Text style={[s.subText, { fontWeight: "700" }]}>Strict Safety Principles:</Text>
+          <Text style={s.subText}>• <Text style={s.bold}>Advisory Guidance Only:</Text> AI recommendations never silently alter project scope, reassign tasks, change risk states, or push code without explicit human confirmation.</Text>
+          <Text style={s.subText}>• <Text style={s.bold}>Grounded in Evidence:</Text> When repository files or decisions are absent, Project AI explicitly states the limitation rather than hallucinating facts.</Text>
+          <Text style={s.subText}>• <Text style={s.bold}>Workspace Memory Persistence:</Text> Validated decisions, engineering conventions, and verified lessons are stored persistently in MongoDB for long-term project continuity.</Text>
         </View>
       </Card>
     </View>
@@ -1687,5 +1873,28 @@ const s = StyleSheet.create({
     color: "#fff",
     fontSize: 13,
     fontWeight: "800",
+  },
+  lifecycleStep: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: spacing.md,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  twoCol: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.md,
+  },
+  scenarioCard: {
+    flex: 1,
+    minWidth: 260,
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    gap: 4,
   },
 });
