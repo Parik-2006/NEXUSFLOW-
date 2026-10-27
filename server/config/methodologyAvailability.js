@@ -49,9 +49,20 @@ export function getReleaseChannel() {
 }
 
 /**
+ * Checks whether Scrum is enabled for production use.
+ * Authoritative rule:
+ *   - Explicit server environment flag: SCRUM_PRODUCTION_ENABLED="true" (case-insensitive, trimmed).
+ *   - Missing, false, or malformed value fails closed.
+ */
+export function isScrumProductionEnabled() {
+  const flag = (process.env.SCRUM_PRODUCTION_ENABLED || "").trim().toLowerCase();
+  return flag === "true";
+}
+
+/**
  * Checks whether Scrum is enabled for development and testing.
  * Authoritative rules:
- *   - If release channel is "production", Scrum is FORCIBLY blocked.
+ *   - If release channel is "production", Scrum development mode is false.
  *   - If release channel is "development", Scrum is explicitly enabled.
  *   - Otherwise, falls back to areExperimentalMethodologiesEnabled().
  */
@@ -61,6 +72,25 @@ export function isScrumDevelopmentEnabled() {
     return false;
   }
   if (channel === "development") {
+    return true;
+  }
+  return areExperimentalMethodologiesEnabled();
+}
+
+/**
+ * Authoritative check whether Scrum is enabled in the current environment.
+ * Evaluates production release flag when in production channel or runtime,
+ * or development preview when in development/preview channel.
+ */
+export function isScrumEnabled() {
+  const channel = getReleaseChannel();
+  if (channel === "production") {
+    return isScrumProductionEnabled();
+  }
+  if (channel === "development") {
+    return true;
+  }
+  if (isScrumProductionEnabled()) {
     return true;
   }
   return areExperimentalMethodologiesEnabled();
@@ -87,7 +117,29 @@ export function areExperimentalMethodologiesEnabled() {
 export function getMethodologyRegistry() {
   const channel = getReleaseChannel();
   const experimentalActive = areExperimentalMethodologiesEnabled();
-  const isScrumAvailable = isScrumDevelopmentEnabled();
+  const isProduction = channel === "production" || process.env.NODE_ENV === "production";
+  const scrumProdActive = isProduction && isScrumProductionEnabled();
+  const isScrumAvailable = isScrumEnabled();
+
+  let scrumBadge = "IN_PROGRESS";
+  let scrumStatusMessage = "This methodology is currently in development and is not yet available in production.";
+  let scrumReason = "Agile Scrum planning and ceremony workflows are undergoing stabilization.";
+
+  if (isScrumAvailable) {
+    if (scrumProdActive || channel === "production") {
+      scrumBadge = "ACTIVE";
+      scrumStatusMessage = "Available for production use.";
+      scrumReason = "Production-ready agile Scrum planning and sprint execution workspace.";
+    } else if (channel === "development") {
+      scrumBadge = "DEV_PREVIEW";
+      scrumStatusMessage = "Enabled in development environment (Developer Preview).";
+      scrumReason = "Agile Scrum planning and ceremony workflows are undergoing stabilization.";
+    } else {
+      scrumBadge = "ACTIVE";
+      scrumStatusMessage = "Available for production use.";
+      scrumReason = "Production-ready agile Scrum planning and sprint execution workspace.";
+    }
+  }
 
   return {
     WATERFALL: {
@@ -127,16 +179,12 @@ export function getMethodologyRegistry() {
       id: "SCRUM",
       name: "Scrum",
       status: isScrumAvailable ? "AVAILABLE" : "IN_PROGRESS",
-      badge: isScrumAvailable ? (channel === "development" ? "DEV_PREVIEW" : "ACTIVE") : "IN_PROGRESS",
+      badge: scrumBadge,
       allowNewProjects: isScrumAvailable,
       tagline: "Time-boxed iterations, product backlog burndown, and team velocity",
-      statusMessage: isScrumAvailable
-        ? (channel === "development"
-            ? "Enabled in development environment (Developer Preview)."
-            : "Enabled in development environment.")
-        : "This methodology is currently in development and is not yet available in production.",
-      reason: "Agile Scrum planning and ceremony workflows are undergoing stabilization.",
-      targetRelease: "NexusFlow V4.1",
+      statusMessage: scrumStatusMessage,
+      reason: scrumReason,
+      targetRelease: "NexusFlow V4.0",
     },
     KANBAN: {
       id: "KANBAN",
@@ -226,7 +274,9 @@ export function getMethodologyAvailability(methodology) {
 export default {
   METHODOLOGY_IDS,
   getReleaseChannel,
+  isScrumProductionEnabled,
   isScrumDevelopmentEnabled,
+  isScrumEnabled,
   areExperimentalMethodologiesEnabled,
   getMethodologyRegistry,
   normalizeMethodologyId,

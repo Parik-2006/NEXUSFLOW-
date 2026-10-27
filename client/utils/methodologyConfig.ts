@@ -257,14 +257,20 @@ export function isScrumDevEnvironment(): boolean {
 
 let dynamicScrumEnabled: boolean | null = null;
 
-export function setDynamicScrumAvailability(enabled: boolean) {
+export function setDynamicScrumAvailability(
+  enabled: boolean,
+  badge: "ACTIVE" | "IN_PROGRESS" | "WIP" | "DEV_PREVIEW" = "ACTIVE",
+  statusMessage?: string
+) {
   dynamicScrumEnabled = enabled;
   SCRUM_CONFIG.allowNewProjects = enabled;
   SCRUM_CONFIG.status = enabled ? "ACTIVE" : "WIP";
-  SCRUM_CONFIG.badge = enabled ? "ACTIVE" : "IN_PROGRESS";
-  SCRUM_CONFIG.statusMessage = enabled
-    ? "Enabled in development environment (Developer Preview)."
-    : "This methodology is currently in development and is not yet available in production.";
+  SCRUM_CONFIG.badge = enabled ? badge : "IN_PROGRESS";
+  SCRUM_CONFIG.statusMessage = statusMessage || (enabled
+    ? (badge === "DEV_PREVIEW"
+        ? "Enabled in development environment (Developer Preview)."
+        : "Available for production use.")
+    : "This methodology is currently in development and is not yet available in production.");
 }
 
 export function isScrumDevEnabled(): boolean {
