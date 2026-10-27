@@ -1,0 +1,1052 @@
+<USER_REQUEST>
+# NEXUSFLOW V4 — COMPLETE SCRUM FIXES 1–5
+## Team Intelligence · 3D Digital Twin · Bulk Story Approval · Real-Data Insights · Gated Scrum Setup & Finalization
+
+## 0. Mission
+
+Continue development of the existing NexusFlow V4 application on the local `version4.0` development branch.
+
+Implement, integrate and verify the five Scrum improvements described in this specification using the existing codebase, models, services, UI components and test infrastructure.
+
+This is a targeted completion task. The application already contains substantial Scrum functionality. Inspect and reuse that work rather than creating a new Scrum implementation in parallel.
+
+The five required fixes are:
+
+1. **Scrum Team Intelligence:** Reconcile real member profiles, skills, assignments, capacity, effort and Branch & Bound recommendations with the established Waterfall/V1.0 Fix 1 team-management functionality.
+2. **Scrum Spatial Digital Twin:** Fix the clipped 3D scene, implement functional rotation, pan, zoom and reset controls, and provide a meaningful 2D Matrix.
+3. **AI Story Review and Bulk Approval:** Preserve the current AI-generated Scrum story UI, add reliable bulk approval, and ensure approved suggestions become official Product Backlog items exactly once.
+4. **Scrum Insights:** Use actual Scrum data in all five Insights tabs and reuse the proven Waterfall/V1.0 visual graph implementation for a genuine Scrum dependency graph.
+5. **Scrum Setup, Approval and Finalization:** Adapt Waterfall's proven artifact-review, conflict-resolution, plan-review and finalization workflow to Scrum while preserving the existing Scrum story, backlog and sprint-planning UI.
+
+The objective is one connected user experience, not five disconnected patches.
+
+## 1. Non-negotiable development and safety constraints
+
+- Work only on the existing local `version4.0` branch.
+- Do not switch to `main`.
+- Do not commit, push, merge, release or deploy.
+- Do not modify production frontend configuration, backend configuration, environment variables, production services or production databases.
+- Do not run destructive Git commands or blindly restore files.
+- Preserve existing valid working-tree changes.
+- Do not delete user-created data to make screenshots or dashboards look clean.
+- Do not insert fake tasks, demo metrics or placeholder risks into an Actual Project view.
+- Do not claim a feature works unless its implementation or behavior has actually been checked.
+- Do not weaken authentication, authorization, project isolation, methodology release gates, OAuth security or server-side validation.
+- Do not add paid AI providers or bypass the existing zero-cost OmniRoute arrangement.
+- Do not introduce a parallel Team system, document pipeline, Scrum story model, dependency renderer or approval service when a compatible existing implementation already exists.
+- Preserve all working Waterfall business logic, navigation, visuals, calculations and workflows.
+
+### Waterfall is protected
+
+Treat the existing Waterfall implementation as a stable, regression-sensitive part of NexusFlow.
+
+Reuse its established implementations where they are genuinely compatible, including:
+
+- Team/profile management and MemberProfileModal from V1.0 Fix 1.
+- Shared upload and document-processing infrastructure.
+- Working Waterfall artifact-management and approval patterns.
+- Common presentation primitives and design tokens.
+- The existing working dependency DAG renderer and layout implementation.
+- Suitable chart and graph components.
+
+Reuse compatible infrastructure and presentation, but do not merge Waterfall-specific and Scrum-specific business logic.
+
+Waterfall's phase-based plan, phase gates, requirements approval, Timeline, task semantics, Insights calculations and lifecycle must remain unchanged.
+
+Any change to a shared contract must be backward-compatible and tested against both methodologies.
+
+## 2. Inspect before editing
+
+Review the current working tree, branch, existing diffs and the current implementation of all previous Scrum fixes.
+
+Inspect the actual paths in the repository, including where available:
+
+### Team and task infrastructure
+
+- `ScrumTeamPanel.tsx`
+- `MemberProfileModal.tsx`
+- `ScrumTasksPanel.tsx`
+- `scrumCapacityEngine.js`
+- Scrum routes and `teams.js`
+- `Team.js`, `Task.js`, `Sprint.js` and `Project.js`
+- Existing team/profile services and Branch & Bound assignment logic.
+
+### Digital Twin
+
+- `ScrumDigitalTwinCanvas.tsx`
+- `ScrumDigitalTwinCanvas.web.tsx`
+- `ScrumOverviewPanel.tsx`
+- Existing Three.js scene, camera, rendering and control logic.
+
+### Planning and approvals
+
+- `ScrumSetupPlanPanel.tsx`
+- `scrumPlanningService.js`
+- `scrumApiService.ts`
+- Existing artifact storage, analysis, suggestion and approval endpoints.
+- Existing Waterfall artifact approval, conflict detection and plan-finalization workflows.
+
+### Insights
+
+- `ScrumInsightsPanel.tsx`
+- `scrumEngine.js`
+- Existing Scrum dependency, risk and capacity services.
+- Waterfall Insights components and the established V1.0/Waterfall dependency graph renderer.
+
+Also inspect routing, methodology availability, authorization middleware, MongoDB indexes, existing automated tests and the current artifact-processing implementation.
+
+Prepare an internal checklist, then perform the actual corrections. Do not stop after producing a code audit.
+
+# FIX 1 — SCRUM TEAM INTELLIGENCE
+
+## 3. Reuse the established Team functionality
+
+The existing Scrum Team tab has displayed contradictory data such as:
+
+- 40 hours available.
+- 105 hours committed.
+- 263% utilization.
+- Yet the member card displays 0h / 40h and 0% loaded.
+- Skill-gap messages with an empty task title.
+- A stale workspace header task count of 23.
+
+Inspect the previous fix and its actual data flow. Reuse the proven Waterfall/V1.0 Fix 1 Team functionality wherever compatible.
+
+Do not recreate team membership, profile editing, member skills or profile storage independently for Scrum.
+
+### 3.1 Real team and profile data
+
+The Scrum Team tab must retrieve authorized, persisted team members and their actual profile information through the established Team infrastructure.
+
+Reuse the existing member profile modal and supported actions for:
+
+- Viewing member details.
+- Editing relevant profile fields.
+- Editing skills and supported competency information.
+- Saving changes through the existing backend.
+- Viewing real assignments and workload.
+
+Do not fabricate member records, saved skills, roles or profile data.
+
+Preserve valid single-person teams. Do not create fake peer members or imply that the project has a complete multi-person Scrum team.
+
+### 3.2 Reconcile capacity and workload
+
+Use a consistent, documented model across the Team tab, Sprint Planning and Insights → Capability.
+
+Keep these concepts separate:
+
+- Available hours.
+- Committed sprint effort in hours.
+- Assigned effort per member.
+- Uncommitted Product Backlog effort.
+- Story points.
+- Completed sprint work.
+- Historical velocity.
+
+For the selected sprint, committed effort must be derived only from work validly committed to that sprint under the existing data model.
+
+Never count unassigned backlog tasks as committed sprint hours merely because both the sprint and task lack an ID.
+
+When there is no active or selected sprint:
+
+- Committed sprint effort should be zero when no sprint work is committed.
+- Member sprint workload should reflect actual assignments, not generic backlog estimates.
+- Uncommitted backlog effort must be reported separately.
+- The UI must clearly indicate the current planning scope.
+
+When an active sprint exists, team totals must reconcile with member-level assignments under the same eligibility rules.
+
+Handle zero capacity, missing estimates, unassigned work and unavailable data safely.
+
+Do not add story points to hours or report utilization based on unrelated backlog work.
+
+### 3.3 Skill-gap detection
+
+Replace hardcoded skill-gap arrays with actual evidence from the existing task/story requirements and verified member competencies.
+
+For each real gap, show:
+
+- The missing skill.
+- The actual task/story title.
+- The relevant task ID internally.
+- The basis for the requirement.
+- Whether it is an explicit requirement or an AI-inferred suggestion.
+- A meaningful recommended action.
+
+Never display a message such as `Frontend Architecture — needed for ""`.
+
+If the application has insufficient skill or competency data, explain the limitation rather than inventing a required skill.
+
+### 3.4 Branch & Bound advisory
+
+Reuse the established Branch & Bound workload-allocation implementation.
+
+Base recommendations on actual eligible tasks, effort estimates, member availability, verified competencies, assignments and dependencies.
+
+Recommendations must remain advisory. Do not silently assign tasks or mutate the backlog.
+
+Show the real task title, proposed member, estimated effort and reasoning where supported.
+
+If no valid recommendations can be calculated, explain why.
+
+### 3.5 Workspace task counts
+
+Correct the workspace header task count so it uses a well-defined, current Scrum count instead of stale team metadata.
+
+Keep separate definitions for:
+
+- Pending AI suggestions.
+- Official Product Backlog items.
+- Selected sprint work.
+- Execution subtasks.
+- Completed work.
+
+Do not let generic Waterfall starter tasks enter the Scrum backlog.
+
+Inspect the previous auto-seeding fix and preserve it. Do not delete historical records without determining their origin and applying a safe preservation policy.
+
+# FIX 2 — SCRUM SPATIAL DIGITAL TWIN
+
+## 4. Repair the existing Digital Twin
+
+The existing 3D Digital Twin has displayed a partially clipped beige surface, little visible project content and missing or non-functional camera controls.
+
+Inspect the actual scene, geometry, camera, renderer, animation loop, layout, event handlers and web/native component implementations.
+
+Identify the rendering root cause before changing dimensions or replacing components.
+
+Inspect the existing fix that integrated `OrbitControls`, reduced the oversized ground platform and introduced a structured 2D Matrix. Extend or correct it instead of starting another implementation.
+
+### 4.1 Correct camera framing and viewport layout
+
+Ensure:
+
+- The entire relevant scene is visible on initial load.
+- The camera has an appropriate position, target, perspective and clipping range.
+- The canvas uses the correct actual width and height.
+- The perspective camera aspect ratio matches the viewport.
+- Renderer and camera projection update when the window or parent layout resizes.
+- Geometry and platform dimensions are appropriate for the actual scene.
+- CSS overflow and fixed-height containers do not clip the scene.
+- Rendering errors produce a clear fallback or error state.
+- Renderers, geometries, materials, event listeners, controls and animation frames are cleaned up on unmount.
+
+Use camera-fitting logic based on scene bounds where appropriate. Do not solve the issue with arbitrary CSS transforms or cosmetic scaling alone.
+
+### 4.2 Real 3D spatial content
+
+Map actual, authorized Scrum items into the scene.
+
+Where supported by real data, display:
+
+- Approved backlog stories or execution tasks.
+- Readable item titles.
+- Actual status indicators.
+- Sprint associations.
+- Genuine dependency relationships.
+- Selection highlighting.
+- A details panel or tooltip with persisted item metadata.
+
+Use meaningful depth and spatial organization rather than displaying an entirely flat scene as 3D.
+
+Maintain readable object sizes and appropriate lighting. Do not populate an empty project with synthetic nodes.
+
+If no applicable records exist, render an intentional empty-state scene explaining how to populate the Digital Twin.
+
+### 4.3 Functional camera controls
+
+Use the existing compatible Three.js configuration and controls library. On the web implementation, use `OrbitControls` or the suitable equivalent already supported in the project.
+
+Support:
+
+- Left-drag orbit/rotation.
+- Mouse-wheel zoom.
+- Right-drag pan or another clear pan interaction.
+- Clicking a real object to select it.
+- Clicking empty space to clear selection where appropriate.
+
+Retain or implement the visible toolbar:
+
+- Zoom In.
+- Zoom Out.
+- Reset View.
+- Auto-Rotate toggle, if supported.
+- 3D Spatial.
+- 2D Matrix.
+
+All controls must be genuinely functional and accessible. Prevent zooming through the scene or far beyond useful viewing distance.
+
+Reset View must restore the expected camera position and target without altering saved Scrum records.
+
+The animation loop must not overwrite the user's camera controls every frame.
+
+### 4.4 Meaningful 2D Matrix
+
+The 2D Matrix is an alternative representation of the same authorized project data, not just a list of buttons.
+
+Reuse the existing status-lane matrix implementation if it is working, and correct any remaining issues.
+
+It must have explicit, labelled dimensions, such as status and priority, if those fields exist and are valid in the actual records.
+
+Show real items in the correct lanes/cells, with readable titles, priorities, story points, sprint tags and dependency indicators where supported.
+
+Provide selection/details, responsive layout, scrolling and a genuine empty state.
+
+Switching between 3D and 2D must retain applicable project, sprint and filter state. Camera controls or matrix interactions must not mutate saved tasks unless the application has an explicit, separately confirmed action for that purpose.
+
+### 4.5 Performance and verification
+
+Avoid repeated API requests on camera movements.
+
+Use stable item identities, efficient rendering and correct resource disposal.
+
+Test initial framing, rotation, zoom, pan, reset, resize, object selection, 2D Matrix interactions, empty-state behavior and rendering errors in the running browser where available.
+
+A passing TypeScript check alone does not verify camera interaction.
+
+# FIX 3 — AI STORY REVIEW AND BULK APPROVAL
+
+## 5. Preserve the existing Scrum story experience
+
+The current AI story-review and Product Backlog UI is already suitable and must be preserved.
+
+Keep:
+
+- AI-generated suggestion cards.
+- User story descriptions.
+- Acceptance criteria.
+- Priority and story-point metadata.
+- DAA ranking and its existing explainability.
+- Individual Edit, Approve and Reject actions.
+- Official Product Backlog.
+- Search and priority filtering.
+- Manual Add Story.
+- Existing Sprint Planning wizard.
+
+Do not redesign these cards or create another Product Backlog implementation.
+
+### 5.1 One bulk approval action
+
+In the existing AI Story Suggestions / Review section, retain or complete a prominent action similar to:
+
+**Approve All X Eligible Stories**
+
+The count must be calculated dynamically from suggestions currently eligible for approval, not from the total number of drafts or official backlog items.
+
+Keep individual approval and rejection available.
+
+When the user clicks the bulk action, show a confirmation dialog summarizing the exact eligible suggestions that will be added to the official Product Backlog.
+
+Allow cancellation without changing saved data.
+
+Do not make bulk approval act on stories that are already approved, rejected, invalid or otherwise ineligible.
+
+### 5.2 Server-side approval and idempotency
+
+Reuse the existing `scrumPlanningService.js` approval logic and models.
+
+For each suggestion, enforce:
+
+- Authentication.
+- Correct project/team scope.
+- User membership and required permission.
+- Existing Scrum release-channel rules.
+- Valid suggestion state.
+- Valid title, description, acceptance criteria, priority and estimate.
+- Assignee and dependency validation.
+- Source-artifact scope and authorization.
+- Dependency cycle prevention where supported.
+- Duplicate-content and existing approval-link checks.
+
+Do not trust client-supplied ownership, approval status, project IDs or protected fields.
+
+Repeated or concurrent approval attempts must not create duplicate official records. Use the existing database-backed idempotency approach and uniqueness safeguards where appropriate.
+
+A title-only duplicate check must not wrongly merge two distinct stories with materially different requirements.
+
+### 5.3 Partial success
+
+If the batch contains a mixture of valid, duplicate, invalid or inaccessible suggestions, handle it according to the existing safe service architecture.
+
+Return a clear, structured outcome that distinguishes:
+
+- Approved.
+- Skipped/already approved or duplicate.
+- Failed validation or authorization.
+
+Do not falsely report complete success if some items failed.
+
+Do not mark a suggestion approved when official record creation did not complete.
+
+Retrying after a timeout must return existing approved records without creating duplicates.
+
+Use transactions if the actual MongoDB deployment supports them; otherwise use a concurrency-safe approach appropriate to the existing architecture.
+
+### 5.4 Backlog refresh and provenance
+
+After successful approval:
+
+- Create/link exactly one official Product Backlog item.
+- Preserve the source suggestion ID and applicable source-document references.
+- Record approval audit data using the existing convention.
+- Refresh official story count and total story points.
+- Remove approved suggestions from the pending review list.
+- Provide an Open Story action.
+- Keep still-pending and rejected suggestions in their correct states.
+
+Do not automatically create a sprint, silently assign the stories or create unrelated execution tasks.
+
+Treat uploaded documents as inputs. Approval remains the human-reviewed step that establishes an official story.
+
+# FIX 4 — SCRUM INSIGHTS WITH REAL DATA
+
+## 6. Keep exactly five Scrum Insights tabs
+
+The Scrum Insights internal navigation must contain exactly:
+
+1. Project Health.
+2. Sprint Analytics.
+3. Capability.
+4. Risk Radar.
+5. Dependency DAG.
+
+Do not add the Learning Loop tab back to Scrum Insights. Scrum already has a dedicated primary Retrospective tab.
+
+Retrospective records and improvement actions must remain persisted and accessible through Retrospective.
+
+Waterfall's Learning Loop and other existing Insights functionality must remain unchanged.
+
+## 7. Reuse Waterfall's visual architecture safely
+
+Inspect the established Waterfall Insights implementation and the graph architecture that evolved from V1.0 Fix 1.
+
+Reuse compatible components, charts, layout, presentation and graph-rendering infrastructure.
+
+Use Scrum-specific data adapters and calculation logic wherever methodology-specific semantics differ.
+
+Do not simply relabel a Waterfall phase metric as a Scrum sprint metric.
+
+Do not create a new dependency renderer when the proven `DependencyFlowGraph` or its actual repository equivalent can be reused safely.
+
+## 8. Project Health
+
+Use actual Scrum records, including relevant project, story, task, sprint, capacity, blocker and dependency data.
+
+Potential indicators include:
+
+- Active sprint and Sprint Goal.
+- Actual committed and completed work.
+- Remaining work.
+- Blocked tasks.
+- Capacity alignment.
+- Dependency status.
+- Carry-over risk.
+- Backlog readiness.
+- Delivery history when enough data exists.
+
+The previous artificial 20% health score must remain removed.
+
+When there is no active sprint and insufficient completed-sprint history to calculate meaningful delivery health, show N/A and an explanatory message.
+
+Do not calculate zero-of-zero tasks as 100% completed or use an arbitrary baseline percentage.
+
+If Product Backlog Readiness is displayed before the first sprint, derive it from genuine official backlog records using a documented definition, and distinguish it clearly from sprint delivery health.
+
+Every metric must explain what it measures and use correct project/sprint-scoped records.
+
+## 9. Sprint Analytics
+
+Use actual persisted sprint history, task states, story points, estimates and event data.
+
+Support appropriate views for:
+
+- Sprint trajectory or burndown when suitable data exists.
+- Planned versus completed work.
+- Completed-sprint velocity.
+- Workflow distribution.
+- Carry-over trends.
+- Sprint comparisons.
+
+Do not mix story points, hours and task counts.
+
+Do not fabricate historical velocity or burndown curves for unstarted projects.
+
+If the application lacks the time-series data needed for a real burndown, show the limitation instead of drawing an invented trajectory.
+
+After task updates and sprint lifecycle transitions, analytics must reflect the saved state and remain accurate after page refresh.
+
+## 10. Capability
+
+Use the same authoritative member, availability and assignment data as the Scrum Team tab.
+
+- Capacity must reconcile with member-level workload.
+- The selected sprint determines committed effort.
+- Uncommitted backlog effort must remain separately identified.
+- Story points and hours must remain distinct.
+- Waterfall tasks must be excluded.
+- Missing availability and zero capacity must be handled explicitly.
+- Single-person teams must work without invented members.
+- Missing skill records must not imply perfect skill coverage.
+
+Correct the original mismatch between the team-level and per-member capacity figures at the source calculation/query level.
+
+## 11. Risk Radar
+
+Compute actual Scrum risks from persisted records and documented rules.
+
+Relevant inputs may include:
+
+- Blocked active sprint work.
+- Unassigned committed tasks where assignment is required.
+- Unresolved dependencies affecting sprint progress.
+- Capacity overruns.
+- Overdue or significantly aging work when timestamps are available.
+- Carry-over work from completed sprints.
+- Missing estimates or acceptance criteria where relevant to planning.
+
+Show evidence and associated story/task/sprint information for each detected risk.
+
+Do not display synthetic risk placeholders.
+
+When there is no active sprint, show:
+
+"No active sprint to assess. Sprint delivery risk analysis will be available once sprint work is planned and committed."
+
+Only display a positive no-critical-risks state when a real assessment of applicable current sprint work has completed and found no qualifying risks.
+
+Do not confuse lack of data with absence of risk.
+
+## 12. Dependency DAG
+
+Reuse the proven V1.0/Waterfall graph rendering approach, including its supported graph library, directed edges, layout and navigation controls.
+
+Adapt the inputs to actual Scrum story/task relationships without modifying Waterfall's graph behavior.
+
+Display:
+
+- Real authorized story/task nodes.
+- Readable human-facing titles.
+- Directed edges from prerequisite to dependent item.
+- Correct arrow direction.
+- Actual task status.
+- Sprint associations when available.
+- Genuine cross-sprint dependencies.
+- Node selection and details.
+- Empty and unresolved-dependency states.
+
+Resolve raw MongoDB identifiers to the relevant real records. IDs may be retained internally for stable edge identity, but must not be the primary user-facing dependency description.
+
+If there are no actual dependencies, display a useful empty state. Do not draw fictional edges to make the view look populated.
+
+Preserve existing dependency cycle prevention and project-scope validation.
+
+# FIX 5 — SCRUM INITIAL SETUP, APPROVAL GATES AND FINALIZATION
+
+## 13. Objective: Waterfall-style process, Scrum-specific behavior
+
+The fifth fix is the initialization workflow.
+
+Waterfall already provides a useful gated process:
+
+1. Upload project artifacts.
+2. Validate and review artifacts.
+3. Resolve contradictory requirements.
+4. Analyze the approved source material.
+5. Review and approve requirements.
+6. Finalize the Waterfall plan before generating phase-linked tasks and enabling the operational workflow.
+
+Scrum must follow the same clear, reviewable pattern, but its finalization outputs and operational rules must be Scrum-specific.
+
+**Do not replace the existing Scrum story cards, bulk approval, official Product Backlog, DAA ranking or Sprint Planning UI. Integrate the new initialization gate around those existing features.**
+
+## 14. Overview internal navigation stays unchanged
+
+Scrum must continue to have exactly eight primary tabs, in this order:
+
+1. Overview.
+2. Project AI.
+3. Team.
+4. Tasks.
+5. Insights.
+6. Retrospective.
+7. Chats.
+8. GitHub.
+
+Overview contains its two established internal views:
+
+- Executive Dashboard.
+- Project Setup & Plan.
+
+Do not add a ninth primary tab or a separate top-level Plan or Timeline tab.
+
+The artifact, analysis, story-review and backlog workflow must remain inside Overview → Project Setup & Plan.
+
+## 15. Project Setup & Plan: four existing sections plus finalization
+
+Preserve the current four-section Scrum planning layout, including its existing visual language and content.
+
+### Section A — Artifacts & Knowledge Base
+
+Retain the current artifact-upload and management UI.
+
+Users must be able to upload supported project documents, inspect them, review processing state and approve the relevant planning sources.
+
+Reuse the established Waterfall artifact-storage and approval infrastructure only where contracts are genuinely compatible. Keep methodology-specific downstream planning separate.
+
+Each artifact must show its status clearly, such as:
+
+- Uploaded/processing.
+- Processed and ready for review.
+- Approved.
+- Failed or requiring correction.
+
+Approval must refer to the actual persisted artifact, not a UI-only toggle.
+
+Validate the file using existing secure upload rules. Preserve source metadata and project scope.
+
+### Section B — AI Analysis and Conflict Resolution
+
+After relevant artifacts have been processed and approved, analyze their real content using the existing document-processing and zero-cost OmniRoute pipeline.
+
+The analysis should extract useful information for Scrum planning, such as:
+
+- Project goals and outcomes.
+- Stakeholders and user types.
+- Functional and non-functional requirements.
+- Features and technical constraints.
+- Acceptance criteria and quality expectations.
+- Dependencies and risks.
+- Unresolved assumptions.
+- Conflicting requirements across artifacts or existing project context.
+
+Preserve the Waterfall conflict-resolution experience as a design reference.
+
+For each material conflict, show:
+
+- The conflicting interpretation.
+- The actual source artifacts/sections.
+- A clear explanation of the contradiction.
+- Options to select an authoritative interpretation.
+- An option to provide a reasoned custom resolution where supported.
+- The resulting saved decision and audit metadata.
+
+Users must not be forced to resolve unrelated or speculative AI disagreements as if they were proven contradictions. Clearly distinguish verified contradictions from AI-inferred concerns.
+
+Once a conflict is resolved, save the decision against the relevant planning revision. Reanalysis after artifact changes must detect whether the previous resolution is still applicable; it must not silently treat a materially changed contradiction as resolved.
+
+Prevent finalization while required material conflicts remain unresolved.
+
+### Section C — Story Review
+
+Use the existing AI Scrum story-generation and review implementation.
+
+Generate draft suggestions from the approved and analyzed project knowledge.
+
+Each suggestion should retain its existing fields, such as title, user story, acceptance criteria, priority, estimate, dependency references and source information where supported.
+
+Users can inspect, edit, reject or approve individual stories.
+
+Keep the existing **Approve All Eligible Stories** action from Fix 3.
+
+Bulk approval must operate only on pending, eligible suggestions and must preserve server-side authorization, validation, duplicate handling, idempotency and partial-outcome reporting.
+
+Approved stories must become official Product Backlog items through the existing service.
+
+**Do not require the user to approve every generated suggestion.** The team must be able to approve the suitable subset, leaving irrelevant or unresolved suggestions pending or rejected.
+
+### Section D — Official Product Backlog
+
+Preserve the existing official backlog UI, which already shows approved stories, story points, priorities, DAA ranking, search/filtering and Plan Sprint actions.
+
+The backlog must continue to contain only valid official Scrum items.
+
+Manual story creation remains supported when allowed by the current workflow.
+
+Pending AI suggestions must not be counted as official backlog stories.
+
+Rejected, invalid or already-approved suggestions must not accidentally enter the backlog.
+
+Do not remove existing genuine approved stories or create duplicates during finalization.
+
+## 16. Add a Scrum-specific finalization gate
+
+After the artifact, analysis, conflict-resolution, story-review and backlog sections, add a clear finalization card inspired by Waterfall's Plan Lifecycle & Scope Intelligence interface.
+
+Suggested title:
+
+**Scrum Plan Lifecycle & Readiness**
+
+It must summarize:
+
+- Artifact approval status.
+- Document-processing or analysis errors.
+- Unresolved material conflicts.
+- Pending AI suggestions.
+- Official Product Backlog count.
+- Relevant planning-readiness checks.
+- Current plan revision and artifact/analysis revision where supported.
+
+The final action must be Scrum-specific, for example:
+
+**Finalize Scrum Plan & Enable Workspace**
+
+Do not call this "Finalize Waterfall Plan & Generate Tasks". Do not reuse Waterfall-specific phase-generation logic.
+
+### 16.1 Finalization prerequisites
+
+Inspect the actual Waterfall finalization gates and establish an equivalent, explicit Scrum policy.
+
+The finalization operation must require the following, where relevant to the approved source scope:
+
+1. Required planning artifacts have been uploaded and successfully processed.
+2. Required source artifacts have been reviewed and approved.
+3. Material contradictions have been resolved or explicitly accepted with a saved rationale according to authorized project policy.
+4. AI analysis for the current source/plan revision has completed successfully, or an explicitly supported manual-planning path has been used.
+5. The official Product Backlog contains at least one valid approved story, unless the existing application explicitly supports an authorized alternative finalization state.
+6. Required validations pass for the stories being treated as official planning work.
+7. Project/team authorization and Scrum release-channel checks pass.
+
+The finalization policy must not demand approval of every optional AI suggestion. Users should be able to approve a suitable subset.
+
+Do not finalize a stale analysis revision if relevant source artifacts changed after that analysis.
+
+If a condition fails, keep finalization disabled and show a clear reason with a direct navigation/action to resolve it.
+
+Example messages:
+
+- "Two required artifacts still need approval."
+- "One material requirement conflict remains unresolved."
+- "Document analysis must be rerun because a source artifact changed."
+- "Approve or manually create at least one valid Product Backlog story before finalizing the initial plan."
+
+Avoid a vague disabled button that gives no explanation.
+
+### 16.2 Server-side finalization operation
+
+Inspect existing Scrum services and implement the finalization action using the smallest compatible extension.
+
+Enforce on the backend:
+
+- Authentication.
+- Project/team authorization.
+- Scrum methodology availability.
+- Artifact processing and approval requirements.
+- Conflict-resolution requirements.
+- Current plan/analysis revision consistency.
+- Existence and validity of approved backlog items.
+- Any additional established policy checks.
+
+Do not trust frontend eligibility state as proof that finalization is allowed.
+
+Use an atomic update, transaction or safe concurrency-aware equivalent so simultaneous or repeated requests cannot create multiple conflicting finalized states.
+
+Record relevant finalization metadata using existing conventions:
+
+- Finalized-by user.
+- Timestamp.
+- Plan and analysis revision.
+- Source artifact revisions/checksums where supported.
+- Count/IDs of official stories in the finalized plan.
+- Any resolution decisions incorporated into that plan.
+
+Do not duplicate stories or tasks during finalization.
+
+If a relevant artifact is materially changed after finalization, mark the plan as requiring re-review/re-finalization according to the existing revision model rather than silently using stale analysis as current.
+
+### 16.3 What finalization must and must not do
+
+Finalizing the initial Scrum plan means the required source review and initial planning gates have been satisfied.
+
+It must not automatically:
+
+- Start Sprint 1.
+- Choose a sprint duration or dates without user input.
+- Commit every backlog story to a sprint.
+- Assign tasks to team members.
+- Create duplicate execution tasks from already-approved stories.
+- Claim the product is implemented merely because its plan has been finalized.
+
+After finalization, Sprint Planning remains a separate explicit activity.
+
+The team must still define the Sprint Goal, dates, selected stories and appropriate capacity before creating/starting a sprint under the established lifecycle rules.
+
+## 17. Operational tab unlocking
+
+Use the same visual clarity as Waterfall's gated workflow.
+
+Overview must always remain accessible so users can complete setup, review status and resolve blockers.
+
+Before the initial Scrum plan is finalized:
+
+- Keep Project Setup & Plan fully usable.
+- Keep the appropriate setup actions available.
+- Display other gated operational features as visibly locked/unavailable with an explanation of the prerequisite.
+- Do not imply that disabled navigation is a security boundary.
+- Enforce relevant lifecycle and authorization restrictions in the backend as well.
+
+Apply gating only where an actual finalized plan is a meaningful prerequisite. Team membership/profile setup, collaboration access, chats or GitHub connection may have different legitimate prerequisites under the existing architecture; do not block them arbitrarily if they are needed for setup or do not depend on plan finalization.
+
+Once the initial plan is finalized:
+
+- Update the setup lifecycle status.
+- Unlock the appropriate Scrum operational workspace features.
+- Show a clear success state and completed checklist.
+- Allow navigation to the now-enabled areas without a full application reset.
+- Preserve current project/team context.
+
+Do not lock the entire interface because a sprint has not yet been created. There are two distinct gates:
+
+**Gate 1 — Initial Scrum plan finalized:** source knowledge has been reviewed and a valid initial Product Backlog exists.
+
+**Gate 2 — Sprint Planning completed:** a valid sprint has been explicitly created from selected approved backlog work.
+
+Before Gate 2, Tasks, sprint analytics and retrospective features should show appropriate empty or not-yet-available states according to their real prerequisites. Do not fabricate sprint tasks, velocity, delivery risks or retrospective records.
+
+Retain existing valid manual-planning paths where supported; the artifact-driven path is the preferred guided workflow, not a reason to strand the user in an empty project.
+
+## 18. Waterfall parity without Waterfall logic leakage
+
+Reuse the Waterfall artifact review, conflict card, completion checklist and disabled-action explanations as visual references.
+
+Do not copy the Waterfall phase-gate service or generate Waterfall phase tasks in the Scrum workflow.
+
+Scrum's planning gate must interact with:
+
+- Artifact approval and revision.
+- Scrum analysis and conflict resolution.
+- AI story suggestions.
+- The existing official Product Backlog.
+- Existing Scrum release controls.
+
+Keep its persisted state in the appropriate existing Scrum/project lifecycle model.
+
+If a shared project schema needs an additional field, it must remain optional and backward-compatible for Waterfall. Do not add automatic Scrum lifecycle defaults to every Waterfall project.
+
+Waterfall must retain its own established finalization semantics and artifact approval rules unchanged.
+
+# CROSS-CUTTING DATA INTEGRITY AND SECURITY
+
+## 19. One coherent data pipeline
+
+The final behavior must follow this lifecycle:
+
+**Artifacts → Approval → AI Analysis → Conflict Resolution → Story Generation → Human Story Approval → Official Product Backlog → Scrum Plan Finalization → Explicit Sprint Planning → Execution → Sprint Review → Retrospective → Updated Insights**
+
+Preserve the existing schema and service structure wherever possible.
+
+Maintain clear distinctions:
+
+- Artifact: source material.
+- Analysis: interpretation of source material.
+- Pending suggestion: draft, not an official story.
+- Approved story: official Product Backlog item.
+- Sprint: explicit time-box with a goal and selected work.
+- Execution task: work that belongs to the correct story/sprint under the current data model.
+- Finalized Scrum plan: completed initial planning gate, not an automatically started sprint.
+- Retrospective: recorded team learning after relevant sprint work.
+
+Do not allow one state to impersonate another.
+
+## 20. Database safety and idempotency
+
+Use existing models and services. Extend them only as necessary.
+
+Inspect existing MongoDB indexes before adding or changing constraints.
+
+Approval and finalization must safely handle repeated clicks, timeouts, concurrent requests and partial failures.
+
+Do not report success unless the corresponding persisted operation succeeded.
+
+If a transaction is supported, use it where appropriate. Otherwise use unique constraints, atomic updates and safe recovery according to the existing architecture.
+
+Preserve existing user records. Do not perform mass updates, automatic conversions or destructive migrations as part of these fixes.
+
+## 21. Authorization and production protection
+
+Every backend operation must check the authenticated user, team/project scope, operation permission and existing Scrum release-channel configuration.
+
+Do not treat a locked UI tab as sufficient security.
+
+Keep the existing production fail-closed behavior for Scrum.
+
+Keep existing OAuth token protection, GitHub repository access checks and project-context boundaries intact.
+
+Use only authorized artifact contents, task records and repository context for AI.
+
+Never expose credentials, tokens, environment secrets or internal sensitive identifiers in UI text or AI prompts.
+
+# TESTING AND ACCEPTANCE
+
+## 22. Automated tests
+
+Inspect existing test scripts and extend them with focused tests for actual code changes. Do not weaken or remove existing tests just to obtain a passing result.
+
+### Fix 1 — Team
+
+- Member profiles and skills are actual persisted records.
+- Capacity and member workload reconcile.
+- Backlog effort is separated from committed sprint effort.
+- Story points and hours remain distinct.
+- Skill-gap tasks have valid titles and evidence.
+- Branch & Bound recommendations use real data and do not auto-assign unexpectedly.
+- Workspace counts use the correct methodology-scoped query.
+- Waterfall tasks are excluded from Scrum capacity.
+
+### Fix 2 — Digital Twin
+
+- Initial camera framing is correct.
+- Orbit, pan, zoom and reset controls work.
+- The scene resizes correctly.
+- The 2D Matrix has meaningful labelled dimensions.
+- Real objects select the correct task/story details.
+- Empty states contain no synthetic work items.
+- Mode switching preserves applicable state.
+- Renderer and control cleanup is correct.
+- Waterfall visuals remain unchanged.
+
+### Fix 3 — Bulk approval
+
+- The bulk count uses only pending eligible suggestions.
+- Individual approval still works.
+- Repeated and concurrent approval requests do not duplicate stories.
+- Invalid and unauthorized suggestions cannot be approved.
+- Partial outcomes are reported accurately.
+- Backlog counts update from persisted items.
+- Pending suggestions and rejected stories remain in the correct states.
+- Source provenance and approval records persist.
+- Finalization does not approve suggestions implicitly.
+
+### Fix 4 — Insights
+
+- Exactly five Scrum Insights tabs remain.
+- Project Health has an honest insufficient-data state.
+- Sprint Analytics uses real history.
+- Capability agrees with the Team tab.
+- Risk Radar distinguishes no sprint from a genuine zero-risk assessment.
+- The Dependency DAG renders actual directed edges and readable labels.
+- No fabricated data appears in Actual Project mode.
+- Metrics refresh after persisted task/sprint updates.
+- Existing Waterfall Insights behavior remains unchanged.
+
+### Fix 5 — Setup and finalization
+
+- Artifact processing and approval states are persisted.
+- Required artifact approval gates are enforced.
+- Contradictory requirements are displayed with real source references.
+- Conflict resolution choices and rationales persist.
+- Reanalysis detects relevant changed source revisions.
+- Story generation uses approved source context.
+- Individual and bulk story approval work before finalization.
+- A subset of suitable stories can be approved without approving every AI suggestion.
+- Finalization is blocked when required conditions fail.
+- Finalization succeeds only for the authorized current plan revision.
+- Repeated finalization is idempotent.
+- Finalization does not start Sprint 1 or create duplicate execution tasks.
+- Appropriate workspace sections unlock after successful finalization.
+- Sprint creation remains a separate explicit action.
+- Waterfall artifact approval, conflict resolution, plan finalization and phase/task generation remain unchanged.
+
+Run the existing Scrum full-experience, Scrum lifecycle/security, methodology-isolation, Waterfall regression and GitHub OAuth suites as appropriate. Run TypeScript, lint and build checks supported by the actual repository.
+
+Calculate and report real test totals based on executed commands; do not reuse stale or inconsistent aggregate counts.
+
+## 23. Interactive browser verification
+
+Where the local development application is available, verify the actual rendered UI.
+
+### Scenario A — Team
+
+Use a real team and confirm saved member profiles, capacity, assignment totals, skills and skill-gap recommendations agree.
+
+### Scenario B — Digital Twin
+
+Verify rotation, zoom, pan, reset, responsive framing, real node selection and the 2D Matrix.
+
+### Scenario C — Artifacts and conflicts
+
+Upload the four existing NETRAHX Markdown artifacts or an equivalent dedicated test set. Verify upload state, artifact review, approval and analysis.
+
+Create or use a controlled contradictory requirement pair and verify that the system identifies the conflict, records the decision, and blocks finalization while the required conflict remains unresolved.
+
+Do not introduce test contradictions into an unrelated user project.
+
+### Scenario D — Story approval
+
+Generate suggestions using the real approved source artifacts, approve a subset, and verify the official backlog.
+
+Exercise the bulk action and retry behavior without approving existing stories twice.
+
+### Scenario E — Finalization gate
+
+Verify that the finalization button explains missing prerequisites. Resolve the blockers and finalize the current plan revision. Verify the setup state persists after refresh and the appropriate operational features unlock.
+
+Confirm that no sprint was automatically started.
+
+### Scenario F — Scrum sprint workflow
+
+Explicitly plan a sprint, select genuine approved stories, confirm capacity and dates, create the sprint, update task statuses and verify that Team/Insights reflect saved data.
+
+### Scenario G — Waterfall regression
+
+Use an existing Waterfall workspace to verify its artifact approval, conflict resolution, project-plan finalization, phase gates, task generation, Timeline, Team, Insights and dependency graph.
+
+Confirm that no Scrum-specific changes have altered its UI, calculations or workflow.
+
+If a browser or required backend/database service is unavailable, report the specific checks as NOT VERIFIED. Static inspection and component compilation do not establish interactive browser correctness.
+
+## 24. Completion report
+
+Create a local Markdown report named:
+
+`NexusFlow_V4_Scrum_Fixes_1_to_5_Audit.md`
+
+Include:
+
+- Root cause and correction for each fix.
+- Team-capacity formulas and source records.
+- Digital Twin implementation and interaction results.
+- Bulk-approval eligibility, validation and idempotency behavior.
+- Data sources and calculations for each Insights tab.
+- Scrum artifact approval and conflict-resolution behavior.
+- Plan-finalization prerequisites and persisted lifecycle state.
+- Operational tab-unlocking behavior.
+- Files modified and any model/index changes.
+- Test commands actually executed and correct pass/fail counts.
+- TypeScript/build/lint results when executed.
+- Browser verification status.
+- Remaining limitations or unresolved risks.
+- Confirmation of branch isolation and production safety.
+
+Use accurate status labels: PASS, FIXED AND VERIFIED, FAIL or NOT VERIFIED.
+
+Do not claim that all features are fully verified merely because the automated tests passed.
+
+## FINAL ACCEPTANCE CRITERIA
+
+The implementation is complete when all five fixes work together in the existing application:
+
+1. Team data, profiles, capacity, skills and workload calculations are real, consistent and integrated with the established team-management infrastructure.
+2. The Digital Twin has a fully visible, interactive 3D scene and a functional 2D Matrix based on genuine Scrum data.
+3. AI story approval supports both individual and bulk approval safely, updating the official Product Backlog without duplication.
+4. All five Scrum Insights tabs use real, appropriately scoped calculations, and the Dependency DAG reuses the proven Waterfall/V1.0 graph infrastructure with Scrum-specific data.
+5. Scrum initialization follows the guided workflow: upload and approve artifacts, analyze and resolve conflicts, generate and review stories, approve a suitable subset, finalize the plan, then explicitly plan and start a sprint.
+
+The existing Scrum UI for stories, DAA priorities, official Product Backlog and Sprint Planning must remain intact.
+
+The existing Waterfall methodology must remain protected and functionally unchanged.
+
+Implement and test the actual code in the existing local `version4.0` development branch. No commit, push, merge, release or deployment. Production remains untouched.
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-10-23T11:15:27+05:30.
+
+The user's current state is as follows:
+Active Document: p:\DAA OPTIONAL\start.bat (LANGUAGE_UNSPECIFIED)
+Cursor is on line: 1
+Other open documents:
+- p:\DAA OPTIONAL\start.bat (LANGUAGE_UNSPECIFIED)
+</ADDITIONAL_METADATA>
+<USER_SETTINGS_CHANGE>
+The user changed setting `Model Selection` from None to Claude Sonnet 4.6 (Thinking). No need to comment on this change if the user doesn't ask about it. If reporting what model you are, please use a human readable name instead of the exact string.
+</USER_SETTINGS_CHANGE>

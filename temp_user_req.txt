@@ -1,0 +1,61 @@
+<USER_REQUEST>
+# NEXUSFLOW V4 — COMPLETE SCRUM FIXES 1–5
+## Team Intelligence · 3D Digital Twin · Bulk Story Approval · Real-Data Insights · Gated Scrum Setup & Finalization
+
+## 0. Mission
+
+Continue development of the existing NexusFlow V4 application on the local `version4.0` development branch.
+
+Implement, integrate and verify the five Scrum improvements described in this specification using the existing codebase, models, services, UI components and test infrastructure.
+
+This is a targeted completion task. The application already contains substantial Scrum functionality. Inspect and reuse that work rather than creating a new Scrum implementation in parallel.
+
+The five required fixes are:
+
+1. **Scrum Team Intelligence:** Reconcile real member profiles, skills, assignments, capacity, effort and Branch & Bound recommendations with the established Waterfall/V1.0 Fix 1 team-management functionality.
+2. **Scrum Spatial Digital Twin:** Fix the clipped 3D scene, implement functional rotation, pan, zoom and reset controls, and provide a meaningful 2D Matrix.
+3. **AI Story Review and Bulk Approval:** Preserve the current AI-generated Scrum story UI, add reliable bulk approval, and ensure approved suggestions become official Product Backlog items exactly once.
+4. **Scrum Insights:** Use actual Scrum data in all five Insights tabs and reuse the proven Waterfall/V1.0 visual graph implementation for a genuine Scrum dependency graph.
+5. **Scrum Setup, Approval and Finalization:** Adapt Waterfall's proven artifact-review, conflict-resolution, plan-review and finalization workflow to Scrum while preserving the existing Scrum story, backlog and sprint-planning UI.
+
+The objective is one connected user experience, not five disconnected patches.
+
+## 1. Non-negotiable development and safety constraints
+
+- Work only on the existing local `version4.0` branch.
+- Do not switch to `main`.
+- Do not commit, push, merge, release or deploy.
+- Do not modify production frontend configuration, backend configura
+<truncated 43833 bytes>
+OT VERIFIED.
+
+Do not claim that all features are fully verified merely because the automated tests passed.
+
+## FINAL ACCEPTANCE CRITERIA
+
+The implementation is complete when all five fixes work together in the existing application:
+
+1. Team data, profiles, capacity, skills and workload calculations are real, consistent and integrated with the established team-management infrastructure.
+2. The Digital Twin has a fully visible, interactive 3D scene and a functional 2D Matrix based on genuine Scrum data.
+3. AI story approval supports both individual and bulk approval safely, updating the official Product Backlog without duplication.
+4. All five Scrum Insights tabs use real, appropriately scoped calculations, and the Dependency DAG reuses the proven Waterfall/V1.0 graph infrastructure with Scrum-specific data.
+5. Scrum initialization follows the guided workflow: upload and approve artifacts, analyze and resolve conflicts, generate and review stories, approve a suitable subset, finalize the plan, then explicitly plan and start a sprint.
+
+The existing Scrum UI for stories, DAA priorities, official Product Backlog and Sprint Planning must remain intact.
+
+The existing Waterfall methodology must remain protected and functionally unchanged.
+
+Implement and test the actual code in the existing local `version4.0` development branch. No commit, push, merge, release or deployment. Production remains untouched.
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-10-23T11:15:27+05:30.
+
+The user's current state is as follows:
+Active Document: p:\DAA OPTIONAL\start.bat (LANGUAGE_UNSPECIFIED)
+Cursor is on line: 1
+Other open documents:
+- p:\DAA OPTIONAL\start.bat (LANGUAGE_UNSPECIFIED)
+</ADDITIONAL_METADATA>
+<USER_SETTINGS_CHANGE>
+The user changed setting `Model Selection` from None to Claude Sonnet 4.6 (Thinking). No need to comment on this change if the user doesn't ask about it. If reporting what model you are, please use a human readable name instead of the exact string.
+</USER_SETTINGS_CHANGE>
