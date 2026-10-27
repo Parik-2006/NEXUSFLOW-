@@ -25,7 +25,9 @@ dotenv.config({ path: path.join(__dirname, "../.env"), override: true });
 import {
   METHODOLOGY_IDS,
   getReleaseChannel,
+  isScrumProductionEnabled,
   isScrumDevelopmentEnabled,
+  isScrumEnabled,
   areExperimentalMethodologiesEnabled,
   getMethodologyRegistry,
   normalizeMethodologyId,
@@ -207,6 +209,70 @@ async function main() {
       delete process.env.METHODOLOGY_RELEASE_CHANNEL;
       delete process.env.NODE_ENV;
       delete process.env.ENABLE_EXPERIMENTAL_METHODOLOGIES;
+    }
+  });
+
+  runTest("Production Release: SCRUM_PRODUCTION_ENABLED='true' enables Scrum in production with ACTIVE badge while Kanban and Hybrid remain locked", () => {
+    process.env.METHODOLOGY_RELEASE_CHANNEL = "production";
+    process.env.NODE_ENV = "production";
+    process.env.SCRUM_PRODUCTION_ENABLED = "true";
+    delete process.env.ENABLE_EXPERIMENTAL_METHODOLOGIES;
+    try {
+      assert.strictEqual(getReleaseChannel(), "production");
+      assert.strictEqual(isScrumProductionEnabled(), true);
+      assert.strictEqual(isScrumEnabled(), true);
+      assert.strictEqual(isMethodologyAllowedForNewProjects("SCRUM"), true);
+      assert.strictEqual(isMethodologyAllowedForNewProjects("WATERFALL"), true);
+      assert.strictEqual(isMethodologyAllowedForNewProjects("CLASSIC"), true);
+      assert.strictEqual(isMethodologyAllowedForNewProjects("KANBAN"), false);
+      assert.strictEqual(isMethodologyAllowedForNewProjects("HYBRID"), false);
+
+      const registry = getMethodologyRegistry();
+      assert.strictEqual(registry.SCRUM.status, "AVAILABLE");
+      assert.strictEqual(registry.SCRUM.badge, "ACTIVE");
+      assert.strictEqual(registry.SCRUM.allowNewProjects, true);
+      assert.strictEqual(registry.SCRUM.statusMessage, "Available for production use.");
+      assert.ok(!registry.SCRUM.statusMessage.toLowerCase().includes("unavailable"));
+      assert.ok(!registry.SCRUM.statusMessage.toLowerCase().includes("preview"));
+
+      // Kanban and Hybrid must unconditionally remain locked
+      assert.strictEqual(registry.KANBAN.status, "IN_PROGRESS");
+      assert.strictEqual(registry.KANBAN.badge, "IN_PROGRESS");
+      assert.strictEqual(registry.KANBAN.allowNewProjects, false);
+      assert.strictEqual(registry.HYBRID.status, "IN_PROGRESS");
+      assert.strictEqual(registry.HYBRID.badge, "IN_PROGRESS");
+      assert.strictEqual(registry.HYBRID.allowNewProjects, false);
+    } finally {
+      delete process.env.METHODOLOGY_RELEASE_CHANNEL;
+      delete process.env.NODE_ENV;
+      delete process.env.SCRUM_PRODUCTION_ENABLED;
+    }
+  });
+
+  runTest("Production Release: Fail-safe default — missing, false, or malformed SCRUM_PRODUCTION_ENABLED blocks Scrum in production", () => {
+    process.env.METHODOLOGY_RELEASE_CHANNEL = "production";
+    process.env.NODE_ENV = "production";
+    const invalidValues = [undefined, "", "false", "0", "no", "yes", "true_xyz", "null"];
+    try {
+      for (const val of invalidValues) {
+        if (val === undefined) {
+          delete process.env.SCRUM_PRODUCTION_ENABLED;
+        } else {
+          process.env.SCRUM_PRODUCTION_ENABLED = val;
+        }
+        assert.strictEqual(isScrumProductionEnabled(), false, `Expected ${val} to evaluate to false`);
+        assert.strictEqual(isScrumEnabled(), false, `Expected isScrumEnabled() to evaluate to false for ${val}`);
+        assert.strictEqual(isMethodologyAllowedForNewProjects("SCRUM"), false);
+        const reg = getMethodologyRegistry();
+        assert.strictEqual(reg.SCRUM.status, "IN_PROGRESS");
+        assert.strictEqual(reg.SCRUM.badge, "IN_PROGRESS");
+        assert.strictEqual(reg.SCRUM.allowNewProjects, false);
+        assert.ok(reg.SCRUM.statusMessage.includes("not yet available in production"));
+      }
+    } finally {
+      delete process.env.METHODOLOGY_RELEASE_CHANNEL;
+      delete process.env.NODE_ENV;
+      delete process.env.SCRUM_PRODUCTION_ENABLED;
     }
   });
 

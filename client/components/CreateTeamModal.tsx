@@ -246,7 +246,11 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
         const data = await res.json();
         if (data?.registry && mounted) {
           if (data.registry.SCRUM) {
-            setDynamicScrumAvailability(Boolean(data.registry.SCRUM.allowNewProjects));
+            setDynamicScrumAvailability(
+              Boolean(data.registry.SCRUM.allowNewProjects),
+              data.registry.SCRUM.badge || (data.registry.SCRUM.allowNewProjects ? "ACTIVE" : "IN_PROGRESS"),
+              data.registry.SCRUM.statusMessage
+            );
           }
           setMethodologyOptions(
             ALL_METHODOLOGIES.map((m) => {
@@ -256,10 +260,10 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
               return {
                 id: m.id,
                 name: m.name,
-                badge: badge as "ACTIVE" | "IN_PROGRESS" | "WIP",
+                badge: badge as "ACTIVE" | "IN_PROGRESS" | "WIP" | "DEV_PREVIEW",
                 tagline: m.tagline,
                 allowNewProjects: allow,
-                statusMessage: serverMeta?.statusMessage || m.statusMessage || (allow ? "Available for production use" : "This methodology is currently in development and is not yet available in production."),
+                statusMessage: serverMeta?.statusMessage || m.statusMessage || (allow ? "Available for production use." : "This methodology is currently in development and is not yet available in production."),
                 wipNotice: m.wipDetails?.description || m.statusMessage,
               };
             })
@@ -607,7 +611,7 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
           <View style={{ gap: 8 }}>
             <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
               <Text style={s.subSectionLabel}>Methodology</Text>
-              <Text style={s.subSectionHint}>Waterfall & Classic active in V4.0</Text>
+              <Text style={s.subSectionHint}>Waterfall, Scrum & Classic active in V4.0</Text>
             </View>
             <View style={s.methodologyGrid}>
               {methodologyOptions.map((m) => {
