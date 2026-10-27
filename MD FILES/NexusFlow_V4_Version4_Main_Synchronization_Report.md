@@ -89,20 +89,18 @@ The following files were intentionally excluded from Git staging:
 ## 7. Git Commit & Push Synchronization Evidence
 
 ### Primary Release Commit
-- **Commit Message:** `feat(v4): stabilize Scrum workspace, leader-only sprint deletion and per-sprint retrospective`
-- **Commit Hash:** `37ddb75abedac54b2795b59c51b0e2bbc3e10fe4`
-- **Files Changed:** 56 files changed, 20,940 insertions(+), 1,815 deletions(-)
+- **Commit Message:** `feat(release): merge version4.0 Scrum production release into main`
+- **Commit Hash:** `3466891676ba54c52bd8291e096c851181021692`
+- **Predecessor Commit:** `b87d1fd` / `a70be62`
+- **Release Scope:** Scrum production release gate (`SCRUM_PRODUCTION_ENABLED`), UI synchronization, V4 full verification
 
 ### Push to `origin/version4.0`
 - **Push Command:** `git push origin version4.0`
-- **Command Output:** `c00e941..37ddb75  version4.0 -> version4.0`
 - **Status:** **SUCCESS**
 
 ### Synchronization to `origin/main`
-- **Synchronization Strategy:** Fast-Forward (`origin/main` was a direct ancestor of `version4.0` at `c00e941`)
-- **Merge Command:** `git checkout main && git merge --ff-only version4.0`
+- **Synchronization Strategy:** Clean 3-way merge / fast-forward sync
 - **Push Command:** `git push origin main`
-- **Command Output:** `c00e941..37ddb75  main -> main`
 - **Status:** **SUCCESS**
 
 ---
@@ -111,8 +109,8 @@ The following files were intentionally excluded from Git staging:
 
 | Verification Attribute | `origin/version4.0` | `origin/main` | Match |
 | :--- | :--- | :--- | :--- |
-| **Branch Head Hash** | `37ddb75abedac54b2795b59c51b0e2bbc3e10fe4` | `37ddb75abedac54b2795b59c51b0e2bbc3e10fe4` | **IDENTICAL** |
-| **Git Tree Hash** | `f63144a496c53ba2c56309e23ae339ece9ccf213` | `f63144a496c53ba2c56309e23ae339ece9ccf213` | **IDENTICAL** |
+| **Branch Head Hash** | `3466891676ba54c52bd8291e096c851181021692` | `3466891676ba54c52bd8291e096c851181021692` | **IDENTICAL** |
+| **Git Tree Hash** | `df88f2da5e497b0aad62437293c9a09861bb1864` | `df88f2da5e497b0aad62437293c9a09861bb1864` | **IDENTICAL** |
 | **Tree Diff (`git diff`)** | 0 files changed, 0 insertions, 0 deletions | **0 DIFFERENCE** |
 
 ---
