@@ -80,14 +80,13 @@ const WATERFALL_PRIMARY_TABS: { key: TabKey; label: string; icon: keyof typeof I
 
 const SCRUM_PRIMARY_TABS: { key: TabKey; label: string; icon: keyof typeof Ionicons.glyphMap; color: string }[] = [
   { key: "overview",  label: "Overview",       icon: "rocket",              color: "#4F46E5" },
-  { key: "plan",      label: "Plan",           icon: "document-text",       color: "#6366F1" },
-  { key: "tasks",     label: "Tasks",          icon: "list",                color: colors.greedy },
-  { key: "timeline",  label: "Timeline",       icon: "calendar",            color: colors.topo },
+  { key: "advisor",   label: "Project AI",     icon: "sparkles",            color: colors.accent },
   { key: "team",      label: "Team",           icon: "people",              color: colors.branch },
+  { key: "tasks",     label: "Tasks",          icon: "list",                color: colors.greedy },
   { key: "insights",  label: "Insights",       icon: "analytics",           color: colors.merge },
   { key: "retro",     label: "Retrospective",  icon: "refresh-circle",      color: "#059669" },
-  { key: "advisor",   label: "Project AI",     icon: "sparkles",            color: colors.accent },
-  { key: "chat",      label: "Chat",           icon: "chatbubbles",         color: colors.info },
+  { key: "chat",      label: "Chats",          icon: "chatbubbles",         color: colors.info },
+  { key: "github",    label: "GitHub",         icon: "logo-github",         color: colors.primary },
 ];
 
 const KANBAN_PRIMARY_TABS: { key: TabKey; label: string; icon: keyof typeof Ionicons.glyphMap; color: string }[] = [
@@ -105,13 +104,15 @@ const KANBAN_PRIMARY_TABS: { key: TabKey; label: string; icon: keyof typeof Ioni
 function normalizeTab(rawTab?: string, isScrum: boolean = false, isKanban: boolean = false): TabKey {
   if (!rawTab) return "overview";
   if (rawTab === "board") return "tasks";
-  if (rawTab === "backlog") return isKanban ? "plan" : "overview";
+  if (rawTab === "backlog") return isKanban ? "plan" : isScrum ? "overview" : "overview";
   if (rawTab === "flow") return "timeline";
   if (rawTab === "sprint") return isScrum ? "tasks" : "timeline";
+  if (rawTab === "timeline") return isScrum ? "tasks" : "timeline";
   if (rawTab === "members") return "team";
   if (rawTab === "retro" && isScrum) return "retro";
   if (rawTab === "policies") return "policies";
-  if (rawTab === "plan") return isScrum ? "plan" : isKanban ? "plan" : "overview";
+  if (rawTab === "plan") return isScrum ? "overview" : isKanban ? "plan" : "overview";
+  if (rawTab === "chats") return "chat";
   if (["graph", "analytics", "health", "risks", "retro"].includes(rawTab)) return "insights";
   if (isKanban && KANBAN_PRIMARY_TABS.some((t) => t.key === rawTab)) return rawTab as TabKey;
   if (isScrum && SCRUM_PRIMARY_TABS.some((t) => t.key === rawTab)) return rawTab as TabKey;
@@ -282,7 +283,20 @@ export default function Workspace() {
           isKanban ? (
             <KanbanOverviewPanel teamId={teamId} onNavigate={(t) => setActive(normalizeTab(t, false, true))} />
           ) : isScrum ? (
-            <ScrumOverviewPanel teamId={teamId} onNavigate={(t) => setActive(normalizeTab(t, true, false))} />
+            <ScrumOverviewPanel
+              teamId={teamId}
+              projectId={team?.activeProjectId}
+              initialSection={overviewSection}
+              onClearSection={() => setOverviewSection(null)}
+              onNavigate={(t) => {
+                if (t === "plan") {
+                  setActive("overview");
+                  setOverviewSection("plan");
+                } else {
+                  setActive(normalizeTab(t, true, false));
+                }
+              }}
+            />
           ) : (
             <OverviewPanel
               teamId={teamId}
@@ -304,7 +318,19 @@ export default function Workspace() {
           isKanban ? (
             <KanbanBacklogPanel teamId={teamId} onNavigateBoard={() => setActive("tasks")} />
           ) : isScrum ? (
-            <ScrumPlanPanel teamId={teamId} projectId={team?.activeProjectId || teamId} />
+            <ScrumOverviewPanel
+              teamId={teamId}
+              projectId={team?.activeProjectId}
+              initialSection="plan"
+              onNavigate={(t) => {
+                if (t === "plan") {
+                  setActive("overview");
+                  setOverviewSection("plan");
+                } else {
+                  setActive(normalizeTab(t, true, false));
+                }
+              }}
+            />
           ) : (
             <OverviewPanel
               teamId={teamId}
@@ -325,7 +351,13 @@ export default function Workspace() {
           isKanban ? (
             <KanbanBoardPanel teamId={teamId} />
           ) : isScrum ? (
-            <ScrumTasksPanel teamId={teamId} onNavigatePlan={() => setActive("plan")} />
+            <ScrumTasksPanel
+              teamId={teamId}
+              onNavigatePlan={() => {
+                setActive("overview");
+                setOverviewSection("plan");
+              }}
+            />
           ) : (
             <TasksPanel
               teamId={teamId}

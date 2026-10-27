@@ -273,16 +273,35 @@ function identifyBlockingChains(tasks, adjList) {
  * @param {String} toId - Task that fromId depends on
  * @returns {Boolean} true if adding the dependency would create a cycle
  */
-export function wouldCreateCycle(tasks, fromId, toId) {
+export function wouldCreateCycle(arg1, arg2, arg3) {
+  let tasks, fromId, toId;
+  if (Array.isArray(arg1)) {
+    tasks = arg1;
+    fromId = String(arg2);
+    toId = String(arg3);
+  } else if (Array.isArray(arg3)) {
+    fromId = String(arg1);
+    toId = String(arg2);
+    tasks = arg3;
+  } else {
+    return false;
+  }
+
+  // Self-dependency is always a trivial cycle
+  if (fromId === toId) return true;
+
   // Temporarily add the dependency and check
-  const tempTasks = tasks.map((t) => {
-    if (t._id.toString() === fromId) {
+  const tempTasks = tasks.map((doc) => {
+    const t = doc.toObject ? doc.toObject() : (doc._doc ? { ...doc._doc } : { ...doc });
+    const tId = (t._id || t.id)?.toString();
+    if (tId === fromId) {
       return {
         ...t,
+        _id: t._id || t.id,
         dependencies: [...(t.dependencies || []).map(String), toId],
       };
     }
-    return t;
+    return { ...t, _id: t._id || t.id };
   });
 
   const { adjList, inDegree } = buildGraph(tempTasks);

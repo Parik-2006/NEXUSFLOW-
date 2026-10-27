@@ -620,6 +620,126 @@ const ProjectSchema = new mongoose.Schema(
       }),
     },
 
+    // ── V4 Scrum Plan Lifecycle & AI Story Suggestions ───────────────────────
+    scrumPlanLifecycle: {
+      type: new mongoose.Schema(
+        {
+          status: {
+            type: String,
+            enum: [
+              "SETUP_PENDING",
+              "ANALYSIS_PENDING",
+              "SUGGESTIONS_GENERATED",
+              "BACKLOG_CONFIGURED",
+              "AWAITING_FINALIZATION",
+              "PLAN_FINALIZED",
+              "SPRINT_ACTIVE",
+            ],
+            default: "SETUP_PENDING",
+          },
+          analysisRevision: { type: Number, default: 0 },
+          suggestionsRevision: { type: Number, default: 0 },
+          analysis: {
+            purpose: { type: String, default: "" },
+            targetUsers: { type: [String], default: [] },
+            functionalRequirements: { type: [String], default: [] },
+            nonFunctionalRequirements: { type: [String], default: [] },
+            technicalConstraints: { type: [String], default: [] },
+            acceptanceConditions: { type: [String], default: [] },
+            dependenciesAndOrder: { type: [String], default: [] },
+            risksAndAssumptions: { type: [String], default: [] },
+            unresolvedQuestions: { type: [String], default: [] },
+            analyzedAt: { type: Date, default: null },
+            model: { type: String, default: "OmniRoute-ZeroCost" },
+          },
+          suggestions: [
+            {
+              suggestionId: { type: String, required: true },
+              title: { type: String, required: true },
+              epic: { type: String, default: "Core Features" },
+              userStory: { type: String, default: "" },
+              role: { type: String, default: "user" },
+              want: { type: String, default: "" },
+              benefit: { type: String, default: "" },
+              description: { type: String, default: "" },
+              acceptanceCriteria: { type: [String], default: [] },
+              suggestedPriority: {
+                type: String,
+                enum: ["critical", "high", "medium", "low", "CRITICAL", "HIGH", "MEDIUM", "LOW", "urgent", "URGENT"],
+                default: "medium",
+              },
+              suggestedStoryPoints: { type: Number, default: 3 },
+              estimatedHours: { type: Number, default: 8 },
+              dependencies: { type: [String], default: [] },
+              sourceArtifacts: { type: [String], default: [] },
+              sourceReferences: { type: [String], default: [] },
+              risks: { type: [String], default: [] },
+              taskBreakdown: [
+                {
+                  title: { type: String, default: "" },
+                  estimatedHours: { type: Number, default: 4 },
+                },
+              ],
+              status: {
+                type: String,
+                enum: ["draft", "approved", "rejected", "DRAFT", "APPROVED", "REJECTED"],
+                default: "draft",
+              },
+              approvedTaskId: { type: mongoose.Schema.Types.ObjectId, ref: "Task", default: null },
+              approvedAt: { type: Date, default: null },
+              approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+              approvedByName: { type: String, default: "" },
+              rejectionReason: { type: String, default: "" },
+              createdAt: { type: Date, default: Date.now },
+            },
+          ],
+          // ── Scope Contradictions / Conflicts ───────────────────────────────────
+          conflicts: [
+            {
+              id: { type: String, required: true },
+              title: { type: String, required: true },
+              reason: { type: String, default: "" },
+              sourceA: { type: String, required: true },
+              statementA: { type: String, required: true },
+              sourceB: { type: String, required: true },
+              statementB: { type: String, required: true },
+              sourceDocumentA: { type: String, default: "" },
+              sourceDocumentB: { type: String, default: "" },
+              relatedArtifactIds: { type: [String], default: [] },
+              relatedRequirementIds: { type: [String], default: [] },
+              affectedCategory: { type: String, default: "requirements" },
+              status: { type: String, enum: ["unresolved", "resolved"], default: "unresolved" },
+              selectedResolution: { type: String, default: null },
+              resolutionNote: { type: String, default: "" },
+              resolutionType: { type: String, default: null },
+              resolvedAt: { type: Date, default: null },
+              resolvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+              resolvedByName: { type: String, default: "" },
+              history: [
+                {
+                  action: { type: String, default: "resolved" },
+                  performedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+                  performedByName: { type: String, default: "" },
+                  timestamp: { type: Date, default: Date.now },
+                  notes: { type: String, default: "" },
+                },
+              ],
+            },
+          ],
+          // ── Finalization Metadata ─────────────────────────────────────────────
+          finalizedAt: { type: Date, default: null },
+          finalizedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+          finalizedByName: { type: String, default: "" },
+          planRevision: { type: Number, default: 0 },
+          finalizedPlanRevision: { type: Number, default: 0 },
+          finalizedStoryCount: { type: Number, default: 0 },
+          finalizedStoryIds: { type: [String], default: [] },
+        },
+        { _id: false }
+      ),
+      default: null,
+    },
+
     // ── Denormalized Counters (for dashboard, performance) ──────────────────
     // Mirrors the team-level taskCount but scoped to this project.
     // Incremented/decremented when tasks are created/deleted with this projectId.

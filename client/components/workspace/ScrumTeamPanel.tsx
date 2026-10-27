@@ -17,6 +17,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/components/feedback";
 import { Card, SkeletonCard, ProgressBar, Badge } from "@/components/ui";
+import MemberProfileModal from "@/components/workspace/MemberProfileModal";
 import { fetchScrumCapacity } from "@/services/scrumApiService";
 import { colors, spacing, radius, font } from "@/theme";
 
@@ -25,12 +26,13 @@ interface ScrumTeamPanelProps {
 }
 
 export default function ScrumTeamPanel({ teamId }: ScrumTeamPanelProps) {
-  const { token } = useAuth();
+  const { user, token } = useAuth();
   const toast = useToast();
 
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [selectedProfileMember, setSelectedProfileMember] = useState<any>(null);
 
   const loadData = useCallback(async () => {
     try {
@@ -55,13 +57,20 @@ export default function ScrumTeamPanel({ teamId }: ScrumTeamPanelProps) {
 
   const members = data?.members || [];
   const capacity = data?.capacity || {
-    totalCapacityHours: 120,
-    totalCommittedHours: 84,
-    utilizationPct: 70,
+    totalCapacityHours: members.reduce((sum: number, m: any) => sum + (m.capacityHours || m.capacity || 40), 0),
+    totalCommittedHours: 0,
+    utilizationPct: 0,
     overloadCount: 0,
+    backlogHours: 0,
+    backlogStoryCount: 0,
+    activeSprintName: null,
   };
   const skillGaps = data?.skillGaps || [];
   const suggestions = data?.balancingSuggestions || [];
+
+  const currentUserId = (user?._id || user?.id)?.toString();
+  const currentUserEmail = (user?.email || "").toLowerCase().trim();
+  const currentUserName = (user?.name || "").toLowerCase().trim();
 
   if (loading) {
     return (
@@ -81,9 +90,17 @@ export default function ScrumTeamPanel({ teamId }: ScrumTeamPanelProps) {
       {/* ── 1. Capacity Hero Card ──────────────────────────────────────────── */}
       <View style={s.heroCard}>
         <View style={{ flex: 1 }}>
-          <Text style={s.heroTitle}>Sprint Capacity & Load Intelligence</Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 4 }}>
+            <Text style={s.heroTitle}>Sprint Capacity & Load Intelligence</Text>
+            {capacity.activeSprintName ? (
+              <Badge label={`Sprint: ${capacity.activeSprintName}`} variant="primary" size="sm" />
+            ) : (
+              <Badge label="Planning (No Active Sprint)" variant="neutral" size="sm" />
+            )}
+          </View>
           <Text style={s.heroSub}>
             Deterministic workload distribution across {members.length} team members.
+            {!capacity.activeSprintName && " Sprint committed effort is 0h until a sprint is started."}
           </Text>
         </View>
 
@@ -94,7 +111,7 @@ export default function ScrumTeamPanel({ teamId }: ScrumTeamPanelProps) {
           </View>
           <View style={s.statBox}>
             <Text style={s.statNum}>{capacity.totalCommittedHours}h</Text>
-            <Text style={s.statLbl}>Committed</Text>
+            <Text style={s.statLbl}>Sprint Committed</Text>
           </View>
           <View style={s.statBox}>
             <Text
@@ -110,11 +127,25 @@ export default function ScrumTeamPanel({ teamId }: ScrumTeamPanelProps) {
         </View>
       </View>
 
+      {/* ── Backlog Work Summary (Uncommitted) ──────────────────────────────── */}
+      {!capacity.activeSprintName && (capacity.backlogHours > 0 || capacity.backlogStoryCount > 0) && (
+        <View style={s.backlogMetaCard}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <Ionicons name="file-tray-full-outline" size={16} color={colors.primary} />
+            <Text style={s.backlogMetaTitle}>Candidate Product Backlog Scope</Text>
+          </View>
+          <Text style={s.backlogMetaTxt}>
+            {capacity.backlogHours} estimated hours across {capacity.backlogStoryCount} stories currently in Product Backlog awaiting sprint selection.
+          </Text>
+        </View>
+      )}
+
       {/* ── 2. Team Member Roster & Capacity Bars ──────────────────────────── */}
       <View style={s.card}>
         <View style={s.cardHead}>
           <Ionicons name="people" size={16} color={colors.primary} />
           <Text style={s.cardTitle}>Scrum Roles & Individual Load</Text>
+          <Text style={s.cardSubRight}>Tap member to view profile & skills</Text>
         </View>
 
         <View style={s.memberList}>
@@ -126,10 +157,14 @@ export default function ScrumTeamPanel({ teamId }: ScrumTeamPanelProps) {
                 ? m.skills
                 : typeof m.skills === "object" && m.skills !== null
                   ? Object.entries(m.skills).filter(([, v]) => (v as number) >= 5).map(([k]) => k.toUpperCase())
-                  : ["FRONTEND", "DEVELOPER"];
+                  : ["DEVELOPER"];
 
             return (
-              <View key={m.id || m.userId || mIdx} style={s.memberItem}>
+              <Pressable
+                key={m.id || m.userId || mIdx}
+                onPress={() => setSelectedProfileMember(m)}
+                style={s.memberItem}
+              >
                 <View style={s.memberTop}>
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
                     <View style={s.avatar}>
@@ -172,14 +207,14 @@ export default function ScrumTeamPanel({ teamId }: ScrumTeamPanelProps) {
                     </View>
                   ))}
                 </View>
-              </View>
+              </Pressable>
             );
           })}
         </View>
       </View>
 
       {/* ── 3. Skill Gap Analysis (Prompt 11) ───────────────────────────────── */}
-      {skillGaps.length > 0 && (
+      {skillGaps.length > 0 ? (
         <View style={s.warnCard}>
           <View style={s.warnHead}>
             <Ionicons name="alert-circle" size={18} color="#b45309" />
@@ -188,16 +223,31 @@ export default function ScrumTeamPanel({ teamId }: ScrumTeamPanelProps) {
           <Text style={s.warnSub}>
             Some candidate backlog items require competencies not currently verified on this team:
           </Text>
-          <View style={{ gap: 4, marginTop: 4 }}>
+          <View style={{ gap: 8, marginTop: 6 }}>
             {skillGaps.map((gap: any, i: number) => (
               <View key={i} style={s.gapRow}>
-                <Ionicons name="chevron-forward" size={13} color="#b45309" />
-                <Text style={s.gapTxt}>
-                  {gap.skill} — needed for "{gap.taskTitle}"
-                </Text>
+                <Ionicons name="chevron-forward" size={14} color="#b45309" style={{ marginTop: 2 }} />
+                <View style={{ flex: 1, gap: 2 }}>
+                  <Text style={s.gapTxt}>
+                    <Text style={{ fontWeight: "700" }}>{gap.skill}</Text> — needed for "{gap.taskTitle}"
+                  </Text>
+                  {gap.missingCapability && (
+                    <Text style={s.gapDetail}>{gap.missingCapability} ({gap.basis || "Requirement"})</Text>
+                  )}
+                  {gap.action && (
+                    <Text style={s.gapAction}>Action: {gap.action}</Text>
+                  )}
+                </View>
               </View>
             ))}
           </View>
+        </View>
+      ) : (
+        <View style={s.safeSkillCard}>
+          <Ionicons name="checkmark-circle-outline" size={18} color="#16a34a" />
+          <Text style={s.safeSkillTxt}>
+            All candidate tasks align with currently verified team skill profiles.
+          </Text>
         </View>
       )}
 
@@ -215,12 +265,32 @@ export default function ScrumTeamPanel({ teamId }: ScrumTeamPanelProps) {
             {suggestions.map((sug: any, i: number) => (
               <View key={i} style={s.sugItem}>
                 <Ionicons name="bulb-outline" size={16} color="#4f46e5" />
-                <Text style={s.sugTxt}>{sug.message}</Text>
+                <Text style={s.sugTxt}>{sug.message || sug.reason}</Text>
               </View>
             ))}
           </View>
         </View>
       )}
+
+      {/* Member Profile Modal (Reuse established V1.0/Waterfall Fix 1 implementation) */}
+      <MemberProfileModal
+        visible={!!selectedProfileMember}
+        onClose={() => setSelectedProfileMember(null)}
+        member={selectedProfileMember}
+        teamId={teamId}
+        isSelf={Boolean(
+          selectedProfileMember && (
+            (selectedProfileMember.userId && currentUserId && selectedProfileMember.userId === currentUserId) ||
+            (currentUserEmail && selectedProfileMember.name && selectedProfileMember.name.toLowerCase().trim() === currentUserEmail) ||
+            (currentUserName && selectedProfileMember.name && selectedProfileMember.name.toLowerCase().trim() === currentUserName)
+          )
+        )}
+        isLeader={true}
+        onEditSkills={() => {
+          setSelectedProfileMember(null);
+          loadData();
+        }}
+      />
     </ScrollView>
   );
 }
@@ -438,5 +508,53 @@ const s = StyleSheet.create({
     fontSize: 12,
     color: "#374151",
     lineHeight: 16,
+  },
+  cardSubRight: {
+    fontSize: 11,
+    color: "#78716c",
+    marginLeft: "auto",
+  },
+  backlogMetaCard: {
+    backgroundColor: "#f8fafc",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    borderRadius: radius.md,
+    padding: spacing.sm,
+    gap: 4,
+  },
+  backlogMetaTitle: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: colors.primary,
+  },
+  backlogMetaTxt: {
+    fontSize: 12,
+    color: "#64748b",
+    lineHeight: 16,
+  },
+  gapDetail: {
+    fontSize: 11,
+    color: "#78350f",
+  },
+  gapAction: {
+    fontSize: 11,
+    color: "#4f46e5",
+    fontWeight: "600",
+  },
+  safeSkillCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#f0fdf4",
+    borderWidth: 1,
+    borderColor: "#bbf7d0",
+    borderRadius: radius.md,
+    padding: spacing.md,
+  },
+  safeSkillTxt: {
+    flex: 1,
+    fontSize: 12,
+    color: "#166534",
+    fontWeight: "600",
   },
 });

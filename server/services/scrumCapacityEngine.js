@@ -30,7 +30,10 @@ import Team from "../models/Team.js";
  */
 export function calculateSprintCapacity(sprint, tasks, team) {
   const members = team?.members || [];
-  const sprintTasks = tasks.filter((t) => t.sprintId?.toString() === sprint?._id?.toString());
+  const sprintIdStr = sprint?._id?.toString();
+  const sprintTasks = sprintIdStr
+    ? tasks.filter((t) => t.sprintId && t.sprintId.toString() === sprintIdStr)
+    : [];
 
   const memberAnalysis = members.map((m) => {
     const userId = (m.userId?._id || m.userId)?.toString();
@@ -210,55 +213,127 @@ export function suggestAllocation(tasks, members, context = {}) {
   const suggestions = [];
 
   for (const task of tasks) {
-    if (task.assignedTo) continue; // skip already assigned
+    if (task.assignedTo && !context.includeAssigned) continue; // skip already assigned unless requested
 
-    const requiredSkills = (task.requiredSkills || []).map((s) => s.toLowerCase());
-    const taskHours = task.estimatedHours || 0;
+    const requiredSkills = Array.isArray(task.requiredSkills)
+      ? task.requiredSkills.map((s) => String(s).toLowerCase().trim())
+      : [];
+    if (requiredSkills.length === 0 && task.skillWeights) {
+      Object.entries(task.skillWeights || {}).forEach(([k, v]) => {
+        if ((v || 0) >= 5) requiredSkills.push(k.toLowerCase().trim());
+      });
+    }
+    const taskHours = Number(task.estimatedHours) || (task.storyPoints ? task.storyPoints * 2 : 4);
 
     const candidates = members
       .map((m) => {
-        const userId = (m.userId?._id || m.userId)?.toString();
-        const memberSkills = Object.entries(m.skills || {})
-          .filter(([, v]) => (v || 0) >= 5)
-          .map(([k]) => k.toLowerCase());
+        const userId = (m.userId?._id || m.userId || m.id)?._id?.toString() || (m.userId?._id || m.userId || m.id)?.toString();
+        let memberSkills = [];
+        const rawSkills = m.skills && typeof m.skills === "object"
+          ? (typeof m.skills.toObject === "function" ? m.skills.toObject() : m.skills)
+          : {};
+        if (rawSkills && typeof rawSkills === "object" && !Array.isArray(rawSkills)) {
+          memberSkills = Object.entries(rawSkills)
+            .filter(([k, v]) => !k.startsWith("$") && !k.startsWith("_") && (v || 0) >= 5)
+            .map(([k]) => k.toLowerCase().trim());
+        } else if (Array.isArray(m.skills)) {
+          memberSkills = m.skills.map((s) => String(s).toLowerCase().trim());
+        }
+        const vSkills = m.verifiedSkills || m.userId?.verifiedSkills || m.user?.verifiedSkills;
+        if (Array.isArray(vSkills)) {
+          vSkills.forEach((s) => memberSkills.push(String(s).toLowerCase().trim()));
+        }
+
+        const skillAliases = {
+          "node.js": "backend",
+          node: "backend",
+          nodejs: "backend",
+          mongodb: "backend",
+          mongo: "backend",
+          express: "backend",
+          database: "backend",
+          architecture: "backend",
+          react: "frontend",
+          vue: "frontend",
+          css: "frontend",
+          html: "frontend",
+          docker: "devops",
+          k8s: "devops",
+          kubernetes: "devops",
+          ci: "devops",
+          jest: "testing",
+          cypress: "testing",
+          qa: "testing",
+        };
 
         // Skill match score
+        const matchedSkills = requiredSkills.filter((s) => {
+          if (memberSkills.includes(s)) return true;
+          const mapped = skillAliases[s];
+          return mapped && memberSkills.includes(mapped);
+        });
         const skillMatch = requiredSkills.length > 0
-          ? requiredSkills.filter((s) => memberSkills.includes(s)).length / requiredSkills.length
-          : 0.5;
+          ? matchedSkills.length / requiredSkills.length
+          : 0.6; // baseline general capability
 
         // Capacity fit score
-        const remaining = (m.capacity || 30) - (m.assignedLoad || 0);
-        const capacityFit = remaining >= taskHours ? 1 : remaining > 0 ? remaining / taskHours : 0;
+        const memberCapacity = Number(m.capacity || m.capacityHours) || 40;
+        const assignedLoad = context.memberLoads?.[userId] ?? context[userId] ?? (m.committedHours || m.assignedHours || m.assignedLoad || 0);
+        const remaining = memberCapacity - assignedLoad;
+        const capacityFit = remaining >= taskHours ? 1 : remaining > 0 ? remaining / taskHours : 0.1;
 
         // Workload balance score
-        const utilization = (m.capacity || 30) > 0 ? (m.assignedLoad || 0) / (m.capacity || 30) : 1;
+        const utilization = memberCapacity > 0 ? assignedLoad / memberCapacity : 1;
         const balanceScore = Math.max(0, 1 - utilization);
 
-        const totalScore = skillMatch * 0.4 + capacityFit * 0.35 + balanceScore * 0.25;
+        const totalScore = Math.round((skillMatch * 0.45 + capacityFit * 0.35 + balanceScore * 0.20) * 100);
 
         return {
           userId,
-          userName: m.name || "Member",
+          userName: m.name || m.userName || m.userId?.name || "Member",
           skillMatch: Math.round(skillMatch * 100),
+          matchedSkills,
           capacityFit: Math.round(capacityFit * 100),
           balanceScore: Math.round(balanceScore * 100),
-          totalScore: Math.round(totalScore * 100),
+          totalScore: Math.max(15, Math.min(99, totalScore)),
           remainingCapacity: remaining,
+          hoursBefore: assignedLoad,
+          hoursAfter: assignedLoad + taskHours,
+          capacity: memberCapacity,
         };
       })
-      .filter((c) => c.totalScore > 20)
+      .filter((c) => c.totalScore > 10)
       .sort((a, b) => b.totalScore - a.totalScore);
 
     if (candidates.length > 0) {
+      const top = candidates[0];
       suggestions.push({
-        taskId: task._id,
+        taskId: task._id?.toString() || task._id,
         taskTitle: task.title,
-        requiredSkills: task.requiredSkills,
+        requiredSkills: task.requiredSkills || [],
         estimatedHours: taskHours,
-        topCandidate: candidates[0],
-        alternatives: candidates.slice(1, 3),
-        reason: `Best match: ${candidates[0].userName} (score: ${candidates[0].totalScore}%, skill: ${candidates[0].skillMatch}%, capacity: ${candidates[0].capacityFit}%)`,
+        storyPoints: task.storyPoints || 1,
+        currentAssigneeId: task.assignedTo || null,
+        recommendedMemberId: top.userId,
+        recommendedMemberName: top.userName,
+        fitScore: top.totalScore,
+        fitCost: 100 - top.totalScore,
+        skillEvidence: top.matchedSkills?.length > 0
+          ? `Verified skill match: ${top.matchedSkills.join(", ")}`
+          : "Available capacity match with general team development capability",
+        capacityImpact: {
+          hoursBefore: top.hoursBefore,
+          hoursAfter: top.hoursAfter,
+          capacity: top.capacity,
+        },
+        topCandidate: top,
+        alternatives: candidates.slice(1, 3).map((alt) => ({
+          userId: alt.userId,
+          name: alt.userName,
+          fitScore: alt.totalScore,
+          costDifference: top.totalScore - alt.totalScore,
+        })),
+        reason: `Best fit: ${top.userName} (${top.totalScore}% Fit Score, ${top.skillMatch}% skill alignment, ${top.hoursBefore}h → ${top.hoursAfter}h load)`,
       });
     }
   }

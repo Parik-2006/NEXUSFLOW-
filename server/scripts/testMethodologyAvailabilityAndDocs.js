@@ -24,6 +24,8 @@ dotenv.config({ path: path.join(__dirname, "../.env"), override: true });
 
 import {
   METHODOLOGY_IDS,
+  getReleaseChannel,
+  isScrumDevelopmentEnabled,
   areExperimentalMethodologiesEnabled,
   getMethodologyRegistry,
   normalizeMethodologyId,
@@ -69,6 +71,7 @@ async function main() {
   runTest("Classic & Waterfall are allowed in production", () => {
     delete process.env.ENABLE_EXPERIMENTAL_METHODOLOGIES;
     process.env.NODE_ENV = "production";
+    delete process.env.METHODOLOGY_RELEASE_CHANNEL;
     try {
       assert.strictEqual(isMethodologyAllowedForNewProjects("WATERFALL"), true);
       assert.strictEqual(isMethodologyAllowedForNewProjects("CLASSIC"), true);
@@ -82,6 +85,7 @@ async function main() {
   runTest("Scrum, Kanban, Hybrid are rejected in production mode", () => {
     delete process.env.ENABLE_EXPERIMENTAL_METHODOLOGIES;
     process.env.NODE_ENV = "production";
+    delete process.env.METHODOLOGY_RELEASE_CHANNEL;
     try {
       assert.strictEqual(isMethodologyAllowedForNewProjects("SCRUM"), false);
       assert.strictEqual(isMethodologyAllowedForNewProjects("KANBAN"), false);
@@ -97,6 +101,7 @@ async function main() {
   runTest("Safeguard A: Production forcibly blocks WIP methodologies even if ENABLE_EXPERIMENTAL_METHODOLOGIES='true'", () => {
     process.env.NODE_ENV = "production";
     process.env.ENABLE_EXPERIMENTAL_METHODOLOGIES = "true";
+    delete process.env.METHODOLOGY_RELEASE_CHANNEL;
     try {
       assert.strictEqual(areExperimentalMethodologiesEnabled(), false);
       assert.strictEqual(isMethodologyAllowedForNewProjects("SCRUM"), false);
@@ -139,22 +144,107 @@ async function main() {
   });
 
   runTest("Metadata check: Status messages and badges conform to specification", () => {
-    const scrumAvail = getMethodologyAvailability("SCRUM");
-    assert.strictEqual(scrumAvail.status, "IN_PROGRESS");
-    assert.strictEqual(scrumAvail.badge, "IN_PROGRESS");
-    assert.strictEqual(scrumAvail.allowNewProjects, false);
-    assert.ok(scrumAvail.statusMessage.includes("development"));
+    delete process.env.METHODOLOGY_RELEASE_CHANNEL;
+    delete process.env.ENABLE_EXPERIMENTAL_METHODOLOGIES;
+    delete process.env.NODE_ENV;
+    try {
+      const scrumAvail = getMethodologyAvailability("SCRUM");
+      assert.strictEqual(scrumAvail.status, "IN_PROGRESS");
+      assert.strictEqual(scrumAvail.badge, "IN_PROGRESS");
+      assert.strictEqual(scrumAvail.allowNewProjects, false);
+      assert.ok(scrumAvail.statusMessage.includes("development"));
 
-    const waterfallAvail = getMethodologyAvailability("WATERFALL");
-    assert.strictEqual(scrumAvail.badge !== waterfallAvail.badge, true);
-    assert.strictEqual(waterfallAvail.status, "AVAILABLE");
-    assert.strictEqual(waterfallAvail.badge, "ACTIVE");
-    assert.strictEqual(waterfallAvail.allowNewProjects, true);
+      const waterfallAvail = getMethodologyAvailability("WATERFALL");
+      assert.strictEqual(scrumAvail.badge !== waterfallAvail.badge, true);
+      assert.strictEqual(waterfallAvail.status, "AVAILABLE");
+      assert.strictEqual(waterfallAvail.badge, "ACTIVE");
+      assert.strictEqual(waterfallAvail.allowNewProjects, true);
+    } finally {
+      process.env.METHODOLOGY_RELEASE_CHANNEL = "development";
+    }
+  });
+
+  runTest("Release Channel: METHODOLOGY_RELEASE_CHANNEL='development' enables Scrum Preview while keeping Kanban & Hybrid In Progress", () => {
+    process.env.METHODOLOGY_RELEASE_CHANNEL = "development";
+    delete process.env.ENABLE_EXPERIMENTAL_METHODOLOGIES;
+    delete process.env.NODE_ENV;
+    try {
+      assert.strictEqual(getReleaseChannel(), "development");
+      assert.strictEqual(isScrumDevelopmentEnabled(), true);
+      assert.strictEqual(isMethodologyAllowedForNewProjects("SCRUM"), true);
+      assert.strictEqual(isMethodologyAllowedForNewProjects("WATERFALL"), true);
+      assert.strictEqual(isMethodologyAllowedForNewProjects("CLASSIC"), true);
+      assert.strictEqual(isMethodologyAllowedForNewProjects("KANBAN"), false);
+      assert.strictEqual(isMethodologyAllowedForNewProjects("HYBRID"), false);
+
+      const registry = getMethodologyRegistry();
+      assert.strictEqual(registry.SCRUM.status, "AVAILABLE");
+      assert.strictEqual(registry.SCRUM.badge, "DEV_PREVIEW");
+      assert.strictEqual(registry.SCRUM.allowNewProjects, true);
+      assert.strictEqual(registry.KANBAN.status, "IN_PROGRESS");
+      assert.strictEqual(registry.KANBAN.allowNewProjects, false);
+      assert.strictEqual(registry.HYBRID.status, "IN_PROGRESS");
+      assert.strictEqual(registry.HYBRID.allowNewProjects, false);
+    } finally {
+      delete process.env.METHODOLOGY_RELEASE_CHANNEL;
+    }
+  });
+
+  runTest("Release Channel: METHODOLOGY_RELEASE_CHANNEL='production' forcibly blocks Scrum, Kanban, Hybrid", () => {
+    process.env.METHODOLOGY_RELEASE_CHANNEL = "production";
+    process.env.NODE_ENV = "development";
+    process.env.ENABLE_EXPERIMENTAL_METHODOLOGIES = "true";
+    try {
+      assert.strictEqual(getReleaseChannel(), "production");
+      assert.strictEqual(isScrumDevelopmentEnabled(), false);
+      assert.strictEqual(areExperimentalMethodologiesEnabled(), false);
+      assert.strictEqual(isMethodologyAllowedForNewProjects("SCRUM"), false);
+      assert.strictEqual(isMethodologyAllowedForNewProjects("KANBAN"), false);
+      assert.strictEqual(isMethodologyAllowedForNewProjects("HYBRID"), false);
+      assert.strictEqual(isMethodologyAllowedForNewProjects("WATERFALL"), true);
+      assert.strictEqual(isMethodologyAllowedForNewProjects("CLASSIC"), true);
+    } finally {
+      delete process.env.METHODOLOGY_RELEASE_CHANNEL;
+      delete process.env.NODE_ENV;
+      delete process.env.ENABLE_EXPERIMENTAL_METHODOLOGIES;
+    }
+  });
+
+  runTest("Release Channel: Vercel Preview (NODE_ENV='production' & METHODOLOGY_RELEASE_CHANNEL='development') enables Scrum safely", () => {
+    process.env.NODE_ENV = "production";
+    process.env.METHODOLOGY_RELEASE_CHANNEL = "development";
+    try {
+      assert.strictEqual(getReleaseChannel(), "development");
+      assert.strictEqual(isScrumDevelopmentEnabled(), true);
+      assert.strictEqual(isMethodologyAllowedForNewProjects("SCRUM"), true);
+      assert.strictEqual(isMethodologyAllowedForNewProjects("KANBAN"), false);
+      assert.strictEqual(isMethodologyAllowedForNewProjects("HYBRID"), false);
+      assert.strictEqual(isMethodologyAllowedForNewProjects("WATERFALL"), true);
+    } finally {
+      delete process.env.NODE_ENV;
+      delete process.env.METHODOLOGY_RELEASE_CHANNEL;
+    }
+  });
+
+  runTest("Release Channel: Missing or invalid channel fails safe to production rules when NODE_ENV='production'", () => {
+    process.env.NODE_ENV = "production";
+    process.env.METHODOLOGY_RELEASE_CHANNEL = "INVALID_CHANNEL_XYZ";
+    try {
+      assert.strictEqual(getReleaseChannel(), "production");
+      assert.strictEqual(isScrumDevelopmentEnabled(), false);
+      assert.strictEqual(isMethodologyAllowedForNewProjects("SCRUM"), false);
+      assert.strictEqual(isMethodologyAllowedForNewProjects("KANBAN"), false);
+      assert.strictEqual(isMethodologyAllowedForNewProjects("HYBRID"), false);
+    } finally {
+      delete process.env.NODE_ENV;
+      delete process.env.METHODOLOGY_RELEASE_CHANNEL;
+    }
   });
 
   runTest("Development Override: ENABLE_EXPERIMENTAL_METHODOLOGIES='true' allows all in non-production", () => {
     process.env.NODE_ENV = "development";
     process.env.ENABLE_EXPERIMENTAL_METHODOLOGIES = "true";
+    delete process.env.METHODOLOGY_RELEASE_CHANNEL;
     try {
       assert.strictEqual(areExperimentalMethodologiesEnabled(), true);
       assert.strictEqual(isMethodologyAllowedForNewProjects("SCRUM"), true);

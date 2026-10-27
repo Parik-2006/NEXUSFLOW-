@@ -40,6 +40,7 @@ import {
   getMethodologyConfig,
   ALL_METHODOLOGIES,
   isMethodologyAllowedForNewProjects,
+  setDynamicScrumAvailability,
 } from "@/utils/methodologyConfig";
 
 export const DOMAINS = [
@@ -54,7 +55,7 @@ export const DOMAINS = [
 export const METHODOLOGY_OPTIONS = ALL_METHODOLOGIES.map((m) => ({
   id: m.id,
   name: m.name,
-  badge: (m.allowNewProjects ? "ACTIVE" : "IN_PROGRESS") as "ACTIVE" | "IN_PROGRESS" | "WIP",
+  badge: (m.badge || (m.allowNewProjects ? "ACTIVE" : "IN_PROGRESS")) as "ACTIVE" | "IN_PROGRESS" | "WIP" | "DEV_PREVIEW",
   tagline: m.tagline,
   allowNewProjects: Boolean(m.allowNewProjects),
   statusMessage: m.statusMessage || (m.allowNewProjects ? "Available for production use" : "This methodology is currently in development and is not yet available in production."),
@@ -233,6 +234,46 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
   useEffect(() => {
     refreshVerifications();
   }, [refreshVerifications]);
+
+  const [methodologyOptions, setMethodologyOptions] = useState(METHODOLOGY_OPTIONS);
+
+  useEffect(() => {
+    let mounted = true;
+    async function syncMethodologies() {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/methodologies/availability`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data?.registry && mounted) {
+          if (data.registry.SCRUM) {
+            setDynamicScrumAvailability(Boolean(data.registry.SCRUM.allowNewProjects));
+          }
+          setMethodologyOptions(
+            ALL_METHODOLOGIES.map((m) => {
+              const serverMeta = data.registry[m.id];
+              const allow = serverMeta ? Boolean(serverMeta.allowNewProjects) : Boolean(m.allowNewProjects);
+              const badge = serverMeta?.badge || (allow ? "ACTIVE" : "IN_PROGRESS");
+              return {
+                id: m.id,
+                name: m.name,
+                badge: badge as "ACTIVE" | "IN_PROGRESS" | "WIP",
+                tagline: m.tagline,
+                allowNewProjects: allow,
+                statusMessage: serverMeta?.statusMessage || m.statusMessage || (allow ? "Available for production use" : "This methodology is currently in development and is not yet available in production."),
+                wipNotice: m.wipDetails?.description || m.statusMessage,
+              };
+            })
+          );
+        }
+      } catch {
+        // Fall back gracefully to static configuration
+      }
+    }
+    syncMethodologies();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   // FIX A & B: Description validation — minimum 1000 meaningful characters, 1200+ recommended
   const descTrimmed = description.trim();
@@ -569,16 +610,17 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
               <Text style={s.subSectionHint}>Waterfall & Classic active in V4.0</Text>
             </View>
             <View style={s.methodologyGrid}>
-              {METHODOLOGY_OPTIONS.map((m) => {
+              {methodologyOptions.map((m) => {
                 const active = methodology === m.id;
                 const isAllowed = m.allowNewProjects;
                 const isInProgress = !isAllowed;
+                const isDevPreview = m.badge === "DEV_PREVIEW";
                 return (
                   <Pressable
                     key={m.id}
                     disabled={!isAllowed}
                     accessibilityState={{ disabled: !isAllowed }}
-                    accessibilityLabel={`${m.name} methodology (${isAllowed ? "Active" : "In Progress - Not available in production"})`}
+                    accessibilityLabel={`${m.name} methodology (${isAllowed ? (isDevPreview ? "Developer Preview" : "Active") : "In Progress - Not available in production"})`}
                     onPress={() => {
                       if (isAllowed) setMethodology(m.id);
                     }}
@@ -591,9 +633,9 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
                   >
                     <View style={s.methCardTop}>
                       <Text style={[s.methCardTitle, active && { color: colors.text }, isInProgress && { color: colors.textMuted }]}>{m.name}</Text>
-                      <View style={[s.methBadge, isInProgress ? s.methBadgeWip : s.methBadgeActive]}>
-                        <Text style={[s.methBadgeTxt, isInProgress ? s.methBadgeWipTxt : s.methBadgeActiveTxt]}>
-                          {isInProgress ? "IN PROGRESS" : "ACTIVE"}
+                      <View style={[s.methBadge, isInProgress ? s.methBadgeWip : isDevPreview ? s.methBadgeDev : s.methBadgeActive]}>
+                        <Text style={[s.methBadgeTxt, isInProgress ? s.methBadgeWipTxt : isDevPreview ? s.methBadgeDevTxt : s.methBadgeActiveTxt]}>
+                          {isInProgress ? "IN PROGRESS" : isDevPreview ? "DEV PREVIEW" : "ACTIVE"}
                         </Text>
                       </View>
                     </View>
@@ -601,6 +643,11 @@ export default function CreateTeamModal({ visible, onClose, onCreate }: {
                     {isInProgress && (
                       <Text style={s.methDisabledNote} numberOfLines={2}>
                         In development • Unavailable in production
+                      </Text>
+                    )}
+                    {isAllowed && isDevPreview && (
+                      <Text style={[s.methDisabledNote, { color: "#4338ca" }]} numberOfLines={2}>
+                        V4 Development Preview • Enabled for testing
                       </Text>
                     )}
                   </Pressable>
@@ -1126,9 +1173,11 @@ const s = StyleSheet.create({
   methBadge: { paddingHorizontal: 6, paddingVertical: 1.5, borderRadius: radius.pill },
   methBadgeActive: { backgroundColor: colors.successSoft },
   methBadgeWip: { backgroundColor: "#fef3c7" },
+  methBadgeDev: { backgroundColor: "#e0e7ff" },
   methBadgeTxt: { fontSize: 9, fontWeight: "800" },
   methBadgeActiveTxt: { color: colors.success },
   methBadgeWipTxt: { color: "#b45309" },
+  methBadgeDevTxt: { color: "#3730a3" },
 
   wipCallout: { flexDirection: "row", alignItems: "flex-start", gap: 8, backgroundColor: "#fffbeb", borderWidth: 1, borderColor: "#fde68a", borderRadius: radius.md, padding: 10 },
   wipCalloutTitle: { fontSize: 12, fontWeight: "700", color: "#92400e" },

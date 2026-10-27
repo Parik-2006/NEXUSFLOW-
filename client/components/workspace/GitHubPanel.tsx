@@ -75,6 +75,7 @@ interface RepoTreeResponse {
 
 interface ConnectionStatus {
   connected: boolean;
+  authorized?: boolean;
   repo?: {
     owner: string;
     name: string;
@@ -219,6 +220,27 @@ export default function GitHubPanel({
   useEffect(() => {
     fetchStatusAndData();
     loadUserRepos();
+
+    // Check for OAuth callback query parameters in web environment
+    if (Platform.OS === "web" && typeof window !== "undefined" && window.location) {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("github_auth") === "success") {
+        toast("GitHub account authorized successfully! Select a repository to connect.", "success");
+        params.delete("github_auth");
+        const newSearch = params.toString();
+        const newUrl = window.location.pathname + (newSearch ? `?${newSearch}` : "") + window.location.hash;
+        window.history.replaceState({}, "", newUrl);
+        fetchStatusAndData();
+        loadUserRepos();
+      } else if (params.get("github_error")) {
+        const errorMsg = params.get("github_error") || "GitHub authorization failed";
+        toast(decodeURIComponent(errorMsg), "error");
+        params.delete("github_error");
+        const newSearch = params.toString();
+        const newUrl = window.location.pathname + (newSearch ? `?${newSearch}` : "") + window.location.hash;
+        window.history.replaceState({}, "", newUrl);
+      }
+    }
   }, [fetchStatusAndData, loadUserRepos]);
 
   // OAuth Initiation
@@ -331,6 +353,9 @@ export default function GitHubPanel({
       if (res.ok) {
         toast("Repository disconnected. Historical project memory preserved.", "success");
         setConfirmDisconnectModal(false);
+        setStatus(null);
+        setSummary(null);
+        setTreeData(null);
         fetchStatusAndData();
       } else {
         const err = await res.json();
@@ -422,15 +447,15 @@ export default function GitHubPanel({
               Connect your repository to empower Project AI with persistent workspace memory, code architecture analysis, commit change tracking, and task-to-code traceability.
             </Text>
 
-            {/* OAuth Connect */}
-            <View style={{ marginTop: spacing.lg, width: "100%", maxWidth: 380, gap: spacing.sm }}>
-              <Button
-                title="Authorize with GitHub OAuth"
-                icon="logo-github"
-                variant="primary"
-                onPress={handleOAuthInit}
-              />
-            </View>
+            {/* Status indicator: Account Authorized */}
+            {(status?.authorized || userRepos.length > 0) && (
+              <View style={{ marginTop: spacing.md, flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: "rgba(16, 185, 129, 0.12)", paddingHorizontal: spacing.md, paddingVertical: spacing.xs, borderRadius: radius.pill }}>
+                <Ionicons name="checkmark-circle" size={16} color={colors.success} />
+                <Text style={[font.caption, { color: colors.success, fontWeight: "600" }]}>
+                  GitHub Account Authorized ({userRepos.length} accessible repos)
+                </Text>
+              </View>
+            )}
 
             {/* Accessible Repositories Picker (if user already authorized account) */}
             {userRepos.length > 0 && (
@@ -438,11 +463,21 @@ export default function GitHubPanel({
                 <Button
                   title={loadingRepos ? "Loading accessible repos..." : `Select from your GitHub Repos (${userRepos.length})`}
                   icon="list"
-                  variant="secondary"
+                  variant="primary"
                   onPress={() => setShowRepoPicker(true)}
                 />
               </View>
             )}
+
+            {/* OAuth Connect */}
+            <View style={{ marginTop: userRepos.length > 0 ? spacing.xs : spacing.lg, width: "100%", maxWidth: 380, gap: spacing.sm }}>
+              <Button
+                title={userRepos.length > 0 ? "Re-authorize GitHub Account" : "Authorize with GitHub OAuth"}
+                icon="logo-github"
+                variant={userRepos.length > 0 ? "ghost" : "primary"}
+                onPress={handleOAuthInit}
+              />
+            </View>
 
             {/* Divider */}
             <View style={s.dividerRow}>

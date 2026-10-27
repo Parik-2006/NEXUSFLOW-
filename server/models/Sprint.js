@@ -147,6 +147,20 @@ const SprintSchema = new mongoose.Schema(
         skills:         { type: [String], default: [] },
       },
     ],
+
+    // ── Daily Scrum Check-ins (Standup Records) ────────────────────────
+    dailyScrumCheckins: [
+      {
+        date:         { type: Date, default: Date.now },
+        userId:       { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+        userName:     { type: String, default: "Team Member" },
+        goalProgress: { type: String, default: "" },
+        yesterdayWork:{ type: String, default: "" },
+        todayPlan:    { type: String, default: "" },
+        blockers:     { type: String, default: "" },
+        timestamp:    { type: Date, default: Date.now },
+      },
+    ],
   },
   { timestamps: true }
 );

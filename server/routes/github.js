@@ -3,13 +3,16 @@
  * NEXUSFLOW V4 — GitHub Integration, Repository Intelligence & Workspace Memory Routes
  *
  * Implements:
- *   - OAuth authentication flow with CSRF protection and dual URL responses
- *   - Accessible user repositories listing for UI selector
- *   - Exactly one active repository per workspace enforcement
+ *   - Centralized OAuth configuration validation and safe diagnostics
+ *   - Multi-instance, MongoDB-backed CSRF & replay-safe OAuth authorization flow
+ *   - Decoupled user-level GitHub authorization (GitHubCredential) vs workspace repository connection (GitHubIntegration)
+ *   - Strictly enforced project vs team resolution (no silent Project creation)
+ *   - Strict workspace membership authorization (no unauthenticated/unauthorized access)
+ *   - Exactly one active repository per workspace enforcement with upstream GitHub validation
  *   - Incremental repository synchronization and re-indexing
- *   - Granular status reporting (connected, syncing, error, stale, disconnected)
+ *   - Granular status reporting (unconfigured, authorized, connected, syncing, error, stale, disconnected)
  *   - Safe disconnection with audit preservation
- *   - Grounded workspace context Q&A endpoint
+ *   - Grounded workspace context Q&A endpoint with OmniRoute $0 zero-cost AI policy
  */
 
 import express from "express";
@@ -17,9 +20,15 @@ import crypto from "crypto";
 import mongoose from "mongoose";
 import { requireAuth } from "../auth.js";
 import GitHubIntegration from "../models/GitHubIntegration.js";
+import GitHubCredential from "../models/GitHubCredential.js";
+import OAuthState from "../models/OAuthState.js";
 import RepositoryIndex from "../models/RepositoryIndex.js";
 import Project from "../models/Project.js";
 import Team from "../models/Team.js";
+import {
+  validateGitHubOAuthConfig,
+  getGitHubOAuthConfig,
+} from "../config/githubOAuthConfig.js";
 import {
   encryptToken,
   decryptToken,
@@ -27,6 +36,8 @@ import {
   buildOAuthUrl,
   exchangeCodeForToken,
   fetchUserRepos,
+  fetchGitHubUser,
+  validateRepoAccess,
 } from "../services/githubService.js";
 import { indexRepositoryForProject, getRepositoryIntelligence } from "../services/repositoryIndexingService.js";
 import { answerWorkspaceQuery, assembleWorkspaceContext } from "../services/workspaceContextService.js";
@@ -34,52 +45,46 @@ import { logger } from "../utils/logger.js";
 
 const router = express.Router();
 
-const CLIENT_ID     = () => process.env.GITHUB_CLIENT_ID     || "";
-const CLIENT_SECRET = () => process.env.GITHUB_CLIENT_SECRET || "";
-const REDIRECT_URI  = () => process.env.GITHUB_REDIRECT_URI  || "http://localhost:4000/api/github/auth/callback";
-
-// In-memory state store for CSRF with TTL
-const oauthStateStore = new Map();
-
-// Periodic cleanup of stale OAuth state
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, val] of oauthStateStore.entries()) {
-    if (now - val.createdAt > 15 * 60_000) {
-      oauthStateStore.delete(key);
-    }
-  }
-}, 60_000);
-
 /**
- * Helper: verify that the user is authorized to access the given project/workspace
+ * Helper: verify that the user is authorized to access the given project/workspace.
+ *
+ * Rules:
+ *   - Explicitly distinguishes Project ID from Team/Workspace ID
+ *   - Resolves a Team's active project without silently creating a new Project as a side effect
+ *   - Enforces strict membership (team.ownerId or team.members) with NO unauthenticated bypass
  */
-async function verifyProjectAccess(projectId, userId, res) {
-  if (!mongoose.isValidObjectId(projectId)) {
-    res.status(400).json({ error: "Invalid project ID" });
+export async function verifyProjectAccess(projectIdOrTeamId, userId, res) {
+  if (!mongoose.isValidObjectId(projectIdOrTeamId)) {
+    res.status(400).json({ error: "Invalid project or workspace ID" });
     return null;
   }
 
-  let project = await Project.findById(projectId).lean();
-  if (!project) {
-    project = await Project.findOne({ teamId: projectId }).sort({ updatedAt: -1 }).lean();
-  }
-  if (!project) {
-    const teamDoc = await Team.findById(projectId).lean();
-    if (teamDoc) {
-      if (teamDoc.activeProjectId) {
-        project = await Project.findById(teamDoc.activeProjectId).lean();
+  const idStr = String(projectIdOrTeamId);
+  const uid = userId?.toString();
+
+  // 1. Try finding by Project ID
+  let project = await Project.findById(idStr).lean();
+  let team = null;
+
+  if (project) {
+    if (project.teamId) {
+      team = await Team.findById(project.teamId).lean();
+    }
+  } else {
+    // 2. Try resolving as Team/Workspace ID
+    team = await Team.findById(idStr).lean();
+    if (team) {
+      if (team.activeProjectId) {
+        project = await Project.findById(team.activeProjectId).lean();
       }
       if (!project) {
-        const newProj = await Project.create({
-          title: teamDoc.projectTitle || teamDoc.name || "Workspace Project",
-          description: teamDoc.projectDescription || "",
-          teamId: teamDoc._id,
-          methodology: teamDoc.methodology || "WATERFALL",
-          status: "active",
-        });
-        project = newProj.toObject();
-        await Team.findByIdAndUpdate(teamDoc._id, { activeProjectId: newProj._id });
+        // Find existing project associated with this team
+        project = await Project.findOne({ teamId: team._id }).sort({ updatedAt: -1 }).lean();
+      }
+      // If team has no project, DO NOT silently create one as a side effect of status/auth check!
+      if (!project) {
+        res.status(404).json({ error: "No active project found for this workspace" });
+        return null;
       }
     }
   }
@@ -89,108 +94,186 @@ async function verifyProjectAccess(projectId, userId, res) {
     return null;
   }
 
-  if (project.teamId) {
-    const team = await Team.findById(project.teamId).lean();
-    if (team) {
-      const uid = userId?.toString();
-      const isOwner = team.ownerId && team.ownerId.toString() === uid;
-      const isMember = Array.isArray(team.members) && team.members.some((m) => {
-        const mid = (m.userId?._id || m.userId)?.toString();
-        return mid === uid;
-      });
+  // 3. Strict membership / ownership verification
+  if (team) {
+    const isOwner = team.ownerId && team.ownerId.toString() === uid;
+    const isMember = Array.isArray(team.members) && team.members.some((m) => {
+      const mid = (m.userId?._id || m.userId)?.toString();
+      return mid === uid;
+    });
 
-      if (!isOwner && !isMember && !team.ownerId) {
-        // legacy workspace without strict owner
-        return { project, team };
-      }
-
-      if (!isOwner && !isMember) {
-        res.status(403).json({ error: "Forbidden: You are not a member of this workspace" });
-        return null;
-      }
-      return { project, team };
+    if (!isOwner && !isMember) {
+      res.status(403).json({ error: "Forbidden: You are not a member of this workspace" });
+      return null;
     }
   }
 
-  return { project, team: null };
+  return { project, team };
 }
 
-// ── 1. OAuth Init ─────────────────────────────────────────────────────────────
-router.get("/github/auth/init", requireAuth, (req, res) => {
-  const { projectId, teamId } = req.query;
-  const clientId = CLIENT_ID();
+// ── 0. Safe Configuration Diagnostic Endpoint ─────────────────────────────────
+router.get("/github/config", (req, res) => {
+  const validation = validateGitHubOAuthConfig();
+  res.json({
+    configured: validation.isConfigured,
+    status: {
+      ...validation.sanitizedStatus,
+      databaseConnected: mongoose.connection.readyState === 1,
+      oauthStateStoreAvailable: true,
+      routesMounted: true,
+    },
+    issues: validation.issues,
+  });
+});
 
-  if (!clientId) {
+// ── 1. OAuth Init ─────────────────────────────────────────────────────────────
+router.get("/github/auth/init", requireAuth, async (req, res) => {
+  const { projectId, teamId } = req.query;
+  const userId = (req.user._id || req.user.id).toString();
+
+  const configCheck = validateGitHubOAuthConfig();
+  if (!configCheck.isConfigured || !configCheck.config) {
     return res.status(200).json({
       configured: false,
-      message: "GitHub OAuth not configured. You can still connect repositories manually.",
+      message: configCheck.issues.length > 0
+        ? `GitHub OAuth not configured: ${configCheck.issues.join("; ")}`
+        : "GitHub OAuth not configured. You can still connect repositories manually.",
+      issues: configCheck.issues,
     });
   }
 
-  const state = crypto.randomBytes(16).toString("hex");
-  oauthStateStore.set(state, {
-    userId:    (req.user._id || req.user.id).toString(),
-    projectId: projectId ? String(projectId) : null,
-    teamId:    teamId ? String(teamId) : null,
-    createdAt: Date.now(),
-  });
+  // If workspace context provided, verify caller belongs to workspace before initiating
+  let resolvedProjectId = null;
+  let resolvedTeamId = null;
 
-  const url = buildOAuthUrl(state, clientId, REDIRECT_URI());
-  // Return both authUrl and redirectUrl to accommodate all client conventions
-  res.json({
-    configured:  true,
-    authUrl:     url,
-    redirectUrl: url,
-  });
+  if (projectId || teamId) {
+    const targetId = projectId || teamId;
+    const authResult = await verifyProjectAccess(targetId, userId, res);
+    if (!authResult) return; // response sent by helper
+    resolvedProjectId = authResult.project._id.toString();
+    resolvedTeamId = (authResult.team?._id || authResult.project.teamId)?.toString() || null;
+  }
+
+  try {
+    // Generate cryptographically strong random state token
+    const state = crypto.randomBytes(32).toString("hex");
+
+    // Persist one-time state in MongoDB (expires in 10 minutes)
+    await OAuthState.create({
+      state,
+      provider: "github",
+      userId,
+      projectId: resolvedProjectId,
+      teamId: resolvedTeamId,
+      expiresAt: new Date(Date.now() + 10 * 60_000),
+    });
+
+    const url = buildOAuthUrl(state, configCheck.config.clientId, configCheck.config.redirectUri);
+
+    res.json({
+      configured: true,
+      authUrl: url,
+      redirectUrl: url,
+    });
+  } catch (err) {
+    logger.error("Failed to initialize GitHub OAuth state", { error: err.message });
+    res.status(500).json({ error: "Failed to initialize authorization session" });
+  }
 });
 
 // ── 2. OAuth Callback ─────────────────────────────────────────────────────────
 router.get("/github/auth/callback", async (req, res) => {
-  const { code, state } = req.query;
-  const storedState = oauthStateStore.get(state);
+  const { code, state, error, error_description } = req.query;
 
-  if (!storedState || Date.now() - storedState.createdAt > 10 * 60_000) {
-    return res.status(400).json({ error: "Invalid or expired OAuth state" });
+  const configCheck = validateGitHubOAuthConfig();
+  const frontendUrl = configCheck.config?.frontendUrl || "http://localhost:8081";
+
+  // Handle GitHub user cancellation or authorization errors
+  if (error) {
+    logger.warn("GitHub OAuth authorization rejected by user or GitHub", { error, description: error_description });
+    // Attempt state lookup to redirect back to specific workspace tab if available
+    let fallbackPath = "/(tabs)/dashboard";
+    if (state && typeof state === "string") {
+      const stored = await OAuthState.findOne({ state });
+      if (stored?.teamId) {
+        fallbackPath = `/team/${stored.teamId}?tab=github`;
+      }
+    }
+    return res.redirect(`${frontendUrl}${fallbackPath}?github_error=${encodeURIComponent(error_description || error)}`);
   }
-  oauthStateStore.delete(state);
+
+  if (!code || !state || typeof code !== "string" || typeof state !== "string") {
+    return res.status(400).json({ error: "Missing required OAuth code or state parameter" });
+  }
+
+  // Atomically consume state (prevents replay, concurrent reuse, and expired states)
+  const storedState = await OAuthState.consumeState(state);
+  if (!storedState) {
+    logger.warn("Invalid, expired, or replayed GitHub OAuth state attempt");
+    return res.status(400).json({
+      error: "Invalid, expired, or already-consumed OAuth state. Please initiate authorization again from your workspace.",
+    });
+  }
 
   try {
-    const accessToken = await exchangeCodeForToken(code, CLIENT_ID(), CLIENT_SECRET(), REDIRECT_URI());
+    const config = getGitHubOAuthConfig();
+    const accessToken = await exchangeCodeForToken(
+      code,
+      config.clientId,
+      config.clientSecret,
+      config.redirectUri
+    );
+
     const encryptedToken = encryptToken(accessToken);
 
-    // If projectId was passed, link to this project directly
-    if (storedState.projectId && mongoose.isValidObjectId(storedState.projectId)) {
-      await GitHubIntegration.findOneAndUpdate(
-        { projectId: storedState.projectId },
-        {
-          $set: {
-            userId: storedState.userId,
-            teamId: storedState.teamId,
-            encryptedToken,
-            isActive: true,
-            connectionStatus: "connected",
-          },
+    // Fetch user profile from GitHub
+    let ghUser = { login: "", id: "", avatarUrl: "" };
+    try {
+      ghUser = await fetchGitHubUser(encryptedToken);
+    } catch (userErr) {
+      logger.warn(`Could not fetch GitHub user profile: ${userErr.message}`);
+    }
+
+    // Persist decoupled user-level credential record
+    await GitHubCredential.findOneAndUpdate(
+      { userId: storedState.userId },
+      {
+        $set: {
+          encryptedToken,
+          githubLogin: ghUser.login,
+          githubId: ghUser.id,
+          avatarUrl: ghUser.avatarUrl,
+          authorizedAt: new Date(),
         },
-        { upsert: true, new: true }
-      );
-    } else {
-      // Save user-level token association by updating any active integration for this user
-      await GitHubIntegration.updateMany(
-        { userId: storedState.userId },
+      },
+      { upsert: true, new: true }
+    );
+
+    // If a specific project was targeted and that project ALREADY has a connected repo,
+    // update the integration's encrypted token for ongoing synchronization.
+    // NOTE: A workspace is NEVER marked connected to a repository before a repository is explicitly selected!
+    if (storedState.projectId) {
+      await GitHubIntegration.updateOne(
+        { projectId: storedState.projectId, isActive: true, repoFullName: { $ne: "" } },
         { $set: { encryptedToken } }
       );
     }
 
-    const frontendUrl = (() => {
-      const url = process.env.FRONTEND_URL || "";
-      if (!url || url.includes("your-frontend") || url.includes("example.com")) return "http://localhost:8081";
-      return url.replace(/\/+$/, "");
-    })();
+    // Determine safe, validated frontend redirect destination
+    let redirectPath = "/(tabs)/dashboard";
+    if (storedState.teamId) {
+      redirectPath = `/team/${storedState.teamId}?tab=github`;
+    } else if (storedState.projectId) {
+      const proj = await Project.findById(storedState.projectId).lean();
+      if (proj?.teamId) {
+        redirectPath = `/team/${proj.teamId}?tab=github`;
+      }
+    }
 
-    res.redirect(`${frontendUrl}/github/connected?success=true&projectId=${storedState.projectId || ""}`);
+    res.redirect(`${frontendUrl}${redirectPath}&github_auth=success`);
   } catch (err) {
-    logger.error("GitHub OAuth callback failed", { error: err.message });
-    res.status(500).json({ error: err.message });
+    logger.error("GitHub OAuth callback processing failed", { error: err.message });
+    res.redirect(`${frontendUrl}/(tabs)/dashboard?github_error=${encodeURIComponent(err.message || "OAuth exchange failed")}`);
   }
 });
 
@@ -199,22 +282,33 @@ router.get("/github/user/repos", requireAuth, async (req, res) => {
   const userId = req.user._id || req.user.id;
 
   try {
-    // Find any integration record for this user containing an encrypted token
-    const existing = await GitHubIntegration.findOne({ userId })
-      .select("+encryptedToken")
-      .sort({ updatedAt: -1 });
+    // 1. Look up user-level credential
+    let credential = await GitHubCredential.findOne({ userId }).select("+encryptedToken");
 
-    if (!existing || !existing.encryptedToken) {
+    // 2. Backward compatibility fallback: check existing GitHubIntegration for this user
+    if (!credential?.encryptedToken) {
+      const existingIntegration = await GitHubIntegration.findOne({ userId })
+        .select("+encryptedToken")
+        .sort({ updatedAt: -1 });
+
+      if (existingIntegration?.encryptedToken) {
+        credential = existingIntegration;
+      }
+    }
+
+    if (!credential || !credential.encryptedToken) {
       return res.status(200).json({
         connected: false,
+        authorized: false,
         repositories: [],
         message: "No authenticated GitHub account found. Please authorize with GitHub first.",
       });
     }
 
-    const repos = await fetchUserRepos(existing.encryptedToken);
+    const repos = await fetchUserRepos(credential.encryptedToken);
     res.json({
       connected: true,
+      authorized: true,
       repositories: repos,
     });
   } catch (err) {
@@ -239,43 +333,58 @@ router.post("/projects/:projectId/github/connect", requireAuth, async (req, res)
 
   const cleanOwner = String(repoOwner).trim();
   const cleanName  = String(repoName).trim();
-  const repoFullName = `${cleanOwner}/${cleanName}`;
-  const repoUrl = `https://github.com/${cleanOwner}/${cleanName}`;
+  const targetProjectId = project._id;
 
   try {
-    const targetProjectId = project._id;
-
-    // Locate token from current project integration OR from user's other connections
-    let tokenDoc = await GitHubIntegration.findOne({ projectId: targetProjectId })
-      .select("+encryptedToken");
-
+    // Retrieve authorized token: check user credential first, then workspace integration
+    let tokenDoc = await GitHubCredential.findOne({ userId }).select("+encryptedToken");
     if (!tokenDoc?.encryptedToken) {
-      tokenDoc = await GitHubIntegration.findOne({ userId })
-        .select("+encryptedToken")
-        .sort({ updatedAt: -1 });
+      tokenDoc = await GitHubIntegration.findOne({ projectId: targetProjectId }).select("+encryptedToken");
+    }
+    if (!tokenDoc?.encryptedToken) {
+      tokenDoc = await GitHubIntegration.findOne({ userId }).select("+encryptedToken").sort({ updatedAt: -1 });
     }
 
-    // Upsert the single active integration for this project
+    if (!tokenDoc?.encryptedToken) {
+      return res.status(401).json({
+        error: "No authorized GitHub account found for this user. Please authorize with GitHub before connecting a repository.",
+      });
+    }
+
+    // Pre-validate repository existence, accessibility, and visibility with upstream GitHub API
+    let validatedRepo;
+    try {
+      validatedRepo = await validateRepoAccess(tokenDoc.encryptedToken, cleanOwner, cleanName);
+    } catch (valErr) {
+      return res.status(400).json({ error: valErr.message });
+    }
+
+    const repoFullName = validatedRepo.fullName;
+    const repoUrl = validatedRepo.htmlUrl;
+    const effectiveBranch = selectedBranch || defaultBranch || validatedRepo.defaultBranch || "main";
+
+    // Atomically upsert the single active integration for this project
     const integration = await GitHubIntegration.findOneAndUpdate(
       { projectId: targetProjectId },
       {
         $set: {
           userId,
           teamId: project.teamId || team?._id,
-          repoOwner: cleanOwner,
-          repoName: cleanName,
+          repoOwner: validatedRepo.owner,
+          repoName: validatedRepo.name,
           repoFullName,
           repoUrl,
-          defaultBranch: defaultBranch || "main",
-          selectedBranch: selectedBranch || defaultBranch || "main",
-          visibility: visibility || "unknown",
+          defaultBranch: validatedRepo.defaultBranch,
+          selectedBranch: effectiveBranch,
+          visibility: validatedRepo.visibility || visibility || "unknown",
           connectionStatus: "connected",
           isActive: true,
           isStale: false,
           lastSyncError: "",
+          syncErrorDetails: null,
           disconnectedAt: null,
           disconnectedBy: null,
-          ...(tokenDoc?.encryptedToken ? { encryptedToken: tokenDoc.encryptedToken } : {}),
+          encryptedToken: tokenDoc.encryptedToken,
         },
       },
       { upsert: true, new: true }
@@ -290,10 +399,10 @@ router.post("/projects/:projectId/github/connect", requireAuth, async (req, res)
       success: true,
       message: `Repository ${repoFullName} connected successfully`,
       integration: {
-        repoOwner: cleanOwner,
-        repoName: cleanName,
-        repoFullName,
-        repoUrl,
+        repoOwner: integration.repoOwner,
+        repoName: integration.repoName,
+        repoFullName: integration.repoFullName,
+        repoUrl: integration.repoUrl,
         defaultBranch: integration.defaultBranch,
         selectedBranch: integration.selectedBranch,
         connectionStatus: integration.connectionStatus,
@@ -316,11 +425,18 @@ router.get("/projects/:projectId/github/status", requireAuth, async (req, res) =
   const { project } = authResult;
   const targetProjectId = project._id;
 
-  const integration = await GitHubIntegration.findOne({ projectId: targetProjectId, isActive: true }).lean();
+  const [integration, credential] = await Promise.all([
+    GitHubIntegration.findOne({ projectId: targetProjectId, isActive: true }).lean(),
+    GitHubCredential.findOne({ userId }).lean(),
+  ]);
 
-  if (!integration) {
+  const hasAuthorizedAccount = Boolean(credential) || Boolean(integration?.encryptedToken);
+
+  // If no integration or no repoFullName is configured, repo is disconnected
+  if (!integration || !integration.repoFullName) {
     return res.json({
       connected: false,
+      authorized: hasAuthorizedAccount,
       repo: null,
       status: "disconnected",
     });
@@ -328,6 +444,7 @@ router.get("/projects/:projectId/github/status", requireAuth, async (req, res) =
 
   res.json({
     connected: true,
+    authorized: true,
     repo: {
       owner:          integration.repoOwner,
       name:           integration.repoName,
@@ -361,7 +478,7 @@ router.get("/projects/:projectId/github/summary", requireAuth, async (req, res) 
     const integration = await GitHubIntegration.findOne({ projectId: targetProjectId, isActive: true })
       .select("+encryptedToken");
 
-    if (!integration?.encryptedToken) {
+    if (!integration?.encryptedToken || !integration.repoFullName) {
       return res.status(404).json({ error: "No active GitHub repository connected to this workspace" });
     }
 

@@ -12,13 +12,28 @@
 
 import crypto from "crypto";
 import { logger } from "../utils/logger.js";
+import { isProductionEnvironment, MIN_ENCRYPTION_KEY_LEN } from "../config/githubOAuthConfig.js";
 
 const ALGO   = "aes-256-cbc";
 const KEY_LEN = 32;
 
 function getKey() {
-  const raw = process.env.ENCRYPTION_KEY || "nexusflow3_default_dev_key_32char";
-  return Buffer.from(raw.padEnd(KEY_LEN, "_").slice(0, KEY_LEN));
+  const raw = process.env.ENCRYPTION_KEY || "";
+  const isProd = isProductionEnvironment();
+
+  if (isProd) {
+    if (!raw) {
+      throw new Error("ENCRYPTION_KEY must be explicitly configured in production/deployed environments");
+    }
+    if (raw.length < MIN_ENCRYPTION_KEY_LEN) {
+      throw new Error(`ENCRYPTION_KEY must be at least ${MIN_ENCRYPTION_KEY_LEN} characters in production`);
+    }
+    return Buffer.from(raw.slice(0, KEY_LEN));
+  }
+
+  // Development safe fallback
+  const devKey = raw || "nexusflow3_default_dev_key_32char";
+  return Buffer.from(devKey.padEnd(KEY_LEN, "_").slice(0, KEY_LEN));
 }
 
 export function encryptToken(plaintext) {
@@ -30,13 +45,19 @@ export function encryptToken(plaintext) {
 }
 
 export function decryptToken(ciphertext) {
-  if (!ciphertext) return "";
-  const [ivHex, encHex] = ciphertext.split(":");
-  if (!ivHex || !encHex) return "";
-  const iv = Buffer.from(ivHex, "hex");
-  const enc = Buffer.from(encHex, "hex");
-  const decipher = crypto.createDecipheriv(ALGO, getKey(), iv);
-  return Buffer.concat([decipher.update(enc), decipher.final()]).toString("utf8");
+  if (!ciphertext || typeof ciphertext !== "string") return "";
+  try {
+    const [ivHex, encHex] = ciphertext.split(":");
+    if (!ivHex || !encHex) return "";
+    const iv = Buffer.from(ivHex, "hex");
+    const enc = Buffer.from(encHex, "hex");
+    if (iv.length !== 16 || enc.length === 0) return "";
+    const decipher = crypto.createDecipheriv(ALGO, getKey(), iv);
+    return Buffer.concat([decipher.update(enc), decipher.final()]).toString("utf8");
+  } catch (err) {
+    logger.warn("Token decryption failed: invalid ciphertext or mismatched key");
+    return "";
+  }
 }
 
 function getHeaders(token) {
@@ -320,4 +341,67 @@ export async function exchangeCodeForToken(code, clientId, clientSecret, redirec
   const data = await res.json();
   if (data.error) throw new Error(`GitHub OAuth error: ${data.error_description || data.error}`);
   return data.access_token;
+}
+
+/**
+ * fetchGitHubUser(encryptedToken)
+ * Fetches the authenticated GitHub user profile using the encrypted access token.
+ */
+export async function fetchGitHubUser(encryptedToken) {
+  const token = decryptToken(encryptedToken);
+  if (!token) throw new Error("Invalid or missing GitHub access token");
+
+  const headers = getHeaders(token);
+  const res = await fetch("https://api.github.com/user", { headers });
+
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(errBody.message || `Failed to fetch GitHub user profile (HTTP ${res.status})`);
+  }
+
+  const user = await res.json();
+  return {
+    login:     user.login || "",
+    id:        String(user.id || ""),
+    avatarUrl: user.avatar_url || "",
+    htmlUrl:   user.html_url || "",
+    name:      user.name || user.login || "",
+    email:     user.email || "",
+  };
+}
+
+/**
+ * validateRepoAccess(encryptedToken, repoOwner, repoName)
+ * Verifies that the specified repository exists and is accessible with the authorized token.
+ */
+export async function validateRepoAccess(encryptedToken, repoOwner, repoName) {
+  const token = decryptToken(encryptedToken);
+  if (!token) throw new Error("Invalid or missing GitHub access token");
+
+  const headers = getHeaders(token);
+  const res = await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}`, { headers });
+
+  if (res.status === 404) {
+    throw new Error(`Repository ${repoOwner}/${repoName} not found or not accessible with your GitHub account.`);
+  }
+  if (res.status === 403 || res.status === 401) {
+    throw new Error(`Access denied to repository ${repoOwner}/${repoName}. Please verify GitHub permissions.`);
+  }
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(errBody.message || `GitHub API error (HTTP ${res.status}) while validating repository`);
+  }
+
+  const repo = await res.json();
+  return {
+    id:            String(repo.id),
+    name:          repo.name,
+    fullName:      repo.full_name,
+    owner:         repo.owner?.login || repoOwner,
+    defaultBranch: repo.default_branch || "main",
+    visibility:    repo.private ? "private" : "public",
+    htmlUrl:       repo.html_url || `https://github.com/${repoOwner}/${repoName}`,
+    description:   repo.description || "",
+    permissions:   repo.permissions || {},
+  };
 }

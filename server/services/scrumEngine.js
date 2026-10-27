@@ -33,7 +33,7 @@ import { logger } from "../utils/logger.js";
 // ── Valid Sprint State Transitions ────────────────────────────────────────────
 const VALID_TRANSITIONS = {
   PLANNING:  ["ACTIVE", "CANCELLED"],
-  ACTIVE:    ["REVIEW", "CANCELLED"],
+  ACTIVE:    ["REVIEW", "COMPLETED", "CANCELLED"],
   REVIEW:    ["COMPLETED", "ACTIVE"], // can return to ACTIVE if review reveals issues
   COMPLETED: [],                       // terminal state
   CANCELLED: [],                       // terminal state
@@ -41,16 +41,46 @@ const VALID_TRANSITIONS = {
 
 // ── Valid Scrum Task State Transitions ─────────────────────────────────────────
 const VALID_TASK_TRANSITIONS = {
-  BACKLOG:              ["SELECTED_FOR_SPRINT", "CANCELLED"],
-  SELECTED_FOR_SPRINT:  ["TODO", "BACKLOG", "CANCELLED"],
-  TODO:                 ["IN_PROGRESS", "BLOCKED", "BACKLOG", "CANCELLED"],
-  IN_PROGRESS:          ["IN_REVIEW", "BLOCKED", "TODO", "CANCELLED"],
-  IN_REVIEW:            ["DONE", "IN_PROGRESS", "BLOCKED", "CANCELLED"],
-  DONE:                 [],  // terminal — historical truth
-  BLOCKED:              ["TODO", "IN_PROGRESS", "CANCELLED"],
-  CARRIED_OVER:         ["BACKLOG", "SELECTED_FOR_SPRINT", "TODO"],
-  CANCELLED:            ["BACKLOG"], // can be restored to backlog
+  BACKLOG:              ["SELECTED_FOR_SPRINT", "TODO", "CANCELLED"],
+  SELECTED_FOR_SPRINT:  ["TODO", "IN_PROGRESS", "IN_REVIEW", "DONE", "BLOCKED", "BACKLOG", "CANCELLED"],
+  TODO:                 ["IN_PROGRESS", "IN_REVIEW", "DONE", "BLOCKED", "BACKLOG", "CANCELLED"],
+  IN_PROGRESS:          ["IN_REVIEW", "DONE", "BLOCKED", "TODO", "CANCELLED"],
+  IN_REVIEW:            ["DONE", "IN_PROGRESS", "BLOCKED", "TODO", "CANCELLED"],
+  DONE:                 ["IN_REVIEW", "IN_PROGRESS"],  // allow reopen/rework if defect found
+  BLOCKED:              ["TODO", "IN_PROGRESS", "IN_REVIEW", "DONE", "CANCELLED"],
+  CARRIED_OVER:         ["BACKLOG", "SELECTED_FOR_SPRINT", "TODO", "IN_PROGRESS"],
+  CANCELLED:            ["BACKLOG", "TODO"],
 };
+
+/**
+ * Normalize Scrum status to canonical uppercase enum.
+ */
+export function normalizeScrumStatus(status) {
+  if (!status) return "TODO";
+  const upper = String(status).trim().toUpperCase();
+  const mapping = {
+    TODO: "TODO",
+    TO_DO: "TODO",
+    "TO DO": "TODO",
+    IN_PROGRESS: "IN_PROGRESS",
+    "IN PROGRESS": "IN_PROGRESS",
+    INPROGRESS: "IN_PROGRESS",
+    IN_REVIEW: "IN_REVIEW",
+    "IN REVIEW": "IN_REVIEW",
+    INREVIEW: "IN_REVIEW",
+    REVIEW: "IN_REVIEW",
+    DONE: "DONE",
+    COMPLETED: "DONE",
+    COMPLETE: "DONE",
+    BLOCKED: "BLOCKED",
+    BACKLOG: "BACKLOG",
+    SELECTED_FOR_SPRINT: "SELECTED_FOR_SPRINT",
+    CARRIED_OVER: "CARRIED_OVER",
+    CANCELLED: "CANCELLED",
+    CANCELED: "CANCELLED",
+  };
+  return mapping[upper] || upper;
+}
 
 /**
  * Validate a Sprint state transition.
@@ -65,8 +95,17 @@ export function validateSprintTransition(currentStatus, newStatus) {
  */
 export function validateTaskTransition(currentStatus, newStatus) {
   if (!currentStatus || !newStatus) return true; // allow initial assignment
-  const allowed = VALID_TASK_TRANSITIONS[currentStatus] || [];
-  return allowed.includes(newStatus);
+  const normCurrent = normalizeScrumStatus(currentStatus);
+  const normNew = normalizeScrumStatus(newStatus);
+  if (normCurrent === normNew) return true; // no-op is always valid
+
+  let allowed = [...(VALID_TASK_TRANSITIONS[normCurrent] || [])];
+  // Safe compatibility: SELECTED_FOR_SPRINT items are execution-ready (equivalent to TODO)
+  if (normCurrent === "SELECTED_FOR_SPRINT") {
+    allowed = Array.from(new Set([...allowed, ...(VALID_TASK_TRANSITIONS["TODO"] || [])]));
+  }
+
+  return allowed.includes(normNew);
 }
 
 /**
@@ -427,8 +466,8 @@ export async function addToSprint({ sprintId, taskId, actorId = null, actorName 
 
   // Update task
   task.sprintId = sprint._id;
-  task.scrumStatus = sprint.status === "ACTIVE" ? "TODO" : "SELECTED_FOR_SPRINT";
-  if (!task.status || task.status === "todo") task.status = "todo";
+  task.scrumStatus = "TODO";
+  task.status = "todo";
   await task.save();
 
   // Update sprint capacity
@@ -499,39 +538,49 @@ export async function updateTaskStatus({ taskId, newStatus, reason = "", actorId
   const task = await Task.findById(taskId);
   if (!task) throw new Error("Task not found");
 
-  const currentStatus = task.scrumStatus || "BACKLOG";
+  const currentStatus = task.scrumStatus || (task.status ? task.status.toUpperCase() : "BACKLOG");
+  const normCurrent = normalizeScrumStatus(currentStatus);
+  const normNew = normalizeScrumStatus(newStatus);
 
-  if (!validateTaskTransition(currentStatus, newStatus)) {
-    throw new Error(`Invalid task transition: ${currentStatus} → ${newStatus}`);
+  if (!validateTaskTransition(normCurrent, normNew)) {
+    throw new Error(`Invalid task transition: ${normCurrent} → ${normNew}`);
   }
 
   const previousStatus = task.scrumStatus;
-  task.scrumStatus = newStatus;
+  task.scrumStatus = normNew;
 
-  // Sync legacy status field for V3 compatibility
+  // Sync legacy status field for V3 compatibility and board filtering
   const statusMap = {
     TODO: "todo",
     IN_PROGRESS: "in_progress",
-    IN_REVIEW: "in_progress",
+    IN_REVIEW: "in_progress", // Compatible with Task.status enum ["todo", "in_progress", "done"]
     DONE: "done",
-    BLOCKED: "in_progress",
+    BLOCKED: "todo",
     BACKLOG: "todo",
     SELECTED_FOR_SPRINT: "todo",
     CARRIED_OVER: "todo",
     CANCELLED: "done",
   };
-  task.status = statusMap[newStatus] || "todo";
+  task.status = statusMap[normNew] || "todo";
 
-  if (newStatus === "DONE") {
+  if (normNew === "DONE") {
     task.completedAt = new Date();
     task.progress = 100;
+  } else if (normNew === "TODO" || normNew === "BACKLOG") {
+    task.completedAt = null;
+    task.progress = 0;
+  } else if (normNew === "IN_PROGRESS") {
+    task.completedAt = null;
+    if (!task.progress || task.progress === 100) task.progress = 50;
+  } else if (normNew === "IN_REVIEW") {
+    task.completedAt = null;
+    if (!task.progress || task.progress < 75) task.progress = 85;
   }
 
-  if (newStatus === "BLOCKED" && reason) {
+  if (normNew === "BLOCKED" && reason) {
     task.blockedReason = reason;
   }
-
-  if (newStatus !== "BLOCKED") {
+  if (normNew !== "BLOCKED") {
     task.blockedReason = "";
   }
 
@@ -620,55 +669,92 @@ export async function recalculateSprintMetrics(sprintId) {
 
 /**
  * Get Scrum project health (deterministic composite).
+ * When no active sprint exists, returns insufficientData state rather than
+ * a misleading percentage.
  */
-export function calculateScrumHealth(sprint, tasks, team) {
+export function calculateScrumHealth(sprint, tasks = [], team = null) {
   const members = team?.members || [];
-  const backlogSize = tasks.filter((t) => t.scrumStatus === "BACKLOG").length;
+  const sprintTasks = sprint ? tasks.filter((t) => t.sprintId?.toString() === sprint?._id?.toString()) : [];
+  const backlogTasks = tasks.filter((t) => (!t.sprintId || t.scrumStatus === "BACKLOG") && t.scrumStatus !== "CANCELLED");
 
-  // Sprint Goal Health
-  const completedTasks = tasks.filter((t) => t.scrumStatus === "DONE" || t.status === "done");
-  const sprintTasks = tasks.filter((t) => t.sprintId?.toString() === sprint?._id?.toString());
+  // Backlog Readiness calculations (always available if backlog exists)
+  const estimatedBacklog = backlogTasks.filter((t) => (t.storyPoints || 0) > 0 || (t.estimatedHours || 0) > 0);
+  const specBacklog = backlogTasks.filter((t) => t.userStory && (t.acceptanceCriteria || []).length > 0);
+  const backlogReadinessScore = backlogTasks.length > 0
+    ? Math.round(((estimatedBacklog.length / backlogTasks.length) * 0.5 + (specBacklog.length / backlogTasks.length) * 0.5) * 100)
+    : 0;
+
+  // If no active sprint exists or no sprint tasks, indicate insufficient sprint data
+  if (!sprint || sprintTasks.length === 0) {
+    return {
+      hasSprintData: false,
+      insufficientData: true,
+      overall: null,
+      healthScore: null,
+      grade: "INSUFFICIENT_DATA",
+      status: "INSUFFICIENT_DATA",
+      message: "Insufficient sprint data — plan and complete a sprint to begin tracking delivery health.",
+      backlogReadiness: {
+        score: backlogReadinessScore,
+        totalItems: backlogTasks.length,
+        estimatedCount: estimatedBacklog.length,
+        specifiedCount: specBacklog.length,
+      },
+      factors: [],
+    };
+  }
+
+  // Active sprint calculations
+  const completedTasks = sprintTasks.filter((t) => t.scrumStatus === "DONE" || t.status === "done");
   const sprintGoalHealth = sprintTasks.length > 0
-    ? Math.round((completedTasks.filter((t) => t.sprintId?.toString() === sprint?._id?.toString()).length / sprintTasks.length) * 100)
-    : 100;
+    ? Math.round((completedTasks.length / sprintTasks.length) * 100)
+    : 0;
 
-  // Capacity Health
   const capacityHealth = sprint?.totalCapacityHours > 0
     ? Math.round(Math.max(0, 100 - Math.abs(((sprint.allocatedHours / sprint.totalCapacityHours) * 100) - 75)))
     : 100;
 
-  // Dependency Health
-  const blockedTasks = tasks.filter((t) => t.scrumStatus === "BLOCKED");
-  const dependencyHealth = tasks.length > 0
-    ? Math.round(100 - (blockedTasks.length / tasks.length) * 100)
+  const blockedTasks = sprintTasks.filter((t) => t.scrumStatus === "BLOCKED" || t.status === "blocked");
+  const dependencyHealth = sprintTasks.length > 0
+    ? Math.round(100 - (blockedTasks.length / sprintTasks.length) * 100)
     : 100;
 
-  // Risk Health
-  const highRiskCount = tasks.filter((t) => (t.technicalUncertainty || 0) >= 7).length;
-  const riskHealth = tasks.length > 0
-    ? Math.round(100 - (highRiskCount / tasks.length) * 100)
+  const highRiskCount = sprintTasks.filter((t) => (t.technicalUncertainty || 0) >= 7).length;
+  const riskHealth = sprintTasks.length > 0
+    ? Math.round(100 - (highRiskCount / sprintTasks.length) * 100)
     : 100;
 
-  // Team Workload Health
   const overloadedMembers = members.filter((m) => (m.assignedLoad || 0) > (m.capacity || 40));
   const teamHealth = members.length > 0
     ? Math.round(100 - (overloadedMembers.length / members.length) * 100)
     : 100;
 
-  // Backlog Health
-  const backlogHealth = backlogSize > 0 ? Math.min(100, Math.round((backlogSize / Math.max(1, tasks.length)) * 50 + 50)) : 50;
-
   const overall = Math.round((sprintGoalHealth + capacityHealth + dependencyHealth + riskHealth + teamHealth) / 5);
 
   return {
+    hasSprintData: true,
+    insufficientData: false,
     sprintGoalHealth,
     capacityHealth,
     dependencyHealth,
     riskHealth,
     teamHealth,
-    backlogHealth,
     overall,
+    healthScore: overall,
     status: overall >= 80 ? "HEALTHY" : overall >= 60 ? "AT_RISK" : "CRITICAL",
+    grade: overall >= 80 ? "Healthy" : overall >= 60 ? "At Risk" : "Critical",
+    backlogReadiness: {
+      score: backlogReadinessScore,
+      totalItems: backlogTasks.length,
+      estimatedCount: estimatedBacklog.length,
+      specifiedCount: specBacklog.length,
+    },
+    factors: [
+      { name: "Sprint Goal Trajectory", score: sprintGoalHealth, status: sprintGoalHealth >= 80 ? "healthy" : "attention", desc: `${completedTasks.length} of ${sprintTasks.length} sprint tasks completed` },
+      { name: "Capacity Alignment", score: capacityHealth, status: capacityHealth >= 80 ? "healthy" : "attention", desc: `${sprint.allocatedHours || 0}h committed of ${sprint.totalCapacityHours || 0}h capacity` },
+      { name: "Dependency Flow", score: dependencyHealth, status: dependencyHealth >= 80 ? "healthy" : "attention", desc: `${blockedTasks.length} blocked tasks` },
+      { name: "Risk Health", score: riskHealth, status: riskHealth >= 80 ? "healthy" : "attention", desc: `${highRiskCount} high uncertainty tasks` },
+    ],
   };
 }
 

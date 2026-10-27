@@ -26,11 +26,13 @@ export const colors = {
   bg:          "#FAF8F4", // warm cream canvas
   surface:     "#FFFFFF",
   surfaceAlt:  "#F4F1EA", // warm neutral inset
+  surfaceHover:"#F4F1EA", // hover state alias
   overlay:     "rgba(31, 41, 55, 0.40)",
 
   // Text
   text:        "#1F2937",
   textMuted:   "#6B7280",
+  textSecondary:"#6B7280", // alias for textMuted
   textFaint:   "#9CA3AF",
   textInverse: "#FFFFFF",
 
@@ -167,7 +169,7 @@ export const statusMeta = {
 
 export const spacing = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32 };
 
-export const radius = { sm: 8, md: 12, lg: 16, xl: 20, pill: 999 };
+export const radius = { xs: 4, sm: 8, md: 12, lg: 16, xl: 20, pill: 999, full: 999 };
 
 // Max content width so the web layout reads like a real SaaS app, not a
 // stretched mobile screen. Use on the outermost scroll content container.

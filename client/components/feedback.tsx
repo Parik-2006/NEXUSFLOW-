@@ -50,7 +50,7 @@ function ToastItem({ toast, onDone }: { toast: Toast; onDone: (id: number) => vo
 }
 
 // ── Confirm dialog ────────────────────────────────────────────────────────────
-type ConfirmOpts = { title: string; message?: string; confirmLabel?: string; destructive?: boolean };
+type ConfirmOpts = { title: string; message?: string; confirmLabel?: string; confirmText?: string; destructive?: boolean };
 const ConfirmCtx = createContext<(opts: ConfirmOpts) => Promise<boolean>>(async () => false);
 export const useConfirm = () => useContext(ConfirmCtx);
 
@@ -85,7 +85,7 @@ export function FeedbackProvider({ children }: { children: React.ReactNode }) {
               {confirm?.message ? <Text style={t.confirmMsg}>{confirm.message}</Text> : null}
               <View style={{ flexDirection: "row", gap: 10, marginTop: spacing.md }}>
                 <Button title="Cancel" variant="secondary" onPress={() => close(false)} style={{ flex: 1 }} />
-                <Button title={confirm?.confirmLabel ?? "Confirm"} variant={confirm?.destructive ? "danger" : "primary"} onPress={() => close(true)} style={{ flex: 1 }} />
+                <Button title={confirm?.confirmLabel ?? confirm?.confirmText ?? "Confirm"} variant={confirm?.destructive ? "danger" : "primary"} onPress={() => close(true)} style={{ flex: 1 }} />
               </View>
             </Pressable>
           </Pressable>

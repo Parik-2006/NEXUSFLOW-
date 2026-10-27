@@ -1146,8 +1146,16 @@ router.patch("/projects/:projectId/plan/conflicts/:conflictId", requireAuth, asy
       return res.status(400).json({ error: "Resolution choice or documented rationale is required." });
     }
 
-    const conflicts = project.waterfallPlanLifecycle?.conflicts || [];
-    const target = conflicts.find((c) => c.id === req.params.conflictId);
+    let conflicts = project.waterfallPlanLifecycle?.conflicts || [];
+    let isScrumConflict = false;
+    let target = conflicts.find((c) => c.id === req.params.conflictId);
+
+    if (!target && project.scrumPlanLifecycle?.conflicts?.length) {
+      conflicts = project.scrumPlanLifecycle.conflicts;
+      target = conflicts.find((c) => c.id === req.params.conflictId);
+      if (target) isScrumConflict = true;
+    }
+
     if (!target) return res.status(404).json({ error: "Conflict not found." });
 
     const trimmedResolution = String(resolution).trim();
@@ -1169,6 +1177,24 @@ router.patch("/projects/:projectId/plan/conflicts/:conflictId", requireAuth, asy
       timestamp: new Date(),
       notes: resolutionNoteText,
     });
+
+    if (isScrumConflict) {
+      project.markModified("scrumPlanLifecycle");
+      await project.save();
+      const io = req.app.get("io");
+      if (io) {
+        io.to(`team:${project.teamId}`).emit("scrum:lifecycle:updated", {
+          projectId: project._id,
+          lifecycle: project.scrumPlanLifecycle,
+        });
+      }
+      return res.json({
+        success: true,
+        conflicts,
+        lifecycle: project.scrumPlanLifecycle,
+        message: "Scope contradiction resolved successfully.",
+      });
+    }
 
     const readiness = calculateWaterfallReadiness(project, req.user);
 

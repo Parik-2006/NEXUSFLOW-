@@ -56,12 +56,38 @@ const RetrospectiveSchema = new mongoose.Schema(
     memberContributions: { type: [ContributionSchema], default: [] },
     analysis: { type: AnalysisSchema, default: {} },
 
-    generatedBy:    { type: String, enum: ["ai", "deterministic"], default: "deterministic" },
+    // ── V4 SCRUM: Improvement Action Items (Learning Loop Integration) ───────
+    actionItems: [
+      {
+        action:           { type: String, required: true },
+        description:      { type: String, default: "" },
+        owner:            { type: String, default: "" },
+        ownerId:          { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+        dueDate:          { type: Date, default: null },
+        status:           { type: String, enum: ["open", "in_progress", "completed", "OPEN", "IN_PROGRESS", "COMPLETED"], default: "OPEN" },
+        priority:         { type: String, enum: ["low", "medium", "high", "LOW", "MEDIUM", "HIGH"], default: "MEDIUM" },
+        relatedFinding:   { type: String, default: "" },
+        relatedTaskIds:   [{ type: mongoose.Schema.Types.ObjectId, ref: "Task" }],
+        sourceRationale:  { type: String, default: "" },
+        createdBy:        { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+        createdByName:    { type: String, default: "" },
+        evidence:         { type: String, default: "" },
+        verificationNote: { type: String, default: "" },
+        createdAt:        { type: Date, default: Date.now },
+        updatedAt:        { type: Date, default: Date.now },
+      },
+    ],
+
+    revision:       { type: Number, default: 1 },
+    lifecycleState: { type: String, enum: ["DRAFT", "INTERIM", "FORMAL", "FINALIZED"], default: "DRAFT" },
+    teamFeedback:   { type: [String], default: [] },
+    generatedBy:    { type: String, enum: ["ai", "deterministic", "live_observation"], default: "deterministic" },
     acknowledgedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
   },
   { timestamps: true }
 );
 
 RetrospectiveSchema.index({ projectId: 1, createdAt: -1 });
+RetrospectiveSchema.index({ projectId: 1, sprintId: 1 });
 
 export default mongoose.model("Retrospective", RetrospectiveSchema);

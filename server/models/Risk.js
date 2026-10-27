@@ -15,6 +15,15 @@ const RiskSchema = new mongoose.Schema(
     evidence:    { type: String, default: "" },     // Specific data backing this risk
     affectedArea:{ type: String, default: "" },
 
+    methodology: {
+      type: String,
+      enum: ["WATERFALL", "SCRUM", "KANBAN", "HYBRID"],
+      default: "WATERFALL",
+      index: true,
+    },
+    sprintId: { type: mongoose.Schema.Types.ObjectId, ref: "Sprint", default: null, index: true },
+    relatedTaskIds: [{ type: mongoose.Schema.Types.ObjectId, ref: "Task" }],
+
     severity: {
       type: String,
       enum: ["low", "medium", "high", "critical"],
@@ -29,6 +38,11 @@ const RiskSchema = new mongoose.Schema(
         "blocked_tasks",
         "dependency_cascade",
         "unassigned_high_priority",
+        "unassigned_sprint_work",
+        "cross_sprint_dependency",
+        "carry_over_risk",
+        "backlog_readiness",
+        "scope_conflict",
         "high_priority_unfinished",
         "overload",
         "member_overload",
@@ -56,11 +70,15 @@ const RiskSchema = new mongoose.Schema(
     },
 
     recommendation: { type: String, default: "" },
+    notes:          { type: String, default: "" },
     acknowledgedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     acknowledgedAt: { type: Date, default: null },
     resolvedBy:     { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     resolvedAt:     { type: Date, default: null },
     resolutionReason: { type: String, default: "" },
+    firstDetectedAt:  { type: Date, default: Date.now },
+    lastDetectedAt:   { type: Date, default: Date.now },
+    reopenCount:      { type: Number, default: 0 },
   },
   { timestamps: true }
 );

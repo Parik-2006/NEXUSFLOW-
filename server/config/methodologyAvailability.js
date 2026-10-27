@@ -29,16 +29,53 @@ export const METHODOLOGY_IDS = {
 };
 
 /**
- * Evaluates whether experimental methodologies (Scrum, Kanban, Hybrid) are
+ * Returns the active release channel for methodology rollout:
+ *   - "production": forces experimental methodologies to remain blocked.
+ *   - "development": explicitly enables Scrum for testing in V4 development environments.
+ *   - fallback: if NODE_ENV === "production", fails safe to "production". Otherwise "default".
+ */
+export function getReleaseChannel() {
+  const envChannel = (process.env.METHODOLOGY_RELEASE_CHANNEL || "").trim().toLowerCase();
+  if (envChannel === "development" || envChannel === "dev") {
+    return "development";
+  }
+  if (envChannel === "production" || envChannel === "prod") {
+    return "production";
+  }
+  if (process.env.NODE_ENV === "production") {
+    return "production";
+  }
+  return "default";
+}
+
+/**
+ * Checks whether Scrum is enabled for development and testing.
+ * Authoritative rules:
+ *   - If release channel is "production", Scrum is FORCIBLY blocked.
+ *   - If release channel is "development", Scrum is explicitly enabled.
+ *   - Otherwise, falls back to areExperimentalMethodologiesEnabled().
+ */
+export function isScrumDevelopmentEnabled() {
+  const channel = getReleaseChannel();
+  if (channel === "production") {
+    return false;
+  }
+  if (channel === "development") {
+    return true;
+  }
+  return areExperimentalMethodologiesEnabled();
+}
+
+/**
+ * Evaluates whether legacy experimental methodologies (Kanban, Hybrid) are
  * enabled for new project creation in the current runtime environment.
  *
- * SAFEGUARD A: In production (NODE_ENV === "production"), experimental methodologies
- * are FORCIBLY and unconditionally blocked, even if ENABLE_EXPERIMENTAL_METHODOLOGIES is set.
- * In development and testing, setting ENABLE_EXPERIMENTAL_METHODOLOGIES="true" allows
- * controlled development testing on remote branches.
+ * SAFEGUARD A: In production channel or production runtime, experimental methodologies
+ * are FORCIBLY and unconditionally blocked.
  */
 export function areExperimentalMethodologiesEnabled() {
-  if (process.env.NODE_ENV === "production") {
+  const channel = (process.env.METHODOLOGY_RELEASE_CHANNEL || "").trim().toLowerCase();
+  if (channel === "production" || process.env.NODE_ENV === "production") {
     return false;
   }
   return process.env.ENABLE_EXPERIMENTAL_METHODOLOGIES === "true";
@@ -48,7 +85,9 @@ export function areExperimentalMethodologiesEnabled() {
  * Returns the authoritative availability descriptor for each methodology.
  */
 export function getMethodologyRegistry() {
+  const channel = getReleaseChannel();
   const experimentalActive = areExperimentalMethodologiesEnabled();
+  const isScrumAvailable = isScrumDevelopmentEnabled();
 
   return {
     WATERFALL: {
@@ -87,12 +126,14 @@ export function getMethodologyRegistry() {
     SCRUM: {
       id: "SCRUM",
       name: "Scrum",
-      status: experimentalActive ? "AVAILABLE" : "IN_PROGRESS",
-      badge: experimentalActive ? "ACTIVE" : "IN_PROGRESS",
-      allowNewProjects: experimentalActive,
+      status: isScrumAvailable ? "AVAILABLE" : "IN_PROGRESS",
+      badge: isScrumAvailable ? (channel === "development" ? "DEV_PREVIEW" : "ACTIVE") : "IN_PROGRESS",
+      allowNewProjects: isScrumAvailable,
       tagline: "Time-boxed iterations, product backlog burndown, and team velocity",
-      statusMessage: experimentalActive
-        ? "Enabled in development environment."
+      statusMessage: isScrumAvailable
+        ? (channel === "development"
+            ? "Enabled in development environment (Developer Preview)."
+            : "Enabled in development environment.")
         : "This methodology is currently in development and is not yet available in production.",
       reason: "Agile Scrum planning and ceremony workflows are undergoing stabilization.",
       targetRelease: "NexusFlow V4.1",
@@ -184,6 +225,8 @@ export function getMethodologyAvailability(methodology) {
 
 export default {
   METHODOLOGY_IDS,
+  getReleaseChannel,
+  isScrumDevelopmentEnabled,
   areExperimentalMethodologiesEnabled,
   getMethodologyRegistry,
   normalizeMethodologyId,

@@ -46,7 +46,7 @@ export interface MethodologyConfig {
   name: string;
   tagline: string;
   status: MethodologyStatus;
-  badge?: "ACTIVE" | "IN_PROGRESS" | "WIP";
+  badge?: "ACTIVE" | "IN_PROGRESS" | "WIP" | "DEV_PREVIEW";
   allowNewProjects?: boolean;
   statusMessage?: string;
   reason?: string;
@@ -237,15 +237,54 @@ export const WATERFALL_CONFIG: MethodologyConfig = {
   },
 };
 
-// ── 2. SCRUM CONFIGURATION (IN PROGRESS FOR V4.1) ──────────────────────────────
+/**
+ * Detects whether the current client runtime environment is configured for Scrum development.
+ * Inspects EXPO_PUBLIC_METHODOLOGY_RELEASE_CHANNEL, METHODOLOGY_RELEASE_CHANNEL, or localhost dev.
+ */
+export function isScrumDevEnvironment(): boolean {
+  if (typeof process !== "undefined" && process.env) {
+    const channel = (process.env.EXPO_PUBLIC_METHODOLOGY_RELEASE_CHANNEL || process.env.METHODOLOGY_RELEASE_CHANNEL || "").toLowerCase().trim();
+    if (channel === "development" || channel === "dev") return true;
+    if (channel === "production" || channel === "prod") return false;
+    if (process.env.ENABLE_EXPERIMENTAL_METHODOLOGIES === "true" && process.env.NODE_ENV !== "production") return true;
+  }
+  if (typeof window !== "undefined" && window.location) {
+    const host = window.location.hostname;
+    if (host === "localhost" || host === "127.0.0.1") return true;
+  }
+  return false;
+}
+
+let dynamicScrumEnabled: boolean | null = null;
+
+export function setDynamicScrumAvailability(enabled: boolean) {
+  dynamicScrumEnabled = enabled;
+  SCRUM_CONFIG.allowNewProjects = enabled;
+  SCRUM_CONFIG.status = enabled ? "ACTIVE" : "WIP";
+  SCRUM_CONFIG.badge = enabled ? "ACTIVE" : "IN_PROGRESS";
+  SCRUM_CONFIG.statusMessage = enabled
+    ? "Enabled in development environment (Developer Preview)."
+    : "This methodology is currently in development and is not yet available in production.";
+}
+
+export function isScrumDevEnabled(): boolean {
+  if (dynamicScrumEnabled !== null) return dynamicScrumEnabled;
+  return isScrumDevEnvironment();
+}
+
+const initialScrumAllowed = isScrumDevEnvironment();
+
+// ── 2. SCRUM CONFIGURATION (DEV PREVIEW IN V4 DEVELOPMENT) ────────────────────
 export const SCRUM_CONFIG: MethodologyConfig = {
   id: "SCRUM",
   name: "Scrum",
   tagline: "Time-boxed iterations, product backlog burndown, and team velocity",
-  status: "WIP",
-  badge: "IN_PROGRESS",
-  allowNewProjects: false,
-  statusMessage: "This methodology is currently in development and is not yet available in production.",
+  status: initialScrumAllowed ? "ACTIVE" : "WIP",
+  badge: initialScrumAllowed ? "ACTIVE" : "IN_PROGRESS",
+  allowNewProjects: initialScrumAllowed,
+  statusMessage: initialScrumAllowed
+    ? "Enabled in development environment (Developer Preview)."
+    : "This methodology is currently in development and is not yet available in production.",
   reason: "Scrum Agile planning and ceremony workflows are undergoing stabilization.",
   primaryTabs: [
     { key: "overview", label: "Overview", icon: "rocket", description: "Sprint goals, burndown summary, and daily standup" },

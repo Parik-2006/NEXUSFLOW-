@@ -27,6 +27,7 @@ import {
   getMethodologyAvailability,
   normalizeMethodologyId,
 } from "../config/methodologyAvailability.js";
+import { getScrumTaskQuery } from "./scrum.js";
 
 const router = Router();
 
@@ -123,6 +124,14 @@ router.get("/teams", requireAuth, async (req, res) => {
       if (!t.methodology) {
         t.methodology = t.discoverySettings?.methodology || "WATERFALL";
       }
+      if (t.methodology === "SCRUM" || t.methodology === "Scrum") {
+        const scrumQuery = getScrumTaskQuery(t.activeProjectId, t._id);
+        t.taskCount = await Task.countDocuments(scrumQuery);
+        t.doneCount = await Task.countDocuments({
+          ...scrumQuery,
+          $or: [{ status: "done" }, { status: "DONE" }, { scrumStatus: "DONE" }],
+        });
+      }
     }
     res.json(teams);
   } catch (e) {
@@ -154,6 +163,7 @@ router.get("/teams/:teamId", requireAuth, async (req, res) => {
     const team = { ...authCheck.team };
 
     // Dynamically resolve projectTitle and methodology from linked active Project if not explicitly populated
+    let resolvedProjectId = team.activeProjectId;
     if (team.activeProjectId) {
       const proj = await Project.findById(team.activeProjectId).select("title methodology").lean();
       if (proj?.title && !team.projectTitle) team.projectTitle = proj.title;
@@ -162,6 +172,7 @@ router.get("/teams/:teamId", requireAuth, async (req, res) => {
       const proj = await Project.findOne({ teamId: team._id }).sort({ updatedAt: -1 }).select("title methodology").lean();
       if (proj?.title && !team.projectTitle) team.projectTitle = proj.title;
       if (proj?.methodology && !team.methodology) team.methodology = proj.methodology;
+      if (proj?._id) resolvedProjectId = proj._id;
     }
 
     if (!team.methodology && team.discoverySettings?.methodology) {
@@ -169,6 +180,23 @@ router.get("/teams/:teamId", requireAuth, async (req, res) => {
     }
     if (!team.methodology) {
       team.methodology = "WATERFALL";
+    }
+
+    if (team.methodology === "SCRUM" || team.methodology === "Scrum") {
+      const scrumQuery = getScrumTaskQuery(resolvedProjectId, team._id);
+      team.taskCount = await Task.countDocuments(scrumQuery);
+      team.doneCount = await Task.countDocuments({
+        ...scrumQuery,
+        $or: [{ status: "done" }, { status: "DONE" }, { scrumStatus: "DONE" }],
+      });
+      team.backlogCount = await Task.countDocuments({
+        ...scrumQuery,
+        sprintId: null,
+      });
+      team.sprintTaskCount = await Task.countDocuments({
+        ...scrumQuery,
+        sprintId: { $ne: null },
+      });
     }
 
     res.json(team);
@@ -324,9 +352,10 @@ router.post("/teams", requireAuth, async (req, res) => {
       }
     );
 
-    // Create the initial AI/starter tasks (source = "ai") + wire phase deps for non-Waterfall methodologies.
+    // Create the initial AI/starter tasks (source = "ai") + wire phase deps for non-Waterfall / non-Scrum methodologies.
     // For Waterfall, tasks are generated strictly from approved requirements and finalized plan in Project Setup & Plan.
-    if (seeds.length && normalizedMethodology !== "WATERFALL") {
+    // For Scrum, tasks are generated strictly through the authoritative planning pipeline (artifacts → suggestions → approved backlog).
+    if (seeds.length && normalizedMethodology !== "WATERFALL" && normalizedMethodology !== "SCRUM") {
       const count = await createSeededTasks(team._id, seeds, project._id);
       await Team.updateOne({ _id: team._id }, { $set: { taskCount: count } });
     }

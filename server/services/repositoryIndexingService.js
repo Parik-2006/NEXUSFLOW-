@@ -51,10 +51,17 @@ const SECRET_PATTERNS = [
   /^\.env/i,
   /\.pem$/i,
   /\.key$/i,
+  /\.pfx$/i,
+  /\.p12$/i,
   /id_rsa/i,
   /id_ed25519/i,
+  /id_ecdsa/i,
+  /id_dsa/i,
   /credentials\.json$/i,
   /service-account.*\.json$/i,
+  /\.npmrc$/i,
+  /\.dockercfg$/i,
+  /\.aws/i,
 ];
 
 function isSecretOrBinary(path) {
@@ -354,6 +361,17 @@ export async function indexRepositoryForProject({ projectId, force = false, user
     integration.lastSyncError = err.message;
     integration.syncErrorDetails = { message: err.message, date: new Date() };
     await integration.save();
+
+    // Preserve previously indexed files while marking index status as error
+    try {
+      await RepositoryIndex.updateOne(
+        { projectId, isActive: true },
+        { $set: { status: "error", errorMessage: err.message } }
+      );
+    } catch (idxUpdateErr) {
+      logger.warn(`[repoIndexing] Failed to update RepositoryIndex error status: ${idxUpdateErr.message}`);
+    }
+
     throw err;
   }
 }

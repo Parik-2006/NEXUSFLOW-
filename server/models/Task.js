@@ -47,7 +47,7 @@ const TaskSchema = new mongoose.Schema(
 
     // ── Provenance / display metadata ────────────────────────────────────────
     source:        { type: String, enum: ["ai", "manual"], default: "manual" }, // AI vs Manual badge
-    priorityLabel: { type: String, enum: ["critical", "high", "medium", "low", null], default: null }, // explicit tier (overrides derived)
+    priorityLabel: { type: String, enum: ["critical", "high", "medium", "low", "CRITICAL", "HIGH", "MEDIUM", "LOW", null], default: null }, // explicit tier (overrides derived)
     category:      { type: String, default: "General" }, // AI project-decomposition group (Planning / Backend / …)
     phase:         { type: String, default: "requirements" }, // Waterfall phase (requirements, design, implementation, testing, deployment, maintenance)
     requirementId: { type: String, default: null }, // Link to SRS requirement ID (REQ-001)

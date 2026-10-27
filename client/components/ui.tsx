@@ -27,21 +27,22 @@ export function Card({ children, style, onPress }: { children: React.ReactNode; 
 }
 
 // ── Button ──────────────────────────────────────────────────────────────────
-type BtnVariant = "primary" | "secondary" | "ghost" | "danger" | "success";
+type BtnVariant = "primary" | "secondary" | "ghost" | "danger" | "success" | "outline";
 export function Button({
-  title, onPress, variant = "primary", icon, loading, disabled, style, small,
+  title, onPress, variant = "primary", icon, loading, disabled, style, small, size,
 }: {
   title: string; onPress?: () => void; variant?: BtnVariant; icon?: keyof typeof Ionicons.glyphMap;
-  loading?: boolean; disabled?: boolean; style?: ViewStyle; small?: boolean;
+  loading?: boolean; disabled?: boolean; style?: ViewStyle; small?: boolean; size?: string;
 }) {
-  const v = BTN[variant];
+  const isSmall = Boolean(small || size === "sm");
+  const v = BTN[variant] || BTN.secondary;
   const isOff = disabled || loading;
   return (
     <Pressable
       onPress={onPress}
       disabled={isOff}
       style={({ pressed }) => [
-        s.btn, small && s.btnSmall, { backgroundColor: v.bg, borderColor: v.border },
+        s.btn, isSmall && s.btnSmall, { backgroundColor: v.bg, borderColor: v.border },
         isOff && { opacity: 0.5 }, pressed && { opacity: 0.85 }, style,
       ]}
     >
@@ -49,8 +50,8 @@ export function Button({
         <ActivityIndicator size="small" color={v.fg} />
       ) : (
         <>
-          {icon && <Ionicons name={icon} size={small ? 15 : 17} color={v.fg} />}
-          <Text style={[s.btnTxt, small && { fontSize: 13 }, { color: v.fg }]}>{title}</Text>
+          {icon && <Ionicons name={icon} size={isSmall ? 15 : 17} color={v.fg} />}
+          <Text style={[s.btnTxt, isSmall && { fontSize: 13 }, { color: v.fg }]}>{title}</Text>
         </>
       )}
     </Pressable>
@@ -62,14 +63,49 @@ const BTN: Record<BtnVariant, { bg: string; fg: string; border: string }> = {
   ghost:     { bg: "transparent", fg: colors.primary, border: "transparent" },
   danger:    { bg: colors.danger, fg: "#fff", border: colors.danger },
   success:   { bg: colors.success, fg: "#fff", border: colors.success },
+  outline:   { bg: colors.surface, fg: colors.text, border: colors.border },
 };
 
 // ── Badge / Pill ─────────────────────────────────────────────────────────────
-export function Badge({ label, color, bg, dot }: { label: string; color: string; bg?: string; dot?: boolean }) {
+export function Badge({
+  label,
+  color,
+  bg,
+  dot,
+  variant,
+  size,
+}: {
+  label: string;
+  color?: string;
+  bg?: string;
+  dot?: boolean;
+  variant?: string;
+  size?: string;
+}) {
+  const resolvedColor =
+    color ||
+    (variant === "error" || variant === "danger"
+      ? colors.danger
+      : variant === "warning"
+      ? colors.warning
+      : variant === "success"
+      ? colors.success
+      : variant === "secondary"
+      ? colors.primary
+      : colors.textMuted);
+
+  const isSmall = size === "sm";
+
   return (
-    <View style={[s.badge, { backgroundColor: bg ?? color + "1a" }]}>
-      {dot && <View style={[s.badgeDot, { backgroundColor: color }]} />}
-      <Text style={[s.badgeTxt, { color }]}>{label}</Text>
+    <View
+      style={[
+        s.badge,
+        { backgroundColor: bg ?? resolvedColor + "1a" },
+        isSmall && { paddingHorizontal: 6, paddingVertical: 1 },
+      ]}
+    >
+      {dot && <View style={[s.badgeDot, { backgroundColor: resolvedColor }]} />}
+      <Text style={[s.badgeTxt, { color: resolvedColor }, isSmall && { fontSize: 10 }]}>{label}</Text>
     </View>
   );
 }
@@ -224,10 +260,11 @@ export function SectionHeader({ title, subtitle, right, accent }: {
 }
 
 // ── ProgressBar ────────────────────────────────────────────────────────────────
-export function ProgressBar({ value, color = colors.primary, height = 8, showTrack = true }: {
-  value: number; color?: string; height?: number; showTrack?: boolean;
+export function ProgressBar({ value, progress, color = colors.primary, height = 8, showTrack = true }: {
+  value?: number; progress?: number; color?: string; height?: number; showTrack?: boolean;
 }) {
-  const pct = Math.max(0, Math.min(1, value)) * 100;
+  const num = value ?? progress ?? 0;
+  const pct = Math.max(0, Math.min(1, num)) * 100;
   return (
     <View style={[s.progressTrack, { height, backgroundColor: showTrack ? colors.border : "transparent" }]}>
       <View style={{ width: `${pct}%`, height: "100%", borderRadius: height / 2, backgroundColor: color }} />

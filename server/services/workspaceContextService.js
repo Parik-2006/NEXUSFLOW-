@@ -156,8 +156,13 @@ export async function assembleWorkspaceContext({ projectId, query = "", maxChars
 
   // Connected GitHub Repository
   if (repoIntel && repoIntel.connected) {
+    const isStaleOrError = Boolean(repoIntel.isStale || repoIntel.status === "error");
+    const staleNotice = isStaleOrError
+      ? `\n- Stale Status: WARNING - Repository index is marked stale or synchronization failed (${repoIntel.lastError || "sync required"}). The code evidence below may not reflect the latest remote commit.`
+      : "";
+
     sections.push(
-      `### 2. Connected GitHub Repository\n- Repository: [${repoIntel.repoFullName}](${repoIntel.repoUrl})\n- Active Branch: ${repoIntel.branch}\n- Last Synced Commit: ${(repoIntel.lastSyncCommitSha || "").slice(0, 7)} (Synced: ${repoIntel.lastSyncAt ? new Date(repoIntel.lastSyncAt).toISOString() : "never"})\n- Architecture Summary:\n${repoIntel.architectureSummary || "No architecture summary recorded yet."}`
+      `### 2. Connected GitHub Repository\n- Repository: [${repoIntel.repoFullName}](${repoIntel.repoUrl})\n- Active Branch: ${repoIntel.branch}\n- Last Synced Commit: ${(repoIntel.lastSyncCommitSha || "").slice(0, 7)} (Synced: ${repoIntel.lastSyncAt ? new Date(repoIntel.lastSyncAt).toISOString() : "never"})${staleNotice}\n- Architecture Summary:\n${repoIntel.architectureSummary || "No architecture summary recorded yet."}`
     );
 
     if (relevantRepoFiles.length > 0) {
