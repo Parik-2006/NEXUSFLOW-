@@ -255,7 +255,13 @@ export async function computeScrumHealth(id, io = null, calculatedBy = null) {
   let overallScore = 0;
   let assessmentScope = "PROJECT_PLANNING";
 
-  if (activeSprint && sprintTasks.length > 0) {
+  const allWorkCompleted = totalTasks > 0 && activeTasks.length === 0;
+
+  if (allWorkCompleted) {
+    // Stage E — All project work complete: 100% completion, safe delivery state
+    assessmentScope = "PROJECT_PLANNING";
+    overallScore = clamp(100 - openRisks.length * 10);
+  } else if (activeSprint && sprintTasks.length > 0) {
     assessmentScope = "ACTIVE_SPRINT";
     overallScore = clamp(
       (sprintDelivery.score || 0) * 0.30 +
@@ -308,7 +314,9 @@ export async function computeScrumHealth(id, io = null, calculatedBy = null) {
       summary = `Active sprint requires immediate team intervention: delivery bottlenecks or capacity overruns threaten sprint goal.`;
     }
   } else {
-    if (overallScore >= 75) {
+    if (allWorkCompleted) {
+      summary = "All project backlog deliverables and sprint commitments have been successfully completed.";
+    } else if (overallScore >= 75) {
       summary = `Product backlog is well-structured (${backlogReadinessScore}% readiness) with estimates and acceptance criteria. Ready for sprint commitment.`;
     } else {
       summary = `Backlog planning requires refinement: ${criticalImpairments[0] || "unestimated stories or missing acceptance criteria must be completed"}.`;

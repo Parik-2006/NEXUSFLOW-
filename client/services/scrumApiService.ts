@@ -111,7 +111,11 @@ export async function completeSprint(sprintId: string, payload: { carryOverActio
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || "Failed to complete Sprint");
+    const errorObj: any = new Error(err.error || "Failed to complete Sprint");
+    errorObj.code = err.code;
+    errorObj.status = res.status;
+    errorObj.data = err;
+    throw errorObj;
   }
   return res.json();
 }
@@ -256,6 +260,24 @@ export async function fetchScrumCapacity(teamId: string, token?: string | null) 
   return res.json();
 }
 
+export async function bulkAcceptScrumAssignments(
+  teamIdOrProjectId: string,
+  assignments: Array<{ taskId: string; memberId: string }>,
+  allowCapacityOverrun: boolean = false,
+  token?: string | null
+) {
+  const res = await fetch(`${API}/api/scrum/capability/${teamIdOrProjectId}/bulk-assign`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify({ assignments, allowCapacityOverrun }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || err.message || "Failed to execute bulk Scrum assignment");
+  }
+  return res.json();
+}
+
 export async function acceptScrumAssignment(
   teamId: string,
   taskId: string,
@@ -320,6 +342,15 @@ export async function removeScrumDependency(
 }
 
 // ── 9. Insights ───────────────────────────────────────────────────────────────
+export async function fetchScrumAnalytics(teamIdOrProjectId: string, sprintId?: string | null, token?: string | null) {
+  const query = sprintId ? `?sprintId=${encodeURIComponent(sprintId)}` : "";
+  const res = await fetch(`${API}/api/scrum/analytics/${teamIdOrProjectId}${query}`, {
+    headers: authHeaders(token),
+  });
+  if (!res.ok) throw new Error("Failed to load Scrum sprint analytics");
+  return res.json();
+}
+
 export async function fetchScrumInsights(teamId: string, token?: string | null) {
   const res = await fetch(`${API}/api/scrum/insights/${teamId}`, {
     headers: authHeaders(token),

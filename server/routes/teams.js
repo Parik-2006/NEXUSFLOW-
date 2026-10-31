@@ -2846,6 +2846,21 @@ router.patch("/teams/:teamId/members/:userId/skills", requireAuth, async (req, r
       });
     }
 
+    // Automatically recompute project health and scan risks following skill rating updates
+    if (team.activeProjectId) {
+      try {
+        if (team.methodology === "SCRUM") {
+          const { computeScrumHealth } = await import("../services/scrumHealthService.js");
+          await computeScrumHealth(team.activeProjectId, io, userId);
+        } else {
+          const { computeUnifiedProjectHealth } = await import("../services/unifiedProjectHealthService.js");
+          await computeUnifiedProjectHealth(team.activeProjectId, io);
+        }
+      } catch (err) {
+        console.warn("[teams.js] Health recalculation after skill save notice:", err.message);
+      }
+    }
+
     res.json({
       ok: true,
       message: "Skill ratings updated successfully.",

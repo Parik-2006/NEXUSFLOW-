@@ -507,27 +507,21 @@ export const HYBRID_CONFIG: MethodologyConfig = {
   },
 };
 
-// ── 5. NEXUSFLOW CLASSIC CONFIGURATION (ORIGINAL V3 WORKSPACE) ───────────────
+// ── 5. NEXUSFLOW CLASSIC CONFIGURATION (ORIGINAL V1 DAA WORKSPACE) ───────────
 export const CLASSIC_CONFIG: MethodologyConfig = {
   id: "CLASSIC",
   name: "NexusFlow Classic",
-  tagline: "Original 12-tab NexusFlow V3 project experience with sprint and kanban workflows",
+  tagline: "Original 6-tab DAA algorithm-based project workspace (Overview, Tasks, Sprint, Graph, Members, Chat)",
   status: "ACTIVE",
   badge: "ACTIVE",
   allowNewProjects: true,
   statusMessage: "Available for production use.",
   primaryTabs: [
-    { key: "overview", label: "Overview", icon: "grid", description: "V3 Project Summary" },
-    { key: "advisor", label: "Project AI", icon: "sparkles", description: "AI Project Copilot" },
+    { key: "overview", label: "Overview", icon: "grid", description: "DAA Project Dashboard" },
     { key: "tasks", label: "Tasks", icon: "list", description: "Task Backlog & Prioritization" },
     { key: "sprint", label: "Sprint", icon: "rocket", description: "0/1 Knapsack Capacity Optimizer" },
     { key: "graph", label: "Graph", icon: "git-network", description: "Topological Dependency DAG" },
     { key: "members", label: "Members", icon: "people", description: "Branch & Bound Assignment" },
-    { key: "analytics", label: "Analytics", icon: "stats-chart", description: "Performance Charts" },
-    { key: "health", label: "Health", icon: "heart", description: "Team Health Indicators" },
-    { key: "risks", label: "Risks", icon: "shield-checkmark", description: "Automated Risk Scanner" },
-    { key: "github", label: "GitHub", icon: "logo-github", description: "Repo Synchronization" },
-    { key: "retro", label: "Retro", icon: "clipboard", description: "Sprint Retrospective" },
     { key: "chat", label: "Chat", icon: "chatbubbles", description: "Team Communications" },
   ],
   workflowStates: [
@@ -579,6 +573,20 @@ export const NEXUSFLOW_CONFIG: MethodologyConfig = {
   badge: "ACTIVE",
   allowNewProjects: true,
   statusMessage: "Available for production use.",
+  primaryTabs: [
+    { key: "overview", label: "Overview", icon: "grid", description: "V3 Project Summary" },
+    { key: "advisor", label: "Project AI", icon: "sparkles", description: "AI Project Copilot" },
+    { key: "tasks", label: "Tasks", icon: "list", description: "Task Backlog & Prioritization" },
+    { key: "sprint", label: "Sprint", icon: "rocket", description: "0/1 Knapsack Capacity Optimizer" },
+    { key: "graph", label: "Graph", icon: "git-network", description: "Topological Dependency DAG" },
+    { key: "members", label: "Members", icon: "people", description: "Branch & Bound Assignment" },
+    { key: "analytics", label: "Analytics", icon: "stats-chart", description: "Performance Charts" },
+    { key: "health", label: "Health", icon: "heart", description: "Team Health Indicators" },
+    { key: "risks", label: "Risks", icon: "shield-checkmark", description: "Automated Risk Scanner" },
+    { key: "github", label: "GitHub", icon: "logo-github", description: "Repo Synchronization" },
+    { key: "retro", label: "Retro", icon: "clipboard", description: "Sprint Retrospective" },
+    { key: "chat", label: "Chat", icon: "chatbubbles", description: "Team Communications" },
+  ],
 };
 
 // ── REGISTRY & SELECTOR HELPERS ───────────────────────────────────────────────

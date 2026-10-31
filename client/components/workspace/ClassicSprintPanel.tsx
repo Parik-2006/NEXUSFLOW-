@@ -1,0 +1,289 @@
+/**
+ * ClassicSprintPanel.tsx ? 0/1 Knapsack Sprint Optimizer.
+ * Capacity stepper ? DP optimizer ? selected task cards + utilization bar.
+ * Completely deterministic and algorithm-driven with no AI features.
+ */
+import React, { useState } from "react";
+import { View, Text, StyleSheet, ScrollView } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import { useTeam, type SprintResult, type SprintTaskRow } from "@/hooks/useTeam";
+import { Card, Button, Stepper, Badge, ProgressBar, EmptyState } from "@/components/ui";
+import { useToast } from "@/components/feedback";
+import { colors, spacing, radius, font } from "@/theme";
+
+export default function ClassicSprintPanel({ teamId }: { teamId: string }) {
+  const { sprintOptimize } = useTeam(teamId);
+  const toast = useToast();
+  const [hours, setHours] = useState(40);
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<SprintResult | null>(null);
+
+  const run = async () => {
+    setLoading(true);
+    const { result: r, error } = await sprintOptimize(hours);
+    setLoading(false);
+    if (error) {
+      toast(error, "error");
+      return;
+    }
+    setResult(r!);
+    if (r?.warning) toast(r.warning, "info");
+  };
+
+  const util = result?.utilizationPct ?? 0;
+  const utilColor =
+    util > 95 ? colors.danger : util > 80 ? colors.warning : colors.success;
+
+  return (
+    <ScrollView
+      contentContainerStyle={{
+        padding: spacing.lg,
+        gap: spacing.md,
+        paddingBottom: 60,
+      }}
+    >
+      <Card style={{ gap: spacing.md }}>
+        <View style={s.head}>
+          <View style={[s.icon, { backgroundColor: colors.knapsack + "1a" }]}>
+            <Ionicons name="rocket" size={20} color={colors.knapsack} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={font.h3}>Sprint Optimizer</Text>
+            <Text style={s.sub}>0/1 Knapsack ? maximises value within capacity</Text>
+          </View>
+          <Badge label="O(n?W)" color={colors.knapsack} />
+        </View>
+        <View style={s.capRow}>
+          <Text style={s.capLabel}>Sprint capacity</Text>
+          <Stepper
+            value={hours}
+            onChange={setHours}
+            min={1}
+            max={200}
+            step={5}
+            suffix="h"
+          />
+        </View>
+        <Button
+          title={loading ? "Optimizing..." : "Run Knapsack Optimizer"}
+          icon="flash"
+          onPress={run}
+          loading={loading}
+        />
+      </Card>
+
+      {result &&
+        (result.selectedTasks.length === 0 ? (
+          <>
+            <EmptyState
+              icon="cube-outline"
+              title="No eligible tasks"
+              message={
+                result.message ??
+                "Add estimated hours and business value to backlog tasks so the optimizer can select them."
+              }
+            />
+            {!!result.ineligible?.length && (
+              <Card style={{ gap: spacing.sm }}>
+                <Text style={s.selTitle}>Why each task was skipped</Text>
+                {result.ineligible.map((t) => (
+                  <View key={t._id} style={s.reasonRow}>
+                    <Ionicons
+                      name="close-circle"
+                      size={15}
+                      color={colors.danger}
+                      style={{ marginTop: 1 }}
+                    />
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.taskTitle}>{t.title}</Text>
+                      <Text style={s.reasonTxt}>{t.reason}</Text>
+                    </View>
+                  </View>
+                ))}
+              </Card>
+            )}
+          </>
+        ) : (
+          <Card style={{ gap: spacing.md }}>
+            <View style={s.statRow}>
+              <Metric
+                label="Tasks"
+                value={result.selectedTasks.length}
+                color={colors.primary}
+              />
+              <Metric
+                label="Value"
+                value={result.totalValue}
+                color={colors.success}
+              />
+              <Metric
+                label="Hours"
+                value={`${result.totalHours}/${result.sprintCapacity}`}
+                color={colors.greedy}
+              />
+              <Metric label="Used" value={`${util}%`} color={utilColor} />
+            </View>
+            <View style={{ gap: 4 }}>
+              <ProgressBar value={util / 100} color={utilColor} height={10} />
+              <Text style={s.utilTxt}>
+                {util}% capacity utilised ?{" "}
+                {result.sprintCapacity - result.totalHours}h remaining
+              </Text>
+            </View>
+
+            <Text style={s.selTitle}>Selected for this sprint</Text>
+            {(
+              result.eligible?.filter((t) => t.selected) ??
+              result.selectedTasks.map(
+                (t): SprintTaskRow => ({ ...t, selected: true })
+              )
+            ).map((t) => (
+              <View key={t._id} style={s.taskRow}>
+                <View style={[s.dot, { backgroundColor: colors.knapsack }]} />
+                <View style={{ flex: 1 }}>
+                  <Text style={s.taskTitle}>{t.title}</Text>
+                  {t.reason ? <Text style={s.reasonTxt}>{t.reason}</Text> : null}
+                </View>
+                <Text style={s.taskMeta}>
+                  {t.estimatedHours}h ? V{t.businessValue}
+                </Text>
+              </View>
+            ))}
+
+            {/* Eligible-but-not-selected */}
+            {!!result.eligible?.some((t) => !t.selected) && (
+              <>
+                <Text style={s.selTitle}>Eligible ? not selected</Text>
+                {result.eligible
+                  .filter((t) => !t.selected)
+                  .map((t) => (
+                    <View key={t._id} style={s.taskRow}>
+                      <View
+                        style={[s.dot, { backgroundColor: colors.textFaint }]}
+                      />
+                      <View style={{ flex: 1 }}>
+                        <Text style={[s.taskTitle, { color: colors.textMuted }]}>
+                          {t.title}
+                        </Text>
+                        {t.reason ? (
+                          <Text style={s.reasonTxt}>{t.reason}</Text>
+                        ) : null}
+                      </View>
+                      <Text style={s.taskMeta}>
+                        {t.estimatedHours}h ? V{t.businessValue}
+                      </Text>
+                    </View>
+                  ))}
+              </>
+            )}
+
+            {!!result.ineligible?.length && (
+              <>
+                <Text style={s.selTitle}>
+                  Excluded ({result.ineligible.length})
+                </Text>
+                {result.ineligible.map((t) => (
+                  <View key={t._id} style={s.reasonRow}>
+                    <Ionicons
+                      name="close-circle"
+                      size={15}
+                      color={colors.danger}
+                      style={{ marginTop: 1 }}
+                    />
+                    <View style={{ flex: 1 }}>
+                      <Text style={[s.taskTitle, { color: colors.textMuted }]}>
+                        {t.title}
+                      </Text>
+                      <Text style={s.reasonTxt}>{t.reason}</Text>
+                    </View>
+                  </View>
+                ))}
+              </>
+            )}
+          </Card>
+        ))}
+
+      {!result && !loading && (
+        <EmptyState
+          icon="rocket-outline"
+          title="Plan your sprint"
+          message="Set a capacity and run the Knapsack optimizer to pick the highest-value tasks that fit."
+        />
+      )}
+    </ScrollView>
+  );
+}
+
+function Metric({
+  label,
+  value,
+  color,
+}: {
+  label: string;
+  value: number | string;
+  color: string;
+}) {
+  return (
+    <View style={s.metric}>
+      <Text style={[s.metricVal, { color }]}>{value}</Text>
+      <Text style={s.metricLbl}>{label}</Text>
+    </View>
+  );
+}
+
+const s = StyleSheet.create({
+  head: { flexDirection: "row", alignItems: "center", gap: spacing.md },
+  icon: {
+    width: 36,
+    height: 36,
+    borderRadius: radius.md,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  sub: { fontSize: 12, color: colors.textMuted },
+  capRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: spacing.xs,
+  },
+  capLabel: { fontSize: 14, fontWeight: "600", color: colors.text },
+  statRow: { flexDirection: "row", gap: spacing.sm },
+  metric: {
+    flex: 1,
+    padding: spacing.sm,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surfaceAlt,
+    alignItems: "center",
+    gap: 2,
+  },
+  metricVal: { fontSize: 18, fontWeight: "800" },
+  metricLbl: { fontSize: 11, color: colors.textMuted },
+  utilTxt: { fontSize: 12, color: colors.textMuted, textAlign: "right" },
+  selTitle: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: colors.textMuted,
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+    marginTop: spacing.xs,
+  },
+  taskRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  dot: { width: 8, height: 8, borderRadius: 4 },
+  taskTitle: { fontSize: 13, fontWeight: "600", color: colors.text },
+  taskMeta: { fontSize: 12, color: colors.textMuted },
+  reasonRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: spacing.sm,
+    paddingVertical: 4,
+  },
+  reasonTxt: { fontSize: 11, color: colors.textMuted },
+});

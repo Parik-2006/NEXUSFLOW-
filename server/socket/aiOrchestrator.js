@@ -153,6 +153,10 @@ export function registerAiOrchestrator(io, socket) {
     };
     io.to(`team:${teamId}`).emit("chat:message", human);
 
+    // FIX 1: Classic methodology strictly excludes AI project planning, AI story generation and LLM chat responses.
+    const team = auth.team || await Team.findById(teamId).lean();
+    if (team?.methodology === "CLASSIC") return;
+
     if (!/^\s*@ai\b/i.test(text)) return;
     const prompt = text.replace(/^\s*@ai\b/i, "").trim();
 

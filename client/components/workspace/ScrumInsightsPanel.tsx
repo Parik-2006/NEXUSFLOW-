@@ -33,7 +33,9 @@ import DependencyGraphPanel from "@/components/DependencyGraphPanel";
 import type { GraphNode, GraphEdge } from "@/hooks/useDependencyGraph";
 import HealthScoreGauge from "@/components/workspace/HealthScoreGauge";
 import {
+  fetchScrumAnalytics,
   fetchScrumInsights,
+  bulkAcceptScrumAssignments,
   fetchScrumHealth,
   refreshScrumHealth,
   fetchScrumRisks,
@@ -66,7 +68,7 @@ const SUB_TABS: SubTabOption[] = [
 ];
 
 export default function ScrumInsightsPanel({ teamId }: { teamId: string }) {
-  const { token } = useAuth();
+  const { user, token } = useAuth();
   const { team } = useTeam(teamId);
   const toast = useToast();
 
@@ -80,6 +82,24 @@ export default function ScrumInsightsPanel({ teamId }: { teamId: string }) {
   const [sprints, setSprints] = useState<any[]>([]);
   const [tasks, setTasks] = useState<any[]>([]);
   const [depData, setDepData] = useState<any>(null);
+
+  // Sprint Analytics State (Grounded in authoritative MongoDB records)
+  const [analyticsData, setAnalyticsData] = useState<any>(null);
+  const [selectedAnalyticsSprintId, setSelectedAnalyticsSprintId] = useState<string | null>(null);
+  const [loadingAnalytics, setLoadingAnalytics] = useState(false);
+
+  const handleSelectAnalyticsSprint = async (sprintId: string) => {
+    setSelectedAnalyticsSprintId(sprintId);
+    setLoadingAnalytics(true);
+    try {
+      const data = await fetchScrumAnalytics(teamId, sprintId, token);
+      setAnalyticsData(data);
+    } catch (err: any) {
+      toast(err.message || "Failed to load sprint analytics", "error");
+    } finally {
+      setLoadingAnalytics(false);
+    }
+  };
 
   // Mode: "actual" vs "example"
   const [dataMode, setDataMode] = useState<"example" | "actual">("actual");
@@ -100,6 +120,31 @@ export default function ScrumInsightsPanel({ teamId }: { teamId: string }) {
   // Capability Intelligence & Dynamic Assignment State
   const [capacityData, setCapacityData] = useState<any | null>(null);
   const [acceptingAssignId, setAcceptingAssignId] = useState<string | null>(null);
+
+  // Bulk Assignment Modal & Execution State
+  const [showBulkModal, setShowBulkModal] = useState(false);
+  const [allowOverrun, setAllowOverrun] = useState(false);
+  const [bulkAssigning, setBulkAssigning] = useState(false);
+  const [bulkSummary, setBulkSummary] = useState<any>(null);
+
+  const handleExecuteBulkAssignment = async (eligibleAssignments: any[]) => {
+    if (bulkAssigning) return;
+    setBulkAssigning(true);
+    try {
+      const payload = eligibleAssignments.map((a: any) => ({
+        taskId: a.taskId,
+        memberId: a.recommendedMemberId,
+      }));
+      const res = await bulkAcceptScrumAssignments(teamId, payload, allowOverrun, token);
+      setBulkSummary(res);
+      toast(res.message || `Bulk assignment complete: ${res.assignedCount} stories assigned.`, "success");
+      await loadData();
+    } catch (err: any) {
+      toast(err.message || "Failed to execute bulk assignment", "error");
+    } finally {
+      setBulkAssigning(false);
+    }
+  };
 
   const handleAcceptAssignment = async (taskId: string, memberId: string) => {
     if (acceptingAssignId) return;
@@ -221,7 +266,7 @@ export default function ScrumInsightsPanel({ teamId }: { teamId: string }) {
 
   const loadData = useCallback(async () => {
     try {
-      const [hRes, insRes, sprintRes, backlogRes, depRes, riskRes, capRes] = await Promise.all([
+      const [hRes, insRes, sprintRes, backlogRes, depRes, riskRes, capRes, analyticsRes] = await Promise.all([
         fetchScrumHealth(teamId, token).catch(() => null),
         fetchScrumInsights(teamId, token).catch(() => null),
         fetchSprints(teamId, token).catch(() => ({ sprints: [] })),
@@ -229,6 +274,7 @@ export default function ScrumInsightsPanel({ teamId }: { teamId: string }) {
         fetchScrumDependencies(teamId, token).catch(() => null),
         fetchScrumRisks(teamId, riskFilter, token).catch(() => null),
         fetchScrumCapacity(teamId, token).catch(() => null),
+        fetchScrumAnalytics(teamId, selectedAnalyticsSprintId, token).catch(() => null),
       ]);
 
       setHealth(hRes);
@@ -237,6 +283,7 @@ export default function ScrumInsightsPanel({ teamId }: { teamId: string }) {
       setTasks(backlogRes?.items || []);
       setDepData(depRes);
       setCapacityData(capRes);
+      setAnalyticsData(analyticsRes);
 
       if (riskRes?.risks) setScrumRisks(riskRes.risks);
       if (riskRes?.counts) setRiskCounts(riskRes.counts);
@@ -273,6 +320,21 @@ export default function ScrumInsightsPanel({ teamId }: { teamId: string }) {
   const planningSprints = useMemo(() => {
     return sprints.filter((s) => s.status === "PLANNING");
   }, [sprints]);
+
+  const currentUserId = (user?._id || user?.id)?.toString();
+  const isOwner = Boolean(team?.ownerId && currentUserId && team.ownerId.toString() === currentUserId);
+  const isLeader = Boolean(
+    isOwner ||
+    user?.role === "leader" ||
+    user?.role === "admin" ||
+    (team?.members || []).some(
+      (m: any) =>
+        (m.userId?._id || m.userId)?.toString() === currentUserId &&
+        ["owner", "leader", "team leader", "manager", "project manager", "scrum master"].includes(
+          (m.role || "").toLowerCase()
+        )
+    )
+  );
 
   const memberMap = useMemo(() => {
     return new Map((team?.members || []).map((m: any) => [String(m.userId?._id || m.userId), m.name]));
@@ -685,36 +747,333 @@ export default function ScrumInsightsPanel({ teamId }: { teamId: string }) {
         );
       }
 
-      // ── 2. Sprint Analytics ────────────────────────────────────────────────
-      case "analytics":
+      // ── 2. Sprint Analytics (Authoritative Grounded Experience) ───────────
+      case "analytics": {
+        const curSprint = analyticsData?.selectedSprint || activeSprint || (sprints.length > 0 ? sprints[0] : null);
+        const availableSprints = analyticsData?.sprints || sprints;
+        const ov = analyticsData?.overview || {
+          totalCommittedStories: tasks.filter((t) => t.sprintId === curSprint?._id).length,
+          totalCommittedPoints: tasks.filter((t) => t.sprintId === curSprint?._id).reduce((s: number, t: any) => s + (t.storyPoints || 0), 0),
+          completedStories: tasks.filter((t) => t.sprintId === curSprint?._id && (t.status === "done" || t.status === "COMPLETED")).length,
+          completedPoints: tasks.filter((t) => t.sprintId === curSprint?._id && (t.status === "done" || t.status === "COMPLETED")).reduce((s: number, t: any) => s + (t.storyPoints || 0), 0),
+          remainingStories: 0,
+          remainingPoints: 0,
+          storyCompletionPct: 0,
+          pointCompletionPct: 0,
+          totalEstimatedHours: 0,
+          actualLoggedHours: null,
+          daysElapsed: null,
+          daysRemaining: null,
+          totalDurationDays: curSprint?.durationDays || 14,
+        };
+
+        const burndown = analyticsData?.burndown;
+        const velocity = analyticsData?.velocity || {
+          averageVelocity: 0,
+          highestVelocity: 0,
+          lowestVelocity: 0,
+          totalCompletedStoryPoints: 0,
+          completedSprintCount: 0,
+          history: completedSprintVelocity.map((v) => ({
+            sprintNumber: v.sprintNumber,
+            name: v.sprintName,
+            plannedPoints: v.velocityPoints,
+            completedPoints: v.velocityPoints,
+            completedTaskCount: v.taskCount,
+          })),
+        };
+
+        const dist = analyticsData?.distribution || {
+          todo: { count: 0, storyPoints: 0, percentage: 0 },
+          in_progress: { count: 0, storyPoints: 0, percentage: 0 },
+          in_review: { count: 0, storyPoints: 0, percentage: 0 },
+          blocked: { count: 0, storyPoints: 0, percentage: 0 },
+          done: { count: 0, storyPoints: 0, percentage: 0 },
+          totalSprintTasks: 0,
+        };
+
+        const cap = analyticsData?.capacity;
+        const scope = analyticsData?.scope;
+        const prov = analyticsData?.provenance;
+
+        const sumTasks = (dist.todo?.count || 0) + (dist.in_progress?.count || 0) + (dist.in_review?.count || 0) + (dist.blocked?.count || 0) + (dist.done?.count || 0);
+
         return (
           <View style={s.subSection}>
+            {/* Header with Title and Provenance */}
+            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10 }}>
+              <View style={{ flex: 1, minWidth: 260 }}>
+                <Text style={s.analyticsHeaderTitle}>Sprint Trajectory & Velocity</Text>
+                <Text style={s.metricCardSub}>
+                  Live burndown trajectories, capacity utilization, and velocity derived from authoritative MongoDB records
+                </Text>
+              </View>
+              <View style={s.analyticsProvenanceBadge}>
+                <Ionicons name="server-outline" size={13} color="#0284c7" />
+                <Text style={s.analyticsProvenanceBadgeTxt}>
+                  {prov?.isSnapshot ? "Historical Snapshot" : "Live MongoDB State"}
+                </Text>
+              </View>
+            </View>
+
+            {/* SPRINT SELECTOR */}
+            <View style={s.sprintSelectorContainer}>
+              <Text style={s.selectorLabel}>Select Sprint Scope:</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingVertical: 4 }}>
+                {availableSprints.map((sp: any) => {
+                  const isSelected = curSprint?._id?.toString() === sp._id?.toString();
+                  const statusColors: any = {
+                    ACTIVE: { bg: "#eff6ff", border: "#2563eb", text: "#1d4ed8" },
+                    PLANNING: { bg: "#f8fafc", border: "#94a3b8", text: "#475569" },
+                    COMPLETED: { bg: "#f0fdf4", border: "#16a34a", text: "#15803d" },
+                    CANCELLED: { bg: "#fef2f2", border: "#ef4444", text: "#b91c1c" },
+                  };
+                  const col = statusColors[sp.status] || statusColors.PLANNING;
+                  return (
+                    <Pressable
+                      key={sp._id}
+                      onPress={() => handleSelectAnalyticsSprint(sp._id)}
+                      style={[
+                        s.sprintSelectPill,
+                        isSelected && { borderColor: "#2563eb", borderWidth: 2, backgroundColor: "#eff6ff" },
+                      ]}
+                    >
+                      <Text style={[s.sprintSelectPillTxt, isSelected && { fontWeight: "800", color: "#1e40af" }]}>
+                        Sprint {sp.sprintNumber || ""}: {sp.name}
+                      </Text>
+                      <View style={[s.statusMiniBadge, { backgroundColor: col.bg, borderColor: col.border }]}>
+                        <Text style={[s.statusMiniBadgeTxt, { color: col.text }]}>{sp.status}</Text>
+                      </View>
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+            </View>
+
+            {/* SPRINT OVERVIEW HEADER CARD */}
+            {curSprint ? (
+              <View style={s.sprintDetailsCard}>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 8 }}>
+                  <View style={{ flex: 1, minWidth: 200 }}>
+                    <Text style={s.sprintTitleTxt}>{curSprint.name}</Text>
+                    {curSprint.goal ? (
+                      <Text style={s.sprintGoalTxt}>
+                        <Text style={{ fontWeight: "700" }}>Sprint Goal: </Text>
+                        {curSprint.goal}
+                      </Text>
+                    ) : null}
+                  </View>
+                  <View style={{ alignItems: "flex-end" }}>
+                    <Badge label={curSprint.status} variant={curSprint.status === "ACTIVE" ? "info" : curSprint.status === "COMPLETED" ? "success" : "neutral"} />
+                    {ov.daysRemaining !== null && curSprint.status === "ACTIVE" ? (
+                      <Text style={s.daysRemainingTxt}>{ov.daysRemaining} days remaining in cycle</Text>
+                    ) : curSprint.status === "COMPLETED" ? (
+                      <Text style={s.daysRemainingTxt}>Sprint completed</Text>
+                    ) : null}
+                  </View>
+                </View>
+
+                {/* 6 Key Metrics Grid */}
+                <View style={s.overviewMetricsGrid}>
+                  <View style={s.overviewMetricBox}>
+                    <Text style={s.overviewMetricNum}>{ov.totalCommittedStories}</Text>
+                    <Text style={s.overviewMetricLbl}>Committed Stories</Text>
+                  </View>
+                  <View style={s.overviewMetricBox}>
+                    <Text style={s.overviewMetricNum}>{ov.totalCommittedPoints} <Text style={{ fontSize: 13 }}>pts</Text></Text>
+                    <Text style={s.overviewMetricLbl}>Committed Points</Text>
+                  </View>
+                  <View style={s.overviewMetricBox}>
+                    <Text style={[s.overviewMetricNum, { color: "#16a34a" }]}>{ov.completedPoints} <Text style={{ fontSize: 13 }}>pts</Text></Text>
+                    <Text style={s.overviewMetricLbl}>Completed Points ({ov.pointCompletionPct}%)</Text>
+                  </View>
+                  <View style={s.overviewMetricBox}>
+                    <Text style={[s.overviewMetricNum, { color: ov.remainingPoints > 0 ? "#d97706" : "#64748b" }]}>{ov.remainingPoints} <Text style={{ fontSize: 13 }}>pts</Text></Text>
+                    <Text style={s.overviewMetricLbl}>Remaining Points</Text>
+                  </View>
+                  <View style={s.overviewMetricBox}>
+                    <Text style={s.overviewMetricNum}>{ov.completedStories} / {ov.totalCommittedStories}</Text>
+                    <Text style={s.overviewMetricLbl}>Stories Done ({ov.storyCompletionPct}%)</Text>
+                  </View>
+                  <View style={s.overviewMetricBox}>
+                    <Text style={s.overviewMetricNum}>{ov.totalEstimatedHours} <Text style={{ fontSize: 13 }}>h</Text></Text>
+                    <Text style={s.overviewMetricLbl}>Estimated Effort</Text>
+                  </View>
+                </View>
+              </View>
+            ) : (
+              <View style={s.emptyNoticeBox}>
+                <Ionicons name="information-circle-outline" size={20} color="#64748b" />
+                <Text style={s.emptyNoticeTxt}>No sprint selected or available for analytics.</Text>
+              </View>
+            )}
+
+            {/* SPRINT PROGRESS & BURNDOWN TRAJECTORY */}
             <View style={s.metricCard}>
-              <Text style={s.metricCardTitle}>Sprint Trajectory & Velocity</Text>
+              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                <View>
+                  <Text style={s.metricCardTitle}>Sprint Progress & Burndown Trajectory</Text>
+                  <Text style={s.metricCardSub}>Ideal linear burndown vs actual points remaining</Text>
+                </View>
+                <View style={s.burndownLegendRow}>
+                  <View style={s.legendItem}>
+                    <View style={[s.legendColorDot, { backgroundColor: "#94a3b8" }]} />
+                    <Text style={s.legendTxt}>Ideal Trajectory</Text>
+                  </View>
+                  <View style={s.legendItem}>
+                    <View style={[s.legendColorDot, { backgroundColor: "#2563eb" }]} />
+                    <Text style={s.legendTxt}>Actual Remaining</Text>
+                  </View>
+                </View>
+              </View>
+
+              {/* Burndown Visual Bars */}
+              {burndown?.idealTrajectory && burndown.idealTrajectory.length > 0 ? (
+                <View style={s.burndownChartContainer}>
+                  <View style={s.burndownBarsRow}>
+                    {burndown.idealTrajectory.map((ideal: any) => {
+                      const actual = burndown.actualTrajectory?.find((a: any) => a.day === ideal.day);
+                      const maxPts = Math.max(1, ov.totalCommittedPoints || 10);
+                      const idealHeight = Math.min(100, Math.max(6, Math.round((ideal.points / maxPts) * 100)));
+                      const actualHeight = actual ? Math.min(100, Math.max(6, Math.round((actual.points / maxPts) * 100))) : null;
+
+                      return (
+                        <View key={ideal.day} style={s.burndownBarCol}>
+                          <View style={s.burndownBarPair}>
+                            {/* Ideal Bar */}
+                            <View style={[s.burndownBarIdeal, { height: `${idealHeight}%` }]} />
+                            {/* Actual Bar (if recorded for this day) */}
+                            {actualHeight !== null ? (
+                              <View style={[
+                                s.burndownBarActual,
+                                { height: `${actualHeight}%` },
+                                actual?.isCurrent && { backgroundColor: "#3b82f6", borderColor: "#1d4ed8", borderWidth: 1 }
+                              ]} />
+                            ) : null}
+                          </View>
+                          <Text style={s.burndownDayLabel}>{ideal.label}</Text>
+                          <Text style={s.burndownPtsLabel}>
+                            {actual ? `${actual.points}p` : `${ideal.points}p*`}
+                          </Text>
+                        </View>
+                      );
+                    })}
+                  </View>
+                  <View style={s.burndownFooterNotice}>
+                    <Ionicons name="information-circle-outline" size={14} color="#64748b" />
+                    <Text style={s.burndownFooterTxt}>
+                      {curSprint?.status === "COMPLETED"
+                        ? `Sprint finished with ${ov.completedPoints} of ${ov.totalCommittedPoints} story points completed (${ov.pointCompletionPct}%).`
+                        : ov.completedPoints === 0
+                        ? `Sprint is active with ${ov.totalCommittedPoints} story points committed. Initial trajectory reflects ongoing development.`
+                        : `Current velocity: ${ov.completedPoints} pts burnt, ${ov.remainingPoints} pts remaining across ${ov.daysRemaining || 0} remaining days.`}
+                    </Text>
+                  </View>
+                </View>
+              ) : (
+                <View style={s.emptyNoticeBox}>
+                  <Text style={s.emptyNoticeTxt}>No burndown trajectory points calculated for this sprint.</Text>
+                </View>
+              )}
+            </View>
+
+            {/* TASK FLOW DISTRIBUTION */}
+            <View style={s.metricCard}>
+              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                <Text style={s.metricCardTitle}>Task Flow Distribution</Text>
+                <View style={s.integrityBadge}>
+                  <Ionicons name="checkmark-done" size={13} color="#16a34a" />
+                  <Text style={s.integrityBadgeTxt}>Sum: {sumTasks} Tasks (100% Accounted)</Text>
+                </View>
+              </View>
               <Text style={s.metricCardSub}>
-                Historical velocity trends computed strictly across completed sprints
+                Authoritative breakdown of all tasks committed to Sprint {curSprint?.sprintNumber || ""}: {curSprint?.name}
               </Text>
 
-              {completedSprintVelocity.length === 0 ? (
+              <View style={s.flowGridRow}>
+                <View style={[s.flowMetricCard, { borderLeftColor: "#d97706" }]}>
+                  <Text style={[s.flowMetricTitle, { color: "#d97706" }]}>To Do</Text>
+                  <Text style={s.flowMetricCount}>{dist.todo?.count || 0}</Text>
+                  <Text style={s.flowMetricSub}>{dist.todo?.storyPoints || 0} pts ({dist.todo?.percentage || 0}%)</Text>
+                </View>
+                <View style={[s.flowMetricCard, { borderLeftColor: "#2563eb" }]}>
+                  <Text style={[s.flowMetricTitle, { color: "#2563eb" }]}>In Progress</Text>
+                  <Text style={s.flowMetricCount}>{dist.in_progress?.count || 0}</Text>
+                  <Text style={s.flowMetricSub}>{dist.in_progress?.storyPoints || 0} pts ({dist.in_progress?.percentage || 0}%)</Text>
+                </View>
+                <View style={[s.flowMetricCard, { borderLeftColor: "#9333ea" }]}>
+                  <Text style={[s.flowMetricTitle, { color: "#9333ea" }]}>In Review</Text>
+                  <Text style={s.flowMetricCount}>{dist.in_review?.count || 0}</Text>
+                  <Text style={s.flowMetricSub}>{dist.in_review?.storyPoints || 0} pts ({dist.in_review?.percentage || 0}%)</Text>
+                </View>
+                <View style={[s.flowMetricCard, { borderLeftColor: "#dc2626" }]}>
+                  <Text style={[s.flowMetricTitle, { color: "#dc2626" }]}>Blocked</Text>
+                  <Text style={s.flowMetricCount}>{dist.blocked?.count || 0}</Text>
+                  <Text style={s.flowMetricSub}>{dist.blocked?.storyPoints || 0} pts ({dist.blocked?.percentage || 0}%)</Text>
+                </View>
+                <View style={[s.flowMetricCard, { borderLeftColor: "#16a34a" }]}>
+                  <Text style={[s.flowMetricTitle, { color: "#16a34a" }]}>Done</Text>
+                  <Text style={s.flowMetricCount}>{dist.done?.count || 0}</Text>
+                  <Text style={s.flowMetricSub}>{dist.done?.storyPoints || 0} pts ({dist.done?.percentage || 0}%)</Text>
+                </View>
+              </View>
+            </View>
+
+            {/* HISTORICAL SPRINT VELOCITY */}
+            <View style={s.metricCard}>
+              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                <View>
+                  <Text style={s.metricCardTitle}>Historical Sprint Velocity</Text>
+                  <Text style={s.metricCardSub}>
+                    Derived strictly across genuinely completed sprints (Active & Planning sprints excluded)
+                  </Text>
+                </View>
+                <Badge label={`${velocity.completedSprintCount || 0} Completed Sprints`} variant="neutral" />
+              </View>
+
+              {/* Velocity Summary Grid */}
+              <View style={s.velocitySummaryGrid}>
+                <View style={s.velocitySummaryBox}>
+                  <Text style={s.velocitySummaryNum}>{velocity.averageVelocity || 0} <Text style={{ fontSize: 13 }}>pts</Text></Text>
+                  <Text style={s.velocitySummaryLbl}>Average Velocity</Text>
+                </View>
+                <View style={s.velocitySummaryBox}>
+                  <Text style={s.velocitySummaryNum}>{velocity.highestVelocity || 0} <Text style={{ fontSize: 13 }}>pts</Text></Text>
+                  <Text style={s.velocitySummaryLbl}>Highest Recorded</Text>
+                </View>
+                <View style={s.velocitySummaryBox}>
+                  <Text style={s.velocitySummaryNum}>{velocity.lowestVelocity || 0} <Text style={{ fontSize: 13 }}>pts</Text></Text>
+                  <Text style={s.velocitySummaryLbl}>Lowest Recorded</Text>
+                </View>
+                <View style={s.velocitySummaryBox}>
+                  <Text style={s.velocitySummaryNum}>{velocity.totalCompletedStoryPoints || 0} <Text style={{ fontSize: 13 }}>pts</Text></Text>
+                  <Text style={s.velocitySummaryLbl}>Total Points Delivered</Text>
+                </View>
+              </View>
+
+              {velocity.completedSprintCount === 0 ? (
                 <View style={s.emptyNoticeBox}>
                   <Ionicons name="bar-chart-outline" size={20} color="#64748b" />
                   <View style={{ flex: 1 }}>
                     <Text style={s.emptyNoticeTitle}>No Completed Sprints Yet</Text>
                     <Text style={s.emptyNoticeTxt}>
-                      No sprint analytics yet. Historical velocity and burndown metrics require at least one completed sprint. NexusFlow does not fabricate estimated velocity before real historical data exists.
+                      Sprint velocity is strictly calculated across completed sprints. Active and planning sprints do not contribute to completed velocity. NexusFlow never fabricates estimated velocity before real historical completions exist.
                     </Text>
                   </View>
                 </View>
               ) : (
                 <View style={{ gap: 8, marginTop: 12 }}>
-                  {completedSprintVelocity.map((v, i) => (
+                  {velocity.history.map((v: any, i: number) => (
                     <View key={i} style={s.velocityRow}>
                       <View style={{ flex: 1 }}>
-                        <Text style={s.velocitySprintName}>Sprint {v.sprintNumber}: {v.sprintName}</Text>
-                        <Text style={s.velocityMeta}>{v.taskCount} tasks closed</Text>
+                        <Text style={s.velocitySprintName}>Sprint {v.sprintNumber}: {v.name || v.sprintName}</Text>
+                        <Text style={s.velocityMeta}>
+                          {v.completedTaskCount || v.taskCount || 0} tasks closed
+                          {v.carryOverCount ? ` • ${v.carryOverCount} carry-over items` : ""}
+                        </Text>
                       </View>
                       <View style={s.velocityPtsBadge}>
-                        <Text style={s.velocityPtsTxt}>{v.velocityPoints} Story Pts</Text>
+                        <Text style={s.velocityPtsTxt}>{v.completedPoints || v.velocityPoints} Story Pts</Text>
                       </View>
                     </View>
                   ))}
@@ -722,26 +1081,84 @@ export default function ScrumInsightsPanel({ teamId }: { teamId: string }) {
               )}
             </View>
 
-            {/* Task Flow by Status */}
-            <View style={s.metricCard}>
-              <Text style={s.metricCardTitle}>Task Flow Distribution</Text>
-              <View style={s.flowRow}>
-                {["todo", "in_progress", "in_review", "done"].map((st) => {
-                  const count = tasks.filter((t) => (t.status || "todo").toLowerCase() === st).length;
-                  const labelMap: any = { todo: "To Do", in_progress: "In Progress", in_review: "Review", done: "Done" };
-                  const colorMap: any = { todo: "#d97706", in_progress: "#2563eb", in_review: "#9333ea", done: "#16a34a" };
-                  return (
-                    <View key={st} style={s.flowCol}>
-                      <View style={[s.flowColorBar, { backgroundColor: colorMap[st] }]} />
-                      <Text style={s.flowCount}>{count}</Text>
-                      <Text style={s.flowLabel}>{labelMap[st]}</Text>
+            {/* TEAM CAPACITY & WORKLOAD DISTRIBUTION */}
+            {cap ? (
+              <View style={s.metricCard}>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                  <View>
+                    <Text style={s.metricCardTitle}>Team Capacity & Workload Allocation</Text>
+                    <Text style={s.metricCardSub}>
+                      {cap.totalCommittedHours}h committed / {cap.totalCapacityHours}h available ({cap.capacityUtilizationPct}% utilization)
+                    </Text>
+                  </View>
+                  <Badge
+                    label={`${cap.capacityUtilizationPct}% Utilization`}
+                    variant={cap.capacityUtilizationPct > 100 ? "danger" : cap.capacityUtilizationPct > 85 ? "warning" : "success"}
+                  />
+                </View>
+
+                {/* Unassigned Work Alert */}
+                {cap.unassignedTasksCount > 0 ? (
+                  <View style={s.unassignedAlertBox}>
+                    <Ionicons name="alert-circle-outline" size={18} color="#d97706" />
+                    <Text style={s.unassignedAlertTxt}>
+                      <Text style={{ fontWeight: "700" }}>{cap.unassignedTasksCount} unassigned tasks </Text>
+                      in this sprint ({cap.unassignedHours}h). Assign to team members to balance workload.
+                    </Text>
+                  </View>
+                ) : null}
+
+                {/* Member Workload Cards */}
+                <View style={{ gap: 8, marginTop: 10 }}>
+                  {(cap.memberWorkloads || []).map((m: any, idx: number) => (
+                    <View key={m.userId || idx} style={s.memberWorkloadRow}>
+                      <View style={{ flex: 1 }}>
+                        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                          <Text style={s.memberWorkloadName}>{m.name}</Text>
+                          <Text style={s.memberWorkloadRole}>({m.role})</Text>
+                          {m.overloaded ? (
+                            <View style={s.overloadBadge}>
+                              <Text style={s.overloadBadgeTxt}>OVERLOADED</Text>
+                            </View>
+                          ) : null}
+                        </View>
+                        <Text style={s.memberWorkloadSub}>
+                          {m.assignedTasksCount} tasks • {m.assignedHours}h allocated / {m.capacityHours}h capacity
+                        </Text>
+                      </View>
+                      <View style={s.memberUtilBadge}>
+                        <Text style={[s.memberUtilBadgeTxt, m.overloaded && { color: "#dc2626" }]}>
+                          {m.utilizationPct}%
+                        </Text>
+                      </View>
                     </View>
-                  );
-                })}
+                  ))}
+                </View>
               </View>
-            </View>
+            ) : null}
+
+            {/* SCOPE CHANGES & CARRY-OVER */}
+            {scope && (scope.carryOverItems?.length > 0 || scope.scopeChanges?.length > 0) ? (
+              <View style={s.metricCard}>
+                <Text style={s.metricCardTitle}>Scope & Carry-over Analysis</Text>
+                {scope.carryOverItems?.length > 0 ? (
+                  <View style={{ marginTop: 6, gap: 6 }}>
+                    <Text style={{ fontSize: 13, fontWeight: "700", color: "#b45309" }}>
+                      Carried Over Items ({scope.carryOverItems.length}):
+                    </Text>
+                    {scope.carryOverItems.map((item: any, idx: number) => (
+                      <View key={idx} style={s.carryOverItemRow}>
+                        <Ionicons name="arrow-redo-outline" size={14} color="#b45309" />
+                        <Text style={s.carryOverItemTxt}>{item.title || item.name || "Carried Task"}</Text>
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
           </View>
         );
+      }
 
       // ── 3. Capability (Waterfall-Parity Scrum Implementation) ───────────────
       case "capability": {
@@ -915,12 +1332,29 @@ export default function ScrumInsightsPanel({ teamId }: { teamId: string }) {
             )}
 
             {/* SECTION 3: BRANCH & BOUND DYNAMIC ASSIGNMENT RECOMMENDATIONS */}
-            <SectionHead
-              icon="git-network-outline"
-              tint="#2563eb"
-              title="Branch & Bound Dynamic Assignments"
-              sub="Deterministic solver recommendations with Fit Scores and capacity impact"
-            />
+            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginTop: spacing.md, marginBottom: 8 }}>
+              <View style={{ flex: 1, minWidth: 240 }}>
+                <SectionHead
+                  icon="git-network-outline"
+                  tint="#2563eb"
+                  title="Branch & Bound Dynamic Assignments"
+                  sub="Deterministic solver recommendations with Fit Scores and capacity impact"
+                />
+              </View>
+              {assignments.length > 0 && isLeader && (
+                <Button
+                  title={`Accept All Eligible Assignments (${assignments.length})`}
+                  icon="checkmark-done"
+                  variant="primary"
+                  small
+                  onPress={() => {
+                    setAllowOverrun(false);
+                    setBulkSummary(null);
+                    setShowBulkModal(true);
+                  }}
+                />
+              )}
+            </View>
             {assignments.length > 0 ? (
               <View style={{ gap: 10 }}>
                 {assignments.map((a: any) => {
@@ -2090,6 +2524,509 @@ const s = StyleSheet.create({
     borderColor: colors.border,
   },
   altTxt: {
+    fontSize: 11,
+    color: colors.textSecondary,
+    fontWeight: "600",
+  },
+
+  analyticsHeaderTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: colors.text,
+  },
+  analyticsProvenanceBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "#f0f9ff",
+    borderWidth: 1,
+    borderColor: "#bae6fd",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: radius.pill,
+  },
+  analyticsProvenanceBadgeTxt: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#0369a1",
+  },
+  sprintSelectorContainer: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    padding: 12,
+    gap: 8,
+  },
+  selectorLabel: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: colors.textSecondary,
+  },
+  sprintSelectPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: "#ffffff",
+  },
+  sprintSelectPillTxt: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: colors.text,
+  },
+  statusMiniBadge: {
+    borderWidth: 1,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: radius.pill,
+  },
+  statusMiniBadgeTxt: {
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  sprintDetailsCard: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    padding: 16,
+    gap: 12,
+  },
+  sprintTitleTxt: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: colors.text,
+  },
+  sprintGoalTxt: {
+    fontSize: 13,
+    color: colors.textSecondary,
+    marginTop: 4,
+    lineHeight: 18,
+  },
+  daysRemainingTxt: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: colors.textMuted,
+    marginTop: 4,
+  },
+  overviewMetricsGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    marginTop: 6,
+  },
+  overviewMetricBox: {
+    flexGrow: 1,
+    flexBasis: 140,
+    padding: 12,
+    backgroundColor: "#f8fafc",
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    gap: 4,
+  },
+  overviewMetricNum: {
+    fontSize: 20,
+    fontWeight: "800",
+    color: colors.text,
+  },
+  overviewMetricLbl: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: colors.textMuted,
+  },
+  burndownLegendRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  legendItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  legendColorDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  legendTxt: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: colors.textSecondary,
+  },
+  burndownChartContainer: {
+    marginTop: 12,
+    backgroundColor: "#f8fafc",
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    padding: 14,
+    gap: 12,
+  },
+  burndownBarsRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+    height: 140,
+    paddingTop: 10,
+    paddingBottom: 6,
+  },
+  burndownBarCol: {
+    flex: 1,
+    alignItems: "center",
+    height: "100%",
+    justifyContent: "flex-end",
+    gap: 4,
+  },
+  burndownBarPair: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 3,
+    height: 100,
+  },
+  burndownBarIdeal: {
+    width: 8,
+    backgroundColor: "#cbd5e1",
+    borderRadius: 3,
+  },
+  burndownBarActual: {
+    width: 8,
+    backgroundColor: "#2563eb",
+    borderRadius: 3,
+  },
+  burndownDayLabel: {
+    fontSize: 9.5,
+    fontWeight: "700",
+    color: colors.textMuted,
+  },
+  burndownPtsLabel: {
+    fontSize: 9,
+    fontWeight: "600",
+    color: colors.textSecondary,
+  },
+  burndownFooterNotice: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "#ffffff",
+    padding: 8,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  burndownFooterTxt: {
+    fontSize: 11.5,
+    color: colors.textSecondary,
+    flex: 1,
+    lineHeight: 16,
+  },
+  integrityBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    backgroundColor: "#f0fdf4",
+    borderWidth: 1,
+    borderColor: "#bbf7d0",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: radius.pill,
+  },
+  integrityBadgeTxt: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#166534",
+  },
+  flowGridRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 10,
+  },
+  flowMetricCard: {
+    flexGrow: 1,
+    flexBasis: 120,
+    padding: 12,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderLeftWidth: 4,
+    borderRadius: radius.sm,
+    gap: 3,
+  },
+  flowMetricTitle: {
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  flowMetricCount: {
+    fontSize: 22,
+    fontWeight: "800",
+    color: colors.text,
+  },
+  flowMetricSub: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: colors.textMuted,
+  },
+  velocitySummaryGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 10,
+  },
+  velocitySummaryBox: {
+    flexGrow: 1,
+    flexBasis: 140,
+    padding: 10,
+    backgroundColor: "#f8fafc",
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    gap: 2,
+  },
+  velocitySummaryNum: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: colors.text,
+  },
+  velocitySummaryLbl: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: colors.textMuted,
+  },
+  unassignedAlertBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#fffbeb",
+    borderWidth: 1,
+    borderColor: "#fde68a",
+    padding: 10,
+    borderRadius: radius.sm,
+    marginTop: 8,
+  },
+  unassignedAlertTxt: {
+    fontSize: 12,
+    color: "#92400e",
+    flex: 1,
+  },
+  memberWorkloadRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: 12,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    gap: 10,
+  },
+  memberWorkloadName: {
+    fontSize: 13.5,
+    fontWeight: "700",
+    color: colors.text,
+  },
+  memberWorkloadRole: {
+    fontSize: 12,
+    color: colors.textMuted,
+  },
+  memberWorkloadSub: {
+    fontSize: 11,
+    color: colors.textSecondary,
+    marginTop: 2,
+  },
+  overloadBadge: {
+    backgroundColor: "#fee2e2",
+    borderWidth: 1,
+    borderColor: "#fca5a5",
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: radius.pill,
+  },
+  overloadBadgeTxt: {
+    fontSize: 9.5,
+    fontWeight: "800",
+    color: "#991b1b",
+  },
+  memberUtilBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: "#f1f5f9",
+    borderRadius: radius.pill,
+  },
+  memberUtilBadgeTxt: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: colors.text,
+  },
+  carryOverItemRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    padding: 8,
+    backgroundColor: "#fef3c7",
+    borderRadius: radius.sm,
+  },
+  carryOverItemTxt: {
+    fontSize: 12,
+    color: "#92400e",
+    fontWeight: "600",
+  },
+
+  bulkSummaryBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 12,
+    borderRadius: radius.md,
+    borderWidth: 1,
+  },
+  bulkSummaryTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  bulkSummarySub: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    lineHeight: 16,
+  },
+  bulkStatsGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  bulkStatPill: {
+    flex: 1,
+    minWidth: 80,
+    padding: 8,
+    borderRadius: radius.sm,
+    backgroundColor: "#f8fafc",
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: "center",
+  },
+  bulkStatNum: {
+    fontSize: 18,
+    fontWeight: "800",
+  },
+  bulkStatLbl: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: colors.textMuted,
+    marginTop: 2,
+  },
+  bulkResultRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: 10,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderLeftWidth: 4,
+    gap: 8,
+  },
+  bulkResultTitle: {
+    fontSize: 12.5,
+    fontWeight: "700",
+    color: colors.text,
+  },
+  bulkResultSub: {
+    fontSize: 11,
+    color: colors.textMuted,
+    marginTop: 2,
+  },
+  bulkIntroBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    padding: 12,
+    borderRadius: radius.md,
+    backgroundColor: "#eff6ff",
+    borderWidth: 1,
+    borderColor: "#bfdbfe",
+  },
+  bulkIntroTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: "#1e40af",
+  },
+  bulkIntroSub: {
+    fontSize: 12,
+    color: "#1d4ed8",
+    marginTop: 2,
+    lineHeight: 16,
+  },
+  overrunWarningBox: {
+    padding: 12,
+    borderRadius: radius.md,
+    backgroundColor: "#fffbeb",
+    borderWidth: 1,
+    borderColor: "#fde68a",
+    gap: 6,
+  },
+  overrunWarningTitle: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#92400e",
+  },
+  overrunWarningTxt: {
+    fontSize: 11.5,
+    color: "#78350f",
+    lineHeight: 16,
+  },
+  overrideToggleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#ffffff",
+    padding: 8,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: "#fde68a",
+    marginTop: 4,
+  },
+  overrideToggleTxt: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#92400e",
+    flex: 1,
+  },
+  bulkReviewHeader: {
+    fontSize: 11.5,
+    fontWeight: "800",
+    color: colors.textSecondary,
+    letterSpacing: 0.5,
+  },
+  bulkPreviewCard: {
+    padding: 10,
+    borderRadius: radius.sm,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: colors.border,
+    gap: 4,
+  },
+  bulkPreviewTaskTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: colors.text,
+  },
+  bulkPreviewTaskSub: {
+    fontSize: 11,
+    color: colors.textMuted,
+    marginTop: 2,
+  },
+  bulkPreviewAssignee: {
+    fontSize: 11.5,
+    color: colors.text,
+  },
+  bulkPreviewLoad: {
     fontSize: 11,
     color: colors.textSecondary,
     fontWeight: "600",

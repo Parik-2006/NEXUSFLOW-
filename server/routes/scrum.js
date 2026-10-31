@@ -65,6 +65,7 @@ import {
   resolveScrumConflict,
 } from "../services/scrumPlanningService.js";
 import { logger } from "../utils/logger.js";
+import { getScrumSprintAnalytics } from "../services/scrumAnalyticsService.js";
 
 const router = express.Router();
 
@@ -672,11 +673,30 @@ const handleCompleteSprint = async (req, res) => {
     const access = await verifyProjectAccess(req, res, sprint.projectId.toString());
     if (!access) return;
 
+    const { project, team } = access;
     const userId = req.user?._id?.toString() || req.user?.id?.toString();
+
+    // Verify authorized team leader permissions
+    const isOwner = team.leaderId?.toString() === userId || project.ownerId?.toString() === userId;
+    const memberMeta = team.members?.find((m) => (m.userId?._id || m.userId)?.toString() === userId);
+    const isLeader = isOwner ||
+      memberMeta?.role === "leader" ||
+      memberMeta?.role === "lead" ||
+      memberMeta?.role === "Scrum Master" ||
+      req.user?.role === "leader" ||
+      req.user?.role === "admin";
+
+    if (!isLeader) {
+      return res.status(403).json({
+        error: "Forbidden: Only authorized team leaders can complete sprints.",
+        code: "FORBIDDEN_LEADER_ONLY",
+      });
+    }
+
     const updated = await completeSprint({
       sprintId: req.params.sprintId,
       actorId: userId,
-      actorName: req.user?.name || "User",
+      actorName: req.user?.name || "Team Leader",
       reviewData: req.body.review || null,
       carryOverAction: req.body.carryOverAction || "BACKLOG",
     });
@@ -685,17 +705,41 @@ const handleCompleteSprint = async (req, res) => {
       projectId: sprint.projectId,
       category: "SPRINT_REVIEW",
       title: `${updated.name} completed`,
-      content: `Goal: ${updated.goal || "None"}. Completed: ${updated.completedTaskCount}/${updated.plannedTaskCount} tasks. Carry-over: ${updated.carryOverItems?.length || 0} items.`,
+      content: `Goal: ${updated.goal || "None"}. All ${updated.completedTaskCount} tasks reached canonical DONE state. Completed: ${updated.completedStoryPoints} pts.`,
       scope: "persistent",
       authorId: userId,
-      authorName: req.user?.name || "User",
+      authorName: req.user?.name || "Team Leader",
       confidence: 1.0,
-      tags: ["sprint-completion", `sprint-${updated.sprintNumber}`],
+      tags: ["sprint-completion", `sprint-${updated.sprintNumber || 1}`],
     });
+
+    // Recompute health and scan risks following sprint completion
+    try {
+      const io = req.app.get("io");
+      await computeScrumHealth(sprint.projectId, io, userId);
+      await scanScrumRisks(sprint.projectId, io);
+      if (io) {
+        io.to(`project:${sprint.projectId}`).emit("sprint:completed", { sprintId: sprint._id, sprint: updated });
+        io.to(`team:${sprint.teamId}`).emit("sprint:completed", { sprintId: sprint._id, sprint: updated });
+      }
+    } catch (e) {
+      logger.warn("[scrum.js] Health recomputation after sprint completion notice", { error: e.message });
+    }
 
     res.json({ sprint: updated });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    if (err.code === "SPRINT_HAS_UNFINISHED_TASKS") {
+      return res.status(409).json({
+        error: err.message,
+        code: "SPRINT_HAS_UNFINISHED_TASKS",
+        totalTaskCount: err.totalTaskCount,
+        doneCount: err.doneCount,
+        incompleteCount: err.incompleteCount,
+        breakdown: err.breakdown,
+        incompleteTasks: err.incompleteTasks,
+      });
+    }
+    res.status(err.statusCode || 400).json({ error: err.message, code: err.code });
   }
 };
 router.post("/sprints/:sprintId/complete", handleCompleteSprint);
@@ -1639,6 +1683,204 @@ router.post("/capability/:id/assign", handleAcceptScrumAssignment);
 router.post("/:projectId/capability/assign", handleAcceptScrumAssignment);
 router.post("/assignment/accept", handleAcceptScrumAssignment);
 router.post("/:projectId/assignment/accept", handleAcceptScrumAssignment);
+/**
+ * POST /api/scrum/capability/:id/bulk-assign or /api/scrum/:projectId/capability/bulk-assign
+ * Idempotent, partial-success capable bulk assignment accepting multiple Branch & Bound recommendations.
+ * Enforces leader authorization, preserves sprint commitments, and respects capacity boundaries.
+ */
+const handleBulkAcceptScrumAssignments = async (req, res) => {
+  try {
+    const access = await verifyProjectAccess(req, res, req.params.id || req.params.projectId);
+    if (!access) return;
+
+    const { project, team } = access;
+    const { assignments, allowCapacityOverrun } = req.body;
+    const userId = req.user?._id?.toString() || req.user?.id?.toString();
+
+    // Verify leader permission
+    const isOwner = team.ownerId && team.ownerId.toString() === userId;
+    const isLeaderUser = req.user?.role === "leader" || req.user?.role === "admin";
+    const myMember = (team.members || []).find(
+      (m) => (m.userId?._id || m.userId)?.toString() === userId
+    );
+    const isLeaderRole =
+      myMember &&
+      ["owner", "leader", "team leader", "manager", "project manager", "scrum master"].includes(
+        (myMember.role || "").toLowerCase()
+      );
+
+    if (!isOwner && !isLeaderUser && !isLeaderRole) {
+      return res.status(403).json({
+        error: "FORBIDDEN",
+        message: "Only authorized team leaders can execute bulk task assignments.",
+      });
+    }
+
+    if (!Array.isArray(assignments) || assignments.length === 0) {
+      return res.status(400).json({
+        error: "NO_ASSIGNMENTS_PROVIDED",
+        message: "Please provide an array of eligible assignments ({ taskId, memberId }).",
+      });
+    }
+
+    // Query active sprint to calculate current committed load accurately
+    const activeSprint = await Sprint.findOne({
+      projectId: project._id,
+      status: "ACTIVE",
+    }).lean();
+
+    const sprintFilter = activeSprint
+      ? { sprintId: activeSprint._id }
+      : { $or: [{ projectId: project._id }, { teamId: team._id }], scrumStatus: { $nin: ["DONE", "CANCELLED"] } };
+
+    const existingTasks = await Task.find(sprintFilter).lean();
+    const memberWorkload = new Map();
+    for (const et of existingTasks) {
+      const aId = (et.assignedTo?._id || et.assignedTo)?.toString();
+      if (aId) {
+        const hrs = Number(et.estimatedHours) || (Number(et.storyPoints) ? et.storyPoints * 2 : 4);
+        memberWorkload.set(aId, (memberWorkload.get(aId) || 0) + hrs);
+      }
+    }
+
+    // Resolve referenced tasks
+    const taskIds = assignments.map((a) => a.taskId).filter((id) => mongoose.isValidObjectId(id));
+    const tasks = await Task.find({
+      _id: { $in: taskIds },
+      $or: [{ projectId: project._id }, { teamId: team._id }],
+    });
+    const taskMap = new Map(tasks.map((t) => [t._id.toString(), t]));
+
+    const members = team.members || [];
+    const memberMap = new Map(
+      members.map((m) => [(m.userId?._id || m.userId)?.toString(), m])
+    );
+
+    const results = [];
+    let assignedCount = 0;
+    let skippedCount = 0;
+    let alreadyAssignedCount = 0;
+    let failedCount = 0;
+
+    for (const item of assignments) {
+      const { taskId, memberId } = item;
+      if (!taskId || !memberId) {
+        failedCount++;
+        results.push({ taskId, memberId, status: "failed", reason: "Missing taskId or memberId" });
+        continue;
+      }
+
+      const task = taskMap.get(taskId.toString());
+      if (!task) {
+        failedCount++;
+        results.push({ taskId, memberId, status: "failed", reason: "Task not found in this project" });
+        continue;
+      }
+
+      const targetMember = memberMap.get(memberId.toString());
+      if (!targetMember) {
+        skippedCount++;
+        results.push({ taskId, taskTitle: task.title, memberId, status: "skipped", reason: "Target member not found in team roster" });
+        continue;
+      }
+
+      const memberName = targetMember.name || targetMember.userName || (targetMember.userId && targetMember.userId.name) || "Team Member";
+      const currentAssignee = (task.assignedTo?._id || task.assignedTo)?.toString();
+
+      // Idempotency: Already assigned to this exact member
+      if (currentAssignee === memberId.toString()) {
+        alreadyAssignedCount++;
+        results.push({ taskId, taskTitle: task.title, memberId, memberName, status: "already_assigned", reason: "Already assigned to target member" });
+        continue;
+      }
+
+      // Check capacity impact
+      const taskEffort = Number(task.estimatedHours) || (Number(task.storyPoints) ? task.storyPoints * 2 : 4);
+      const currentHours = memberWorkload.get(memberId.toString()) || 0;
+      const maxCapacity = Number(targetMember.capacity || targetMember.capacityHours || 40);
+      const projectedHours = currentHours + taskEffort;
+
+      if (!allowCapacityOverrun && projectedHours > maxCapacity) {
+        skippedCount++;
+        results.push({
+          taskId,
+          taskTitle: task.title,
+          memberId,
+          memberName,
+          status: "skipped",
+          reason: `Capacity limit reached (${projectedHours}h exceeds ${maxCapacity}h weekly capacity)`,
+          currentHours,
+          projectedHours,
+          maxCapacity,
+        });
+        continue;
+      }
+
+      // Persist assignment without altering sprint commitment
+      task.assignedTo = memberId;
+      task.assignedName = memberName;
+      await task.save();
+
+      memberWorkload.set(memberId.toString(), projectedHours);
+      assignedCount++;
+      results.push({
+        taskId,
+        taskTitle: task.title,
+        memberId,
+        memberName,
+        status: "assigned",
+        taskEffort,
+        newWorkload: projectedHours,
+      });
+    }
+
+    if (assignedCount > 0) {
+      await recordProjectEvent({
+        projectId: project._id,
+        teamId: team._id,
+        actorId: userId,
+        actorName: req.user?.name || "Team Leader",
+        eventType: "BULK_ASSIGNMENT_ACCEPTED",
+        entityType: "task",
+        entityId: project._id.toString(),
+        title: `Bulk Assignment Accepted (${assignedCount} stories assigned)`,
+        description: `${assignedCount} candidate stories assigned via Branch & Bound bulk solver by ${req.user?.name || "Team Leader"}. ${skippedCount} skipped, ${alreadyAssignedCount} already assigned.`,
+        source: "daa_engine",
+      });
+
+      const io = req.app?.get("io");
+      if (io) {
+        io.to(`team:${team._id}`).emit("scrum:bulk_assignment_updated", {
+          teamId: team._id.toString(),
+          projectId: project._id.toString(),
+          assignedCount,
+          skippedCount,
+        });
+      }
+
+      // Trigger Scrum health recalculation & risk scan
+      computeScrumHealth(project._id).catch(() => null);
+      scanScrumRisks(project._id).catch(() => null);
+    }
+
+    res.json({
+      success: true,
+      totalRequested: assignments.length,
+      assignedCount,
+      skippedCount,
+      alreadyAssignedCount,
+      failedCount,
+      results,
+      message: `Bulk assignment complete: ${assignedCount} assigned, ${skippedCount} skipped, ${alreadyAssignedCount} already assigned.`,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+router.post("/capability/:id/bulk-assign", handleBulkAcceptScrumAssignments);
+router.post("/:projectId/capability/bulk-assign", handleBulkAcceptScrumAssignments);
+router.post("/assignment/bulk-accept", handleBulkAcceptScrumAssignments);
+router.post("/:projectId/assignment/bulk-accept", handleBulkAcceptScrumAssignments);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // DEPENDENCIES
@@ -2021,6 +2263,23 @@ const handleGetInsights = async (req, res) => {
 };
 router.get("/insights/:id", handleGetInsights);
 router.get("/:projectId/insights", handleGetInsights);
+
+/**
+ * GET /api/scrum/analytics/:id or /api/scrum/:projectId/analytics
+ */
+const handleGetAnalytics = async (req, res) => {
+  try {
+    const targetId = req.params.id || req.params.projectId;
+    const requestedSprintId = req.query.sprintId || null;
+    const analytics = await getScrumSprintAnalytics(targetId, requestedSprintId);
+    res.json(analytics);
+  } catch (err) {
+    logger.error("[scrum.js] handleGetAnalytics error", { error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+};
+router.get("/analytics/:id", handleGetAnalytics);
+router.get("/:projectId/analytics", handleGetAnalytics);
 
 /**
  * GET /api/scrum/health/:id or /api/scrum/:projectId/health

@@ -278,80 +278,126 @@ export async function completeSprint({ sprintId, actorId = null, actorName = "Sy
 
   const sprintTasks = await Task.find({ sprintId: sprint._id }).lean();
 
-  const completedTasks = sprintTasks.filter((t) => t.scrumStatus === "DONE" || t.status === "done");
-  const incompleteTasks = sprintTasks.filter((t) => t.scrumStatus !== "DONE" && t.status !== "done" && t.scrumStatus !== "CANCELLED");
+  const isTaskDone = (t) => {
+    const st = String(t.scrumStatus || t.status || "").toUpperCase();
+    return st === "DONE" || st === "COMPLETED";
+  };
 
-  // Calculate metrics
+  const isTaskCancelled = (t) => {
+    const st = String(t.scrumStatus || t.status || "").toUpperCase();
+    return st === "CANCELLED" || st === "CANCELED";
+  };
+
+  const completedTasks = sprintTasks.filter((t) => isTaskDone(t));
+  const incompleteTasks = sprintTasks.filter((t) => !isTaskDone(t) && !isTaskCancelled(t));
+
+  // Authoritative Validation: Sprint cannot be completed while unfinished work remains
+  if (incompleteTasks.length > 0) {
+    const breakdown = {
+      todo: 0,
+      in_progress: 0,
+      in_review: 0,
+      blocked: 0,
+      done: completedTasks.length,
+    };
+
+    for (const t of incompleteTasks) {
+      const st = String(t.scrumStatus || t.status || "TODO").toUpperCase();
+      if (t.isBlocked || st === "BLOCKED") {
+        breakdown.blocked++;
+      } else if (st === "IN_REVIEW" || st === "REVIEW") {
+        breakdown.in_review++;
+      } else if (st === "IN_PROGRESS") {
+        breakdown.in_progress++;
+      } else {
+        breakdown.todo++;
+      }
+    }
+
+    const err = new Error(
+      `Sprint "${sprint.name}" contains unfinished work. Complete all remaining tasks before closing this sprint.`
+    );
+    err.code = "SPRINT_HAS_UNFINISHED_TASKS";
+    err.statusCode = 409;
+    err.totalTaskCount = sprintTasks.length;
+    err.doneCount = completedTasks.length;
+    err.incompleteCount = incompleteTasks.length;
+    err.breakdown = breakdown;
+    err.incompleteTasks = incompleteTasks.map((t) => {
+      let canonicalStatus = "TODO";
+      const raw = String(t.scrumStatus || t.status || "TODO").toUpperCase();
+      if (t.isBlocked || raw === "BLOCKED") canonicalStatus = "BLOCKED";
+      else if (raw === "IN_REVIEW" || raw === "REVIEW") canonicalStatus = "IN_REVIEW";
+      else if (raw === "IN_PROGRESS") canonicalStatus = "IN_PROGRESS";
+
+      return {
+        id: t._id.toString(),
+        title: t.title || "Untitled Task",
+        status: canonicalStatus,
+      };
+    });
+
+    throw err;
+  }
+
+  // All tasks are DONE: Proceed with safe sprint completion
+  const carryOverItems = [];
+  const completionRate = 100;
   sprint.completedTaskCount = completedTasks.length;
   sprint.completedStoryPoints = completedTasks.reduce((sum, t) => sum + (t.storyPoints || 0), 0);
   sprint.actualHours = sprintTasks.reduce((sum, t) => sum + (t.actualHours || t.estimatedHours || 0), 0);
-
-  // Determine goal achievement
-  const completionRate = sprint.plannedTaskCount > 0 ? (sprint.completedTaskCount / sprint.plannedTaskCount) * 100 : 0;
-  let goalAchieved = "NOT_ACHIEVED";
-  if (completionRate >= 90) goalAchieved = "FULLY_ACHIEVED";
-  else if (completionRate >= 50) goalAchieved = "PARTIALLY_ACHIEVED";
-
-  // Handle carry-over items — move incomplete back to backlog with history
-  const carryOverItems = [];
-  for (const task of incompleteTasks) {
-    carryOverItems.push({
-      taskId: task._id,
-      fromSprintId: sprint._id,
-      reason: task.scrumStatus === "BLOCKED" ? "blocked" : "incomplete",
-      originalEstimate: task.estimatedHours,
-      remainingWork: (task.estimatedHours || 0) - (task.actualHours || 0),
-    });
-
-    // Update task — move back to backlog with carry-over history
-    await Task.findByIdAndUpdate(task._id, {
-      $set: {
-        sprintId: null,
-        scrumStatus: "CARRIED_OVER",
-      },
-      $push: {
-        carryOverHistory: {
-          fromSprintId: sprint._id,
-          toSprintId: null,
-          reason: task.scrumStatus === "BLOCKED" ? "blocked" : "incomplete",
-          carriedAt: new Date(),
-        },
-      },
-    });
-  }
-
-  sprint.carryOverItems = carryOverItems;
+  sprint.carryOverItems = [];
   sprint.status = "COMPLETED";
   sprint.endDate = new Date();
 
-  // Store review if provided
-  if (reviewData) {
-    sprint.review = {
-      goalAchieved,
-      completedItems: completedTasks.map((t) => t._id),
-      incompleteItems: incompleteTasks.map((t) => t._id),
-      ...reviewData,
-      reviewedAt: new Date(),
-    };
-  } else {
-    sprint.review = {
-      goalAchieved,
-      completedItems: completedTasks.map((t) => t._id),
-      incompleteItems: incompleteTasks.map((t) => t._id),
-      reviewedAt: new Date(),
-    };
-  }
+  const goalAchieved = "FULLY_ACHIEVED";
+
+  // Store review
+  sprint.review = {
+    goalAchieved,
+    completedItems: completedTasks.map((t) => t._id),
+    incompleteItems: [],
+    ...(reviewData || {}),
+    reviewedAt: new Date(),
+  };
 
   sprint.history.push({
     action: "COMPLETED",
     actorId,
     actorName,
-    reason: `Sprint completed: ${completedTasks.length}/${sprintTasks.length} tasks done (${Math.round(completionRate)}%)`,
-    newValue: { completedTaskCount: sprint.completedTaskCount, carryOverCount: carryOverItems.length, goalAchieved },
+    reason: `Sprint completed successfully: all ${completedTasks.length}/${sprintTasks.length} tasks reached canonical DONE state (${sprint.completedStoryPoints} pts)`,
+    newValue: { completedTaskCount: sprint.completedTaskCount, carryOverCount: 0, goalAchieved },
     timestamp: new Date(),
   });
 
   await sprint.save();
+
+  // Persist immutable historical ScrumSprintSnapshot
+  try {
+    const ScrumSprintSnapshot = (await import("../models/ScrumSprintSnapshot.js")).default;
+    await ScrumSprintSnapshot.create({
+      sprintId: sprint._id,
+      projectId: sprint.projectId,
+      teamId: sprint.teamId,
+      sprintNumber: sprint.sprintNumber || 1,
+      name: sprint.name,
+      goal: sprint.goal || "",
+      status: "COMPLETED",
+      startDate: sprint.startDate,
+      endDate: sprint.endDate,
+      completedAt: new Date(),
+      totalCommittedStories: sprintTasks.length,
+      totalCommittedPoints: sprint.completedStoryPoints,
+      completedStories: completedTasks.length,
+      completedPoints: sprint.completedStoryPoints,
+      completionRatePct: 100,
+      completedTaskIds: completedTasks.map((t) => t._id),
+      carryOverCount: 0,
+      carryOverTaskIds: [],
+    });
+  } catch (snapErr) {
+    logger.warn("[scrumEngine] ScrumSprintSnapshot persistence notice", { error: snapErr.message });
+  }
 
   // Update project
   await Project.findByIdAndUpdate(sprint.projectId, {

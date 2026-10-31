@@ -83,6 +83,7 @@ const TaskSchema = new mongoose.Schema(
     // ── Branch & Bound Assignment ─────────────────────────────────────────────
     skillWeights:   { type: SkillWeightsSchema, default: () => ({}) },
     assignedTo:     { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    assignedName:   { type: String, default: null },
     assignmentCost: { type: Number, default: null },
 
     // ── Skill gap detection (FIX 2) ───────────────────────────────────────────

@@ -23,6 +23,7 @@ import {
   Pressable,
   RefreshControl,
   TextInput,
+  Platform,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/context/AuthContext";
@@ -67,13 +68,90 @@ export default function ScrumTasksPanel({ teamId, onNavigatePlan }: ScrumTasksPa
   const [refreshing, setRefreshing] = useState(false);
   const [filterBlockedOnly, setFilterBlockedOnly] = useState(false);
   const boardScrollRef = useRef<ScrollView | null>(null);
+  const [boardScrollX, setBoardScrollX] = useState<number>(0);
+  const [boardContainerWidth, setBoardContainerWidth] = useState<number>(0);
+  const [boardContentWidth, setBoardContentWidth] = useState<number>(0);
+  const scrollXRef = useRef<number>(0);
+  const containerWidthRef = useRef<number>(0);
+  const contentWidthRef = useRef<number>(0);
+
+  // Universal Page-Level Vertical Scroll Engine
+  const pageScrollRef = useRef<ScrollView | null>(null);
+  const [pageScrollY, setPageScrollY] = useState<number>(0);
+  const [pageContainerHeight, setPageContainerHeight] = useState<number>(0);
+  const [pageContentHeight, setPageContentHeight] = useState<number>(0);
+  const scrollYRef = useRef<number>(0);
+  const pageContainerHeightRef = useRef<number>(0);
+  const pageContentHeightRef = useRef<number>(0);
+
+  const isPageMeasured = pageContainerHeight > 0 && pageContentHeight > 0;
+  const maxScrollY = Math.max(0, pageContentHeight - pageContainerHeight);
+  const canScrollUp = pageScrollY > 10;
+  const canScrollDown = isPageMeasured
+    ? (maxScrollY > 10 && pageScrollY < maxScrollY - 10)
+    : true;
+
+  const scrollPageTo = (targetY: number) => {
+    const maxY = Math.max(0, pageContentHeightRef.current - pageContainerHeightRef.current);
+    const clampedY = Math.max(0, Math.min(maxY > 0 ? maxY : targetY, targetY));
+    scrollYRef.current = clampedY;
+    setPageScrollY(clampedY);
+
+    if (pageScrollRef.current) {
+      if (typeof (pageScrollRef.current as any).scrollTo === "function") {
+        (pageScrollRef.current as any).scrollTo({ y: clampedY, animated: true });
+      }
+      if (Platform.OS === "web") {
+        const node =
+          (pageScrollRef.current as any)?.getScrollableNode?.() ||
+          (pageScrollRef.current as any);
+        if (node && typeof node.scrollTo === "function") {
+          node.scrollTo({ top: clampedY, behavior: "smooth" });
+        }
+      }
+    }
+  };
+
+  const scrollPageStep = (direction: "up" | "down") => {
+    const step = 320;
+    const currentY = scrollYRef.current;
+    const targetY = direction === "up" ? currentY - step : currentY + step;
+    scrollPageTo(targetY);
+  };
+
+  const isMeasured = boardContainerWidth > 0 && boardContentWidth > 0;
+  const maxScrollX = Math.max(0, boardContentWidth - boardContainerWidth);
+  const canScrollLeft = boardScrollX > 5;
+  const canScrollRight = isMeasured
+    ? (maxScrollX > 5 && boardScrollX < maxScrollX - 5)
+    : true;
+
+  const scrollToOffset = (targetX: number) => {
+    const maxX = Math.max(0, contentWidthRef.current - containerWidthRef.current);
+    const clampedX = Math.max(0, Math.min(maxX > 0 ? maxX : targetX, targetX));
+    scrollXRef.current = clampedX;
+    setBoardScrollX(clampedX);
+
+    if (boardScrollRef.current) {
+      if (typeof (boardScrollRef.current as any).scrollTo === "function") {
+        (boardScrollRef.current as any).scrollTo({ x: clampedX, y: 0, animated: true });
+      }
+      if (Platform.OS === "web") {
+        const node =
+          (boardScrollRef.current as any)?.getScrollableNode?.() ||
+          (boardScrollRef.current as any);
+        if (node && typeof node.scrollTo === "function") {
+          node.scrollTo({ left: clampedX, behavior: "smooth" });
+        }
+      }
+    }
+  };
 
   const scrollBoard = (direction: "left" | "right") => {
-    if (!boardScrollRef.current) return;
-    boardScrollRef.current.scrollTo({
-      x: direction === "left" ? 0 : 640,
-      animated: true,
-    });
+    const step = 310; // ~1 column width (290px + 16px gap)
+    const currentX = scrollXRef.current;
+    const targetX = direction === "left" ? currentX - step : currentX + step;
+    scrollToOffset(targetX);
   };
 
   // Quick task modal
@@ -112,6 +190,12 @@ export default function ScrumTasksPanel({ teamId, onNavigatePlan }: ScrumTasksPa
   // Delete Sprint modal state (Team Leader Only)
   const [deleteSprintModal, setDeleteSprintModal] = useState(false);
   const [deletingSprint, setDeletingSprint] = useState(false);
+  const [incompleteWarningModal, setIncompleteWarningModal] = useState(false);
+  const [incompleteWarningData, setIncompleteWarningData] = useState<{
+    sprintName: string;
+    breakdown: { todo: number; in_progress: number; in_review: number; blocked: number; done: number };
+    incompleteTasks: Array<{ id: string; title: string; status: string }>;
+  } | null>(null);
   const [teamData, setTeamData] = useState<any | null>(null);
 
   // Lifecycle action state
@@ -199,10 +283,13 @@ export default function ScrumTasksPanel({ teamId, onNavigatePlan }: ScrumTasksPa
   // Sprint Progress & Metrics
   const sprintStats = useMemo(() => {
     if (!currentSprint) return null;
-    const totalCommitted = currentSprintTasks.reduce((acc, t) => acc + (t.storyPoints || 0), 0);
+    const isCompletedSprint = currentSprint.status === "COMPLETED";
+    const totalCommitted = currentSprintTasks.reduce((acc, t) => acc + (t.storyPoints || 0), 0) || currentSprint.plannedStoryPoints || currentSprint.completedStoryPoints || 0;
     const completedTasks = currentSprintTasks.filter((t) => t.status === "done" || t.status === "COMPLETED" || t.scrumStatus === "DONE");
-    const completedPoints = completedTasks.reduce((acc, t) => acc + (t.storyPoints || 0), 0);
-    const progressPct = totalCommitted > 0 ? Math.round((completedPoints / totalCommitted) * 100) : 0;
+    const completedPoints = isCompletedSprint
+      ? (completedTasks.length > 0 ? completedTasks.reduce((acc, t) => acc + (t.storyPoints || 0), 0) : (currentSprint.completedStoryPoints || totalCommitted))
+      : completedTasks.reduce((acc, t) => acc + (t.storyPoints || 0), 0);
+    const progressPct = totalCommitted > 0 ? Math.round((completedPoints / totalCommitted) * 100) : (isCompletedSprint ? 100 : 0);
 
     let daysRemaining = null;
     let daysElapsed = null;
@@ -301,16 +388,85 @@ export default function ScrumTasksPanel({ teamId, onNavigatePlan }: ScrumTasksPa
     }
   };
 
-  // Complete Sprint Action
+  // Complete Sprint Action with Incomplete Task Safety Validation
   const handleCompleteSprint = async () => {
     if (!currentSprint) return;
+
+    // Authoritative Frontend Check: All tasks belonging to this sprint must be DONE
+    const isTaskDone = (t: any) => {
+      const st = String(t.scrumStatus || t.status || "").toUpperCase();
+      return st === "DONE" || st === "COMPLETED";
+    };
+
+    const isTaskCancelled = (t: any) => {
+      const st = String(t.scrumStatus || t.status || "").toUpperCase();
+      return st === "CANCELLED" || st === "CANCELED";
+    };
+
+    const completed = currentSprintTasks.filter((t) => isTaskDone(t));
+    const incomplete = currentSprintTasks.filter((t) => !isTaskDone(t) && !isTaskCancelled(t));
+
+    if (incomplete.length > 0) {
+      const breakdown = {
+        todo: 0,
+        in_progress: 0,
+        in_review: 0,
+        blocked: 0,
+        done: completed.length,
+      };
+
+      for (const t of incomplete) {
+        const raw = String(t.scrumStatus || t.status || "TODO").toUpperCase();
+        if (t.isBlocked || raw === "BLOCKED") {
+          breakdown.blocked++;
+        } else if (raw === "IN_REVIEW" || raw === "REVIEW") {
+          breakdown.in_review++;
+        } else if (raw === "IN_PROGRESS") {
+          breakdown.in_progress++;
+        } else {
+          breakdown.todo++;
+        }
+      }
+
+      setIncompleteWarningData({
+        sprintName: currentSprint.name,
+        breakdown,
+        incompleteTasks: incomplete.map((t) => {
+          let canonical = "TODO";
+          const raw = String(t.scrumStatus || t.status || "TODO").toUpperCase();
+          if (t.isBlocked || raw === "BLOCKED") canonical = "BLOCKED";
+          else if (raw === "IN_REVIEW" || raw === "REVIEW") canonical = "IN_REVIEW";
+          else if (raw === "IN_PROGRESS") canonical = "IN_PROGRESS";
+          return { id: t._id, title: t.title || "Untitled Task", status: canonical };
+        }),
+      });
+      setIncompleteWarningModal(true);
+      return;
+    }
+
     setLifecycleLoading(true);
     try {
       await completeSprint(currentSprint._id, { carryOverAction: "BACKLOG" }, token);
-      toast(`Sprint ${currentSprint.number} increment closed and archived`, "success");
+      toast(`Sprint ${currentSprint.name} completed successfully! All tasks preserved.`, "success");
       await loadData();
     } catch (err: any) {
-      toast(err.message || "Failed to complete sprint", "error");
+      if (err.code === "SPRINT_HAS_UNFINISHED_TASKS" || err.status === 409) {
+        const data = err.data || {};
+        setIncompleteWarningData({
+          sprintName: currentSprint.name,
+          breakdown: data.breakdown || {
+            todo: 0,
+            in_progress: 0,
+            in_review: 0,
+            blocked: 0,
+            done: data.doneCount || 0,
+          },
+          incompleteTasks: data.incompleteTasks || [],
+        });
+        setIncompleteWarningModal(true);
+      } else {
+        toast(err.message || "Failed to complete sprint", "error");
+      }
     } finally {
       setLifecycleLoading(false);
     }
@@ -486,6 +642,28 @@ export default function ScrumTasksPanel({ teamId, onNavigatePlan }: ScrumTasksPa
 
   return (
     <View style={s.container}>
+      <ScrollView
+        ref={pageScrollRef}
+        style={s.pageScrollView}
+        contentContainerStyle={s.pageScrollContent}
+        showsVerticalScrollIndicator={true}
+        scrollEventThrottle={16}
+        onScroll={(e) => {
+          const y = e.nativeEvent.contentOffset.y;
+          scrollYRef.current = y;
+          setPageScrollY(y);
+        }}
+        onLayout={(e) => {
+          const h = e.nativeEvent.layout.height;
+          pageContainerHeightRef.current = h;
+          setPageContainerHeight(h);
+        }}
+        onContentSizeChange={(_w, h) => {
+          pageContentHeightRef.current = h;
+          setPageContentHeight(h);
+        }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
+      >
       {/* ── Sprint Selector & Scope Switcher ─────────────────────────────── */}
       <View style={s.sprintSelectorBar}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.sprintPillRow}>
@@ -705,26 +883,110 @@ export default function ScrumTasksPanel({ teamId, onNavigatePlan }: ScrumTasksPa
 
       {/* ── Filter & Navigation Bar ────────────────────────────────────────── */}
       <View style={s.filterBar}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <Text style={s.filterBarCount}>
             Showing {filteredTasks.length} {filteredTasks.length === 1 ? "task" : "tasks"}
           </Text>
-          <View style={s.scrollControls}>
+
+          {/* Dedicated Horizontal Board Scroll Controls */}
+          <View style={s.scrollControls} accessibilityRole="toolbar" accessibilityLabel="Board horizontal navigation">
             <Pressable
               onPress={() => scrollBoard("left")}
-              style={s.scrollNavBtn}
-              accessibilityLabel="Scroll board left"
+              disabled={!canScrollLeft}
+              style={[s.scrollArrowBtn, !canScrollLeft && s.scrollBtnDisabled]}
+              accessibilityRole="button"
+              accessibilityLabel="Scroll task board left"
+              accessibilityHint="Scrolls the Scrum board columns left"
             >
-              <Ionicons name="chevron-back" size={14} color={colors.text} />
-              <Text style={s.scrollNavBtnTxt}>To Do</Text>
+              <Ionicons
+                name="arrow-back"
+                size={15}
+                color={canScrollLeft ? colors.text : colors.textMuted + "66"}
+              />
+              <Text style={[s.scrollArrowBtnTxt, !canScrollLeft && { color: colors.textMuted + "66" }]}>Scroll Left</Text>
             </Pressable>
+
             <Pressable
               onPress={() => scrollBoard("right")}
+              disabled={!canScrollRight}
+              style={[s.scrollArrowBtn, !canScrollRight && s.scrollBtnDisabled]}
+              accessibilityRole="button"
+              accessibilityLabel="Scroll task board right"
+              accessibilityHint="Scrolls the Scrum board columns right"
+            >
+              <Text style={[s.scrollArrowBtnTxt, !canScrollRight && { color: colors.textMuted + "66" }]}>Scroll Right</Text>
+              <Ionicons
+                name="arrow-forward"
+                size={15}
+                color={canScrollRight ? colors.text : colors.textMuted + "66"}
+              />
+            </Pressable>
+
+            <View style={s.scrollDivider} />
+
+            <Pressable
+              onPress={() => scrollToOffset(0)}
               style={s.scrollNavBtn}
-              accessibilityLabel="Scroll board right"
+              accessibilityRole="button"
+              accessibilityLabel="Scroll to To Do column"
+            >
+              <Text style={s.scrollNavBtnTxt}>To Do</Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => scrollToOffset(maxScrollX)}
+              style={s.scrollNavBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Scroll to Done column"
             >
               <Text style={s.scrollNavBtnTxt}>Done</Text>
-              <Ionicons name="chevron-forward" size={14} color={colors.text} />
+            </Pressable>
+          </View>
+
+          {/* Dedicated Universal Vertical Page Scroll Controls */}
+          <View style={s.verticalScrollControls} accessibilityRole="toolbar" accessibilityLabel="Page vertical navigation">
+            <View style={s.scrollDivider} />
+            <Pressable
+              onPress={() => scrollPageTo(0)}
+              disabled={!canScrollUp}
+              style={[s.scrollArrowBtn, !canScrollUp && s.scrollBtnDisabled]}
+              accessibilityRole="button"
+              accessibilityLabel="Scroll page to top"
+              accessibilityHint="Scrolls the Scrum page to the top"
+            >
+              <Ionicons
+                name="arrow-up"
+                size={14}
+                color={canScrollUp ? colors.text : colors.textMuted + "66"}
+              />
+              <Text style={[s.scrollArrowBtnTxt, !canScrollUp && { color: colors.textMuted + "66" }]}>Top</Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => scrollPageStep("down")}
+              disabled={!canScrollDown}
+              style={[s.scrollArrowBtn, !canScrollDown && s.scrollBtnDisabled]}
+              accessibilityRole="button"
+              accessibilityLabel="Scroll page down"
+              accessibilityHint="Scrolls the Scrum page down to view task cards"
+            >
+              <Ionicons
+                name="arrow-down"
+                size={14}
+                color={canScrollDown ? colors.text : colors.textMuted + "66"}
+              />
+              <Text style={[s.scrollArrowBtnTxt, !canScrollDown && { color: colors.textMuted + "66" }]}>Down</Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => scrollPageTo(maxScrollY)}
+              disabled={!canScrollDown}
+              style={[s.scrollNavBtn, !canScrollDown && s.scrollBtnDisabled]}
+              accessibilityRole="button"
+              accessibilityLabel="Scroll page to bottom"
+              accessibilityHint="Scrolls the Scrum page to the bottom"
+            >
+              <Text style={[s.scrollNavBtnTxt, !canScrollDown && { color: colors.textMuted + "66" }]}>Bottom</Text>
             </Pressable>
           </View>
         </View>
@@ -775,6 +1037,21 @@ export default function ScrumTasksPanel({ teamId, onNavigatePlan }: ScrumTasksPa
           horizontal
           showsHorizontalScrollIndicator={true}
           contentContainerStyle={s.boardScroll}
+          scrollEventThrottle={16}
+          onScroll={(e) => {
+            const x = e.nativeEvent.contentOffset.x;
+            scrollXRef.current = x;
+            setBoardScrollX(x);
+          }}
+          onLayout={(e) => {
+            const w = e.nativeEvent.layout.width;
+            containerWidthRef.current = w;
+            setBoardContainerWidth(w);
+          }}
+          onContentSizeChange={(w) => {
+            contentWidthRef.current = w;
+            setBoardContentWidth(w);
+          }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
         >
           {SCRUM_COLUMNS.map((col) => {
@@ -804,7 +1081,7 @@ export default function ScrumTasksPanel({ teamId, onNavigatePlan }: ScrumTasksPa
 
                 {/* Task Cards */}
                 <ScrollView
-                  style={{ flex: 1 }}
+                  style={s.columnCardScroll}
                   contentContainerStyle={{ gap: 8, paddingBottom: 16 }}
                   showsVerticalScrollIndicator={true}
                   nestedScrollEnabled
@@ -929,6 +1206,65 @@ export default function ScrumTasksPanel({ teamId, onNavigatePlan }: ScrumTasksPa
             );
           })}
         </ScrollView>
+      )}
+      </ScrollView>
+
+      {/* ── Global Floating Page Vertical Scroll Controls ── */}
+      {isPageMeasured && maxScrollY > 20 && (
+        <View
+          style={s.floatingPageScrollPill}
+          accessibilityRole="toolbar"
+          accessibilityLabel="Floating page vertical navigation"
+        >
+          <Pressable
+            onPress={() => scrollPageTo(0)}
+            disabled={!canScrollUp}
+            style={[s.floatingScrollBtn, !canScrollUp && s.floatingScrollBtnDisabled]}
+            accessibilityRole="button"
+            accessibilityLabel="Scroll page to top"
+          >
+            <Ionicons
+              name="chevron-up"
+              size={15}
+              color={canScrollUp ? colors.text : colors.textMuted + "66"}
+            />
+            <Text style={[s.floatingScrollBtnTxt, !canScrollUp && { color: colors.textMuted + "66" }]}>Top</Text>
+          </Pressable>
+
+          <View style={s.floatingScrollDivider} />
+
+          <Pressable
+            onPress={() => scrollPageStep("down")}
+            disabled={!canScrollDown}
+            style={[s.floatingScrollBtn, !canScrollDown && s.floatingScrollBtnDisabled]}
+            accessibilityRole="button"
+            accessibilityLabel="Scroll page down"
+          >
+            <Ionicons
+              name="chevron-down"
+              size={15}
+              color={canScrollDown ? colors.text : colors.textMuted + "66"}
+            />
+            <Text style={[s.floatingScrollBtnTxt, !canScrollDown && { color: colors.textMuted + "66" }]}>Down</Text>
+          </Pressable>
+
+          <View style={s.floatingScrollDivider} />
+
+          <Pressable
+            onPress={() => scrollPageTo(maxScrollY)}
+            disabled={!canScrollDown}
+            style={[s.floatingScrollBtn, !canScrollDown && s.floatingScrollBtnDisabled]}
+            accessibilityRole="button"
+            accessibilityLabel="Scroll page to bottom"
+          >
+            <Ionicons
+              name="arrow-down"
+              size={13}
+              color={canScrollDown ? colors.primary : colors.textMuted + "66"}
+            />
+            <Text style={[s.floatingScrollBtnTxt, !canScrollDown ? { color: colors.textMuted + "66" } : { color: colors.primary, fontWeight: "700" }]}>Bottom</Text>
+          </Pressable>
+        </View>
       )}
 
       {/* ── Daily Scrum Standup Modal ───────────────────────────────────────── */}
@@ -1384,6 +1720,121 @@ export default function ScrumTasksPanel({ teamId, onNavigatePlan }: ScrumTasksPa
           </View>
         </View>
       </ModalSheet>
+
+      {/* ── Cannot Complete Sprint Warning Modal (Fix 1: Task Preservation) ── */}
+      <ModalSheet
+        visible={incompleteWarningModal}
+        onClose={() => setIncompleteWarningModal(false)}
+        title="Cannot Complete Sprint Yet"
+      >
+        <ScrollView style={{ maxHeight: 520 }} contentContainerStyle={{ gap: 14 }}>
+          <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 12, padding: 14, backgroundColor: "#fff7ed", borderRadius: radius.md, borderWidth: 1, borderColor: "#fdba74" }}>
+            <Ionicons name="alert-circle" size={26} color="#ea580c" style={{ marginTop: 2 }} />
+            <View style={{ flex: 1, gap: 4 }}>
+              <Text style={{ fontSize: 14.5, fontWeight: "800", color: "#9a3412" }}>
+                Cannot Complete Sprint Yet
+              </Text>
+              <Text style={{ fontSize: 13, color: "#c2410c", lineHeight: 19 }}>
+                Sprint {incompleteWarningData?.sprintName || currentSprint?.name || "01"} contains unfinished work. Complete all remaining tasks before closing this sprint.
+              </Text>
+            </View>
+          </View>
+
+          {/* Breakdown Table */}
+          <View style={{ backgroundColor: "#ffffff", borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, overflow: "hidden" }}>
+            <View style={{ flexDirection: "row", backgroundColor: "#f8fafc", paddingVertical: 10, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: colors.border }}>
+              <Text style={{ flex: 1, fontSize: 12, fontWeight: "700", color: colors.textSecondary }}>STATUS</Text>
+              <Text style={{ width: 80, fontSize: 12, fontWeight: "700", color: colors.textSecondary, textAlign: "right" }}>COUNT</Text>
+            </View>
+
+            {[
+              { label: "To Do", count: incompleteWarningData?.breakdown?.todo ?? 0, color: colors.textMuted },
+              { label: "In Progress", count: incompleteWarningData?.breakdown?.in_progress ?? 0, color: "#2563eb" },
+              { label: "In Review", count: incompleteWarningData?.breakdown?.in_review ?? 0, color: "#7c3aed" },
+              { label: "Blocked", count: incompleteWarningData?.breakdown?.blocked ?? 0, color: "#dc2626" },
+              { label: "Done", count: incompleteWarningData?.breakdown?.done ?? 0, color: "#16a34a" },
+            ].map((row, idx, arr) => (
+              <View
+                key={row.label}
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  paddingVertical: 10,
+                  paddingHorizontal: 12,
+                  borderBottomWidth: idx < arr.length - 1 ? 1 : 0,
+                  borderBottomColor: "#f1f5f9",
+                }}
+              >
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flex: 1 }}>
+                  <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: row.color }} />
+                  <Text style={{ fontSize: 13, fontWeight: "600", color: colors.text }}>{row.label}</Text>
+                </View>
+                <Text style={{ width: 80, fontSize: 13.5, fontWeight: "800", color: row.color, textAlign: "right" }}>
+                  {row.count}
+                </Text>
+              </View>
+            ))}
+          </View>
+
+          {/* Remaining incomplete tasks list */}
+          <View style={{ gap: 8 }}>
+            <Text style={{ fontSize: 13, fontWeight: "700", color: colors.text }}>
+              Remaining Incomplete Tasks ({incompleteWarningData?.incompleteTasks?.length || 0})
+            </Text>
+            <View style={{ gap: 6 }}>
+              {(incompleteWarningData?.incompleteTasks || []).map((t: any) => (
+                <View
+                  key={t.id}
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    padding: 10,
+                    backgroundColor: "#f8fafc",
+                    borderRadius: radius.sm,
+                    borderWidth: 1,
+                    borderColor: colors.border,
+                    gap: 8,
+                  }}
+                >
+                  <Text style={{ flex: 1, fontSize: 12.5, fontWeight: "600", color: colors.text }} numberOfLines={1}>
+                    {t.title}
+                  </Text>
+                  <Badge
+                    label={t.status.replace("_", " ")}
+                    variant={
+                      t.status === "BLOCKED"
+                        ? "danger"
+                        : t.status === "IN_PROGRESS"
+                        ? "info"
+                        : t.status === "IN_REVIEW"
+                        ? "warning"
+                        : "neutral"
+                    }
+                    size="sm"
+                  />
+                </View>
+              ))}
+            </View>
+          </View>
+
+          {/* Action buttons */}
+          <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
+            <Button
+              title="Return to Sprint"
+              variant="secondary"
+              onPress={() => setIncompleteWarningModal(false)}
+            />
+            <Button
+              title="View Remaining Tasks"
+              variant="primary"
+              onPress={() => {
+                setIncompleteWarningModal(false);
+              }}
+            />
+          </View>
+        </ScrollView>
+      </ModalSheet>
     </View>
   );
 }
@@ -1561,6 +2012,32 @@ const s = StyleSheet.create({
     alignItems: "center",
     gap: 6,
   },
+  scrollArrowBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surfaceAlt,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  scrollArrowBtnTxt: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: colors.text,
+  },
+  scrollBtnDisabled: {
+    opacity: 0.4,
+    backgroundColor: colors.surface,
+  },
+  scrollDivider: {
+    width: 1,
+    height: 16,
+    backgroundColor: colors.border,
+    marginHorizontal: 2,
+  },
   scrollNavBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -1575,17 +2052,74 @@ const s = StyleSheet.create({
   scrollNavBtnTxt: {
     fontSize: 11,
     fontWeight: "600",
-    color: colors.text,
+    color: colors.textSecondary,
+  },
+  pageScrollView: {
+    flex: 1,
+  },
+  pageScrollContent: {
+    flexGrow: 1,
+    paddingBottom: 48,
   },
   column: {
     width: 290,
-    height: 600,
+    minHeight: 520,
     borderRadius: radius.md,
     backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
     padding: spacing.sm,
     gap: spacing.sm,
+    alignSelf: "flex-start",
+  },
+  columnCardScroll: {
+    flexGrow: 1,
+  },
+  verticalScrollControls: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  floatingPageScrollPill: {
+    position: "absolute",
+    bottom: 24,
+    right: 24,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: colors.surface,
+    borderRadius: radius.full,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    gap: 5,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.12,
+    shadowRadius: 5,
+    elevation: 5,
+    zIndex: 99,
+  },
+  floatingScrollBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: radius.sm,
+  },
+  floatingScrollBtnDisabled: {
+    opacity: 0.35,
+  },
+  floatingScrollBtnTxt: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: colors.text,
+  },
+  floatingScrollDivider: {
+    width: 1,
+    height: 14,
+    backgroundColor: colors.border,
   },
   colHead: {
     flexDirection: "row",
