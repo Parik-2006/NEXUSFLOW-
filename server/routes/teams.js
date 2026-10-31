@@ -2891,7 +2891,10 @@ router.post("/teams/:teamId/assign", requireAuth, async (req, res) => {
     if (!hasSkillData)
       return res.status(409).json({ error: "Assignment engine requires skill profiles. Set member skills (not all default 5) so Branch & Bound can compute a cost matrix." });
 
-    const taskQuery = { teamId, status: { $ne: "done" } };
+    const taskQuery = { $or: [{ teamId }, { projectId: team.activeProjectId }], status: { $ne: "done" } };
+    if (Array.isArray(taskIds) && taskIds.length > 0) {
+      taskQuery._id = { $in: taskIds };
+    }
     let tasks = await Task.find(taskQuery).lean();
     if (!tasks.length) return res.status(400).json({ error: "No eligible tasks." });
 
@@ -2904,12 +2907,47 @@ router.post("/teams/:teamId/assign", requireAuth, async (req, res) => {
       }
     }
 
+    // Scrum Sprint Awareness: prioritize active sprint tasks if Scrum
+    const isScrumTeam = team.methodology === "SCRUM" || team.methodology === "Scrum" || team.discoverySettings?.methodology === "SCRUM";
+    if (isScrumTeam && !taskIds) {
+      const SprintModel = (await import("../models/Sprint.js")).default;
+      const activeSprint = await SprintModel.findOne({
+        $or: [{ projectId: team.activeProjectId }, { teamId: team._id }],
+        status: "ACTIVE",
+      }).lean();
+      if (activeSprint) {
+        const sprintTasks = tasks.filter((t) => t.sprintId?.toString() === activeSprint._id.toString());
+        if (sprintTasks.length > 0) {
+          tasks = sprintTasks;
+        }
+      }
+    }
+
     const { assignments, totalCost, costMatrix, meta } = assignTasksToMembers(members, tasks);
 
     if (persist && assignments.length) {
+      const memberMap = Object.fromEntries(members.map((m) => [m.userId.toString(), m]));
       await Task.bulkWrite(assignments.map(({ taskId, memberId, cost }) => ({
-        updateOne: { filter: { _id: taskId }, update: { $set: { assignedTo: memberId, assignmentCost: cost } } },
+        updateOne: {
+          filter: { _id: taskId },
+          update: {
+            $set: {
+              assignedTo: memberId,
+              assignedName: memberMap[memberId?.toString()]?.name || "Team Member",
+              assignmentCost: cost,
+            },
+          },
+        },
       })));
+
+      if (team.activeProjectId) {
+        try {
+          const { computeScrumHealth } = await import("../services/scrumHealthService.js");
+          const { scanScrumRisks } = await import("../services/scrumRiskEngine.js");
+          computeScrumHealth(team.activeProjectId).catch(() => null);
+          scanScrumRisks(team.activeProjectId).catch(() => null);
+        } catch (_) {}
+      }
     }
 
     const memberMap = Object.fromEntries(members.map((m) => [m.userId.toString(), m]));
