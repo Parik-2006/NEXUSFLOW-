@@ -213,7 +213,7 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
       toast(error, "error");
       return;
     }
-    toast(`Workspace "${team?.name}" has been permanently deleted.`, "info");
+    toast(`Workspace "${team?.name}" moved to Trash. Restore it from Profile → Recently deleted.`, "info");
     setShowDeleteModal(false);
     router.replace("/dashboard");
   };
@@ -776,7 +776,7 @@ export default function AssignmentBoard({ teamId }: { teamId: string }) {
       >
         <View style={{ gap: spacing.md }}>
           <Text style={{ fontSize: 13, color: colors.danger, fontWeight: "700", lineHeight: 18 }}>
-            ⚠️ This permanently deletes this workspace and all associated tasks, sprints, and project data. This action cannot be undone.
+            ⚠️ This moves this workspace and all associated tasks, sprints, and project data to Trash. It can be restored from Profile → Recently deleted until the recovery window ends.
           </Text>
 
           <Text style={{ fontSize: 13, color: colors.textMuted }}>

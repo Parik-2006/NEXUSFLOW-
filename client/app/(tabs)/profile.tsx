@@ -7,6 +7,7 @@ import { useAuth } from "@/context/AuthContext";
 import { useTeams } from "@/hooks/useTeams";
 import { Avatar, Button, Card, Field, Chip, Badge, StatCard } from "@/components/ui";
 import ImageUploader from "@/components/ImageUploader";
+import TrashPanel from "@/components/TrashPanel";
 import FloatingBackground from "@/components/FloatingBackground";
 import { ModalSheet, useConfirm, useToast } from "@/components/feedback";
 import { colors, spacing, radius, font, layout, glass, shadow } from "@/theme";
@@ -331,6 +332,8 @@ export default function Profile() {
             </View>
             <Ionicons name="chevron-forward" size={18} color={colors.textFaint} />
           </Pressable>
+
+          <TrashPanel />
 
           <Button title="Sign out" icon="log-out-outline" variant="secondary" onPress={onSignOut} />
         </View>

@@ -41,6 +41,7 @@
  */
 
 import mongoose from "mongoose";
+import { archivePlugin } from "../utils/archivePlugin.js";
 
 // ── ProjectContext (Embedded 1:1 inside Project) ─────────────────────────────
 //
@@ -780,5 +781,8 @@ ProjectSchema.pre("save", function (next) {
   }
   next();
 });
+
+// Phase 2: recoverable archive — archived documents are hidden from ordinary queries.
+ProjectSchema.plugin(archivePlugin);
 
 export default mongoose.model("Project", ProjectSchema);

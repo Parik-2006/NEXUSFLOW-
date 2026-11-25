@@ -34,8 +34,11 @@ logger.info("NexusFlow server initializing", { phase: "startup" });
 
 mongoose
   .connect(MONGO_URI)
-  .then(() => {
+  .then(async () => {
     console.log("MongoDB connected");
+    // Phase 2: opt-in expired-archive purge (LIFECYCLE_AUTO_PURGE=true).
+    const { startPurgeScheduler } = await import("./services/lifecycleService.js");
+    startPurgeScheduler();
     server.listen(PORT, () => console.log(`NexusFlow server on :${PORT}`));
   })
   .catch((err) => {

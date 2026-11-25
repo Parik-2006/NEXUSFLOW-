@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { archivePlugin } from "../utils/archivePlugin.js";
 
 const SkillProfileSchema = new mongoose.Schema(
   {
@@ -142,5 +143,8 @@ const TeamSchema = new mongoose.Schema(
 
 // Membership lookups (GET /teams, invitations, access checks) filter on this.
 TeamSchema.index({ "members.userId": 1 });
+
+// Phase 2: recoverable archive — archived documents are hidden from ordinary queries.
+TeamSchema.plugin(archivePlugin);
 
 export default mongoose.model("Team", TeamSchema);

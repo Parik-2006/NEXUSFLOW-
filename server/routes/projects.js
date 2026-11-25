@@ -81,6 +81,7 @@ import {
 } from "../services/requirementReferenceService.js";
 import { getAuthUserId } from "../utils/identity.js";
 import { logger } from "../utils/logger.js";
+import { archiveProject } from "../services/lifecycleService.js";
 
 // Import all Phase 1 models
 import Project          from "../models/Project.js";
@@ -485,31 +486,16 @@ router.delete("/projects/:projectId", requireAuth, async (req, res) => {
     if (!confirmName || confirmName !== String(project.title || "").trim()) {
       return res.status(400).json({ error: "Confirmation required: type the exact project title to delete it.", code: "CONFIRMATION_REQUIRED" });
     }
-    logger.warn("security:project_deleted", { projectId, teamId: String(project.teamId), actorId: getAuthUserId(req.user) });
-
-    // Clear projectId on all tasks that referenced this project.
-    // Tasks are preserved — only the project-scoping link is removed.
-    await Task.updateMany({ projectId }, { $set: { projectId: null } });
-
-    // Remove all sub-entities
-    await Promise.all([
-      Decision.deleteMany({ projectId }),
-      ResearchItem.deleteMany({ projectId }),
-      Recommendation.deleteMany({ projectId }),
-      ArchitectureComponent.deleteMany({ projectId }),
-      Resource.deleteMany({ projectId }),
-      AIConversation.deleteMany({ projectId }),
-      AIMessage.deleteMany({ projectId }),
-    ]);
-
-    // If the team's activeProjectId points to this project, clear it
-    await Team.updateMany(
-      { activeProjectId: projectId },
-      { $set: { activeProjectId: null } }
-    );
-
-    await Project.findByIdAndDelete(projectId);
-    res.json({ ok: true, deletedProjectId: projectId });
+    // Phase 2 (Tasks 6/7): DELETE archives the project (recoverable). Its
+    // tasks are hidden from scheduling/counters; nothing is destroyed here.
+    const result = await archiveProject({ projectId, actorId: getAuthUserId(req.user) });
+    const io = req.app.get("io");
+    if (io && !result.alreadyArchived) {
+      io.to(`project:${projectId}`).emit("project:archived", { projectId, purgeAfter: result.purgeAfter });
+      io.to(`team:${project.teamId}`).emit("project:archived", { projectId, purgeAfter: result.purgeAfter });
+      io.in(`project:${projectId}`).socketsLeave(`project:${projectId}`);
+    }
+    res.json({ ok: true, archived: true, deletedProjectId: projectId, purgeAfter: result.purgeAfter ?? null });
   } catch (e) {
     res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }

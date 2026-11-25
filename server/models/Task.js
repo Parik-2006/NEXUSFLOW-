@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { archivePlugin } from "../utils/archivePlugin.js";
 import { computePriorityScore } from "../algorithms/greedyScheduler.js";
 import { computeTaskPriority } from "../algorithms/taskPriorityEngine.js";
 
@@ -320,5 +321,8 @@ TaskSchema.index({ projectId: 1, status: 1 });
 TaskSchema.index({ teamId: 1, priorityScore: -1, createdAt: 1 });
 TaskSchema.index({ projectId: 1, priorityScore: -1, createdAt: 1 });
 TaskSchema.index({ sprintId: 1, status: 1 });
+
+// Phase 2: recoverable archive — archived documents are hidden from ordinary queries.
+TaskSchema.plugin(archivePlugin);
 
 export default mongoose.model("Task", TaskSchema);

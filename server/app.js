@@ -14,6 +14,7 @@ import skillsRoutes from "./routes/skills.js";         // NEXUSFLOW 3.0 — Skil
 import aiRoutes     from "./routes/ai.js";             // NEXUSFLOW 3.0 — AI quiz generation
 import userLookupRoutes from "./routes/userLookup.js"; // NEXUSFLOW 3.0 — Workspace email lookup (Fix 4)
 import teamRoutes   from "./routes/teams.js";
+import lifecycleRoutes from "./routes/lifecycle.js"; // Phase 2 — Trash / restore / purge
 import projectRoutes from "./routes/projects.js";   // NEXUSFLOW 2.0 — Phase 1
 import githubRoutes  from "./routes/github.js";      // NEXUSFLOW 3.0 — Phase 11
 import discoveryRoutes from "./routes/discovery.js"; // NEXUSFLOW 4.0 — Open Team Discovery & Applications
@@ -232,6 +233,7 @@ app.use("/api", chatRoutes);       // NEXUSFLOW 3.0 — Chat system
 app.use("/api", skillsRoutes);     // NEXUSFLOW 3.0 — Skills
 app.use("/api", aiRoutes);         // NEXUSFLOW 3.0 — AI quiz
 app.use("/api", userLookupRoutes); // NEXUSFLOW 3.0 — Workspace email lookup (Fix 4)
+app.use("/api", lifecycleRoutes);
 app.use("/api", teamRoutes);
 app.use("/api", projectRoutes);   // NEXUSFLOW 2.0 — Phase 1 project routes
 app.use(projectRoutes);          // Dual-mount contract: supports both /api/projects and /projects
