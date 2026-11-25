@@ -5,7 +5,7 @@
  */
 import React, { createContext, useCallback, useContext, useRef, useState } from "react";
 import {
-  View, Text, Pressable, StyleSheet, Animated, Modal, ScrollView, KeyboardAvoidingView, Platform,
+  View, Text, Pressable, StyleSheet, Animated, Modal, ScrollView, KeyboardAvoidingView, Platform, TextInput,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { colors, radius, spacing, shadow, font } from "@/theme";
@@ -50,7 +50,9 @@ function ToastItem({ toast, onDone }: { toast: Toast; onDone: (id: number) => vo
 }
 
 // ── Confirm dialog ────────────────────────────────────────────────────────────
-type ConfirmOpts = { title: string; message?: string; confirmLabel?: string; confirmText?: string; destructive?: boolean };
+// requireTypedText: when set, the confirm button stays disabled until the user
+// types this exact text (used for destructive workspace / project deletion).
+type ConfirmOpts = { title: string; message?: string; confirmLabel?: string; confirmText?: string; destructive?: boolean; requireTypedText?: string };
 const ConfirmCtx = createContext<(opts: ConfirmOpts) => Promise<boolean>>(async () => false);
 export const useConfirm = () => useContext(ConfirmCtx);
 
@@ -65,8 +67,10 @@ export function FeedbackProvider({ children }: { children: React.ReactNode }) {
   const remove = useCallback((id: number) => setToasts((prev) => prev.filter((x) => x.id !== id)), []);
 
   const [confirm, setConfirm] = useState<(ConfirmOpts & { resolve: (v: boolean) => void }) | null>(null);
-  const ask = useCallback((opts: ConfirmOpts) => new Promise<boolean>((resolve) => setConfirm({ ...opts, resolve })), []);
-  const close = (v: boolean) => { confirm?.resolve(v); setConfirm(null); };
+  const [typed, setTyped] = useState("");
+  const ask = useCallback((opts: ConfirmOpts) => new Promise<boolean>((resolve) => { setTyped(""); setConfirm({ ...opts, resolve }); }), []);
+  const close = (v: boolean) => { confirm?.resolve(v); setConfirm(null); setTyped(""); };
+  const typedOk = !confirm?.requireTypedText || typed.trim() === confirm.requireTypedText.trim();
 
   return (
     <ToastCtx.Provider value={push}>
@@ -83,9 +87,24 @@ export function FeedbackProvider({ children }: { children: React.ReactNode }) {
               </View>
               <Text style={t.confirmTitle}>{confirm?.title}</Text>
               {confirm?.message ? <Text style={t.confirmMsg}>{confirm.message}</Text> : null}
+              {confirm?.requireTypedText ? (
+                <View style={{ alignSelf: "stretch", marginTop: spacing.md, gap: 6 }}>
+                  <Text style={t.confirmMsg}>Type <Text style={{ fontWeight: "800", color: colors.text }}>{confirm.requireTypedText}</Text> to confirm.</Text>
+                  <TextInput
+                    value={typed}
+                    onChangeText={setTyped}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    accessibilityLabel={`Type ${confirm.requireTypedText} to confirm`}
+                    placeholder={confirm.requireTypedText}
+                    placeholderTextColor={colors.textMuted}
+                    style={t.confirmInput}
+                  />
+                </View>
+              ) : null}
               <View style={{ flexDirection: "row", gap: 10, marginTop: spacing.md }}>
                 <Button title="Cancel" variant="secondary" onPress={() => close(false)} style={{ flex: 1 }} />
-                <Button title={confirm?.confirmLabel ?? confirm?.confirmText ?? "Confirm"} variant={confirm?.destructive ? "danger" : "primary"} onPress={() => close(true)} style={{ flex: 1 }} />
+                <Button title={confirm?.confirmLabel ?? confirm?.confirmText ?? "Confirm"} variant={confirm?.destructive ? "danger" : "primary"} disabled={!typedOk} onPress={() => typedOk && close(true)} style={{ flex: 1 }} />
               </View>
             </Pressable>
           </Pressable>
@@ -131,6 +150,7 @@ const t = StyleSheet.create({
   confirmIcon: { width: 52, height: 52, borderRadius: 16, alignItems: "center", justifyContent: "center", marginBottom: spacing.md },
   confirmTitle: { ...font.h3, textAlign: "center" },
   confirmMsg: { fontSize: 13, color: colors.textMuted, textAlign: "center", marginTop: 6, lineHeight: 19 },
+  confirmInput: { borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, color: colors.text, backgroundColor: colors.surface },
 
   sheetOverlay: { flex: 1, backgroundColor: colors.overlay, justifyContent: "flex-end" },
   sheet: { backgroundColor: colors.bg, borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl, maxHeight: "92%", paddingTop: spacing.sm },

@@ -364,7 +364,7 @@ export default function ScrumTeamPanel({ teamId }: { teamId: string }) {
       return;
     }
     setDeleting(true);
-    const { error } = await deleteTeam();
+    const { error } = await deleteTeam(deleteConfirmInput.trim());
     setDeleting(false);
     if (error) {
       toast(error, "error");

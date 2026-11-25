@@ -8,7 +8,7 @@
  *   • deleteTeam (Owner only)             → DELETE /teams/:teamId
  *   • Real-time Socket.IO synchronization for team & member updates
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { getSocket } from "@/services/socket";
 import type { Team, TeamMember } from "@/hooks/useTeams";
@@ -48,20 +48,36 @@ export function useTeam(teamId: string | undefined) {
   const [team, setTeam] = useState<Team | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  const initRequested = useRef(false);
 
   const hydrate = useCallback(async () => {
     if (!teamId) return;
     try {
       const res = await fetch(`${API}/api/teams/${teamId}`, { headers: { Authorization: `Bearer ${token}` } });
-      if (res.status === 404) {
-        // Team was deleted (or never existed). Surface a sentinel so the page
-        // can safely redirect instead of leaving the user on a broken workspace.
+      if (res.status === 404 || res.status === 403) {
+        // Team was deleted, never existed, or the user is no longer a member
+        // (e.g. removed). Surface a sentinel so the page can safely redirect
+        // instead of leaving the user on a broken workspace.
         setTeam(null);
         setNotFound(true);
         return;
       }
       if (res.ok) {
-        const data = await res.json();
+        let data = await res.json();
+        // Phase 1: GET requests never create projects server-side. A legacy
+        // workspace without a project is initialized through the explicit,
+        // authorized, idempotent POST — once per hook instance.
+        if (!data.activeProjectId && !initRequested.current) {
+          initRequested.current = true;
+          const init = await fetch(`${API}/api/teams/${teamId}/initialize-project`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}` },
+          }).catch(() => null);
+          if (init?.ok) {
+            const again = await fetch(`${API}/api/teams/${teamId}`, { headers: { Authorization: `Bearer ${token}` } });
+            if (again.ok) data = await again.json();
+          }
+        }
         setTeam(data);
         setNotFound(false);
       }
@@ -240,12 +256,14 @@ export function useTeam(teamId: string | undefined) {
   }, [teamId, token]);
 
   // Delete Team (owner only)
-  const deleteTeam = useCallback(async (): Promise<{ error?: string }> => {
+  // confirmName must equal the workspace name exactly (server-enforced).
+  const deleteTeam = useCallback(async (confirmName: string): Promise<{ error?: string }> => {
     if (!token || !teamId) return { error: "Unauthorized or invalid team" };
     try {
       const res = await fetch(`${API}/api/teams/${teamId}`, {
         method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ confirmName }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) return { error: data.error || "Failed to delete team" };

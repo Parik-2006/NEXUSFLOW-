@@ -119,11 +119,13 @@ export function useTeams() {
   }, [token]);
 
   // ── Delete a team ─────────────────────────────────────────────────────────
-  const deleteTeam = useCallback(async (teamId: string): Promise<{ error?: string }> => {
+  // confirmName must equal the workspace name exactly (server-enforced).
+  const deleteTeam = useCallback(async (teamId: string, confirmName: string): Promise<{ error?: string }> => {
     try {
       const res = await fetch(`${API}/api/teams/${teamId}`, {
         method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ confirmName }),
       });
       if (!res.ok) { const d = await res.json().catch(() => ({})); return { error: d.error ?? "Failed to delete" }; }
       setTeams((prev) => prev.filter((t) => t._id !== teamId));
