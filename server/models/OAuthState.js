@@ -25,12 +25,19 @@ const OAuthStateSchema = new mongoose.Schema(
       default: "github",
       index: true,
     },
+    // Required for GitHub (account linking); absent for Google login, where no
+    // user is authenticated yet.
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: true,
+      required: function () { return this.provider !== "google"; },
       index: true,
     },
+    // Phase 2 — Google login flow binding (all values hashed or random):
+    codeVerifier: { type: String, default: "", select: false }, // PKCE verifier (server ↔ Google)
+    nonce: { type: String, default: "" },                        // OIDC nonce bound to the id_token
+    browserBindingHash: { type: String, default: "" },           // SHA-256 of the HttpOnly cookie value
+    clientChallenge: { type: String, default: "" },              // client verifier challenge for /exchange
     projectId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Project",
@@ -72,13 +79,14 @@ const OAuthStateSchema = new mongoose.Schema(
  * @param {string} state - The random state string to verify and consume
  * @returns {Promise<Document|null>} The consumed state document or null if invalid/expired/replayed
  */
-OAuthStateSchema.statics.consumeState = async function (state) {
+OAuthStateSchema.statics.consumeState = async function (state, provider = "github") {
   if (!state || typeof state !== "string") return null;
 
   const now = new Date();
   return this.findOneAndUpdate(
     {
       state,
+      provider,
       isConsumed: false,
       expiresAt: { $gt: now },
     },

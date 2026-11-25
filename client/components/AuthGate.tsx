@@ -12,7 +12,8 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
     if (loading) return;
     const inAuthGroup = segments[0] === "(auth)";
     if (!token && !inAuthGroup) router.replace("/(auth)/login");
-    else if (token && inAuthGroup) router.replace("/(tabs)/dashboard");
+    // A reset link must work even while a session exists (it signs out everywhere).
+    else if (token && inAuthGroup && (segments as string[])[1] !== "reset-password") router.replace("/(tabs)/dashboard");
   }, [token, loading, segments]);
 
   if (loading) {

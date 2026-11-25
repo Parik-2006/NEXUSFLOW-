@@ -25,6 +25,12 @@ const MONGO_URI = process.env.MONGO_URI ?? "mongodb://localhost:27017/nexusflow"
 
 // Log server startup info (no sensitive data)
 logger.info("NexusFlow server initializing", { phase: "startup" });
+{
+  const { isMailerConfigured } = await import("./utils/mailer.js");
+  if (!isMailerConfigured()) {
+    logger.warn("mailer:not_configured", { effect: "password reset e-mails are disabled until SMTP_* is set" });
+  }
+}
 
 mongoose
   .connect(MONGO_URI)

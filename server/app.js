@@ -27,10 +27,11 @@ import { registerProjectSyncHandlers } from "./socket/projectSyncHandlers.js"; /
 import { registerChatHandlers } from "./socket/chatHandlers.js";               // NEXUSFLOW 3.0 — Chat
 import User from "./models/User.js";
 import Team from "./models/Team.js";
-import { sign, verify, requireAuth, formatUser } from "./auth.js";
+import { sign, verify, verifySession, requireAuth, formatUser } from "./auth.js";
+import { validatePassword } from "./utils/passwordPolicy.js";
 import { getAuthUserId } from "./utils/identity.js";
 import { logger } from "./utils/logger.js";            // NEXUSFLOW 3.0 — Phase 19
-import { createRateLimiter } from "./utils/rateLimiter.js"; // NEXUSFLOW 3.0 — Phase 19
+import { authLimits, loginFailures, sendRateLimited } from "./utils/rateLimiter.js"; // Phase 2 auth rate limits
 
 export const getFrontendUrl = () => {
   const url = process.env.FRONTEND_URL || "";
@@ -42,6 +43,14 @@ export const getFrontendUrl = () => {
 const FRONTEND_URL = getFrontendUrl();
 
 export const app = express();
+
+// Phase 2 (Task 2): only trust X-Forwarded-For from known proxy hops, so
+// clients cannot spoof their IP to dodge rate limits. TRUST_PROXY = number of
+// proxy hops (Render: 1). Default: no proxy trusted (direct connections).
+{
+  const hops = Number.parseInt(process.env.TRUST_PROXY ?? (process.env.RENDER ? "1" : "0"), 10);
+  app.set("trust proxy", Number.isFinite(hops) && hops > 0 ? hops : false);
+}
 app.use(cors({ origin: [FRONTEND_URL, "http://localhost:8081", "http://localhost:19006", "http://localhost:8082", "http://localhost:3000"], credentials: true }));
 app.use(express.json({ limit: "15mb" })); // Support avatar uploads
 
@@ -68,8 +77,9 @@ const handleSignup = async (req, res) => {
     if (!email || !EMAIL_REGEX.test(String(email).trim())) {
       return res.status(400).json({ error: "A valid email address is required." });
     }
-    if (!password || String(password).length < 6) {
-      return res.status(400).json({ error: "Password must be at least 6 characters long." });
+    const passwordError = validatePassword(typeof password === "string" ? password : "");
+    if (passwordError) {
+      return res.status(400).json({ error: passwordError });
     }
     if (confirmPassword !== undefined && password !== confirmPassword) {
       return res.status(400).json({ error: "Passwords do not match." });
@@ -103,8 +113,8 @@ const handleSignup = async (req, res) => {
   }
 };
 
-app.post("/api/auth/signup", handleSignup);
-app.post("/api/signup", handleSignup);
+app.post("/api/auth/signup", authLimits.signupIp, handleSignup);
+app.post("/api/signup", authLimits.signupIp, handleSignup);
 
 // POST /api/auth/login & POST /api/login
 const handleLogin = async (req, res) => {
@@ -115,18 +125,20 @@ const handleLogin = async (req, res) => {
       return res.status(400).json({ error: "Email and password are required." });
     }
 
-    const normalizedEmail = String(email).trim().toLowerCase();
+    const normalizedEmail = String(email).trim().toLowerCase().slice(0, 254);
+    // Per-account failed-attempt limit (temporary; counts failures only). The
+    // key is the submitted email whether or not the account exists.
+    const failKey = `login-fail:${normalizedEmail}`;
+    const wait = loginFailures.check(failKey);
+    if (wait > 0) return sendRateLimited(res, wait);
+
     const user = await User.findOne({ email: normalizedEmail }).select("+password");
-
-    if (!user) {
-      // Return 401 for bad credentials
+    const isMatch = user ? await user.comparePassword(String(password)) : false;
+    if (!user || !isMatch) {
+      loginFailures.hit(failKey);
       return res.status(401).json({ error: "Invalid email or password." });
     }
-
-    const isMatch = await user.comparePassword(String(password));
-    if (!isMatch) {
-      return res.status(401).json({ error: "Invalid email or password." });
-    }
+    loginFailures.reset(failKey);
 
     const token = sign(user);
     res.json({
@@ -140,8 +152,8 @@ const handleLogin = async (req, res) => {
   }
 };
 
-app.post("/api/auth/login", handleLogin);
-app.post("/api/login", handleLogin);
+app.post("/api/auth/login", authLimits.loginIp, handleLogin);
+app.post("/api/login", authLimits.loginIp, handleLogin);
 
 // GET /api/me — Returns fresh user profile for authenticated session
 app.get("/api/me", requireAuth, async (req, res) => {
@@ -235,8 +247,9 @@ export const io = new Server(server, { cors: { origin: [FRONTEND_URL, "http://lo
 app.set("io", io);
 
 // Socket auth middleware: validate handshake token.
-io.use((socket, next) => {
-  const payload = verify(socket.handshake.auth?.token);
+io.use(async (socket, next) => {
+  // Same session check as REST: signature + current tokenVersion (Phase 2).
+  const payload = await verifySession(socket.handshake.auth?.token);
   if (!payload) return next(new Error("unauthorized"));
   socket.data.user = payload;
   next();

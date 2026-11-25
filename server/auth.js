@@ -1,4 +1,5 @@
 import jwt from "jsonwebtoken";
+import mongoose from "mongoose";
 import { isValidId } from "./utils/identity.js";
 
 /**
@@ -76,7 +77,9 @@ export function assertAuthConfig() {
 export function sign(user) {
   const id = (user?._id || user?.id)?.toString();
   if (!isValidId(id)) throw new Error("Cannot sign a token without a valid user id.");
-  return jwt.sign({ id, email: user.email, name: user.name }, getSecret(), {
+  // "tv" = the user's tokenVersion at issue time (Phase 2 session revocation).
+  const tv = Number.isInteger(user.tokenVersion) ? user.tokenVersion : 0;
+  return jwt.sign({ id, email: user.email, name: user.name, tv }, getSecret(), {
     algorithm: JWT_ALGORITHM,
     expiresIn: JWT_EXPIRES_IN,
   });
@@ -122,11 +125,32 @@ export function formatUser(user) {
   };
 }
 
+/**
+ * Phase 2: verify the token AND that the session is still current — the user
+ * still exists and the token's "tv" equals the user's tokenVersion (bumped on
+ * password reset). Tokens issued before Phase 2 have no "tv" and are treated
+ * as version 0, so existing sessions stay valid until the first reset.
+ */
+export async function verifySession(token) {
+  const payload = verify(token);
+  if (!payload) return null;
+  try {
+    const User = mongoose.models.User;
+    if (!User) return null;
+    const u = await User.findById(payload.id).select("tokenVersion").lean();
+    if (!u) return null;
+    if ((payload.tv ?? 0) !== (u.tokenVersion ?? 0)) return null;
+    return payload;
+  } catch {
+    return null; // DB unavailable → fail closed
+  }
+}
+
 // Express middleware — 401 for unauthenticated (authorization is separate: 403).
-export function requireAuth(req, res, next) {
+export async function requireAuth(req, res, next) {
   const header = req.headers.authorization ?? "";
   const token = header.startsWith("Bearer ") ? header.slice(7).trim() : null;
-  const payload = token && verify(token);
+  const payload = token ? await verifySession(token) : null;
   if (!payload) return res.status(401).json({ error: "Unauthorized: Invalid or missing token" });
   req.user = payload;
   next();

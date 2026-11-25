@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, Pressable, ScrollView, Linking, useWindowDimensions } from "react-native";
+import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, Pressable, ScrollView, useWindowDimensions } from "react-native";
 import NexusFlowLogo from "@/components/branding/NexusFlowLogo";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -18,8 +18,18 @@ const HIGHLIGHTS = [
   { icon: "people-outline", text: "Real-time collaboration for your whole team" },
 ] as const;
 
+const GOOGLE_ERRORS: Record<string, string> = {
+  cancelled: "Google sign-in was cancelled.",
+  invalid_state: "This sign-in attempt expired. Please try again.",
+  state_mismatch: "This sign-in was started in a different browser. Please try again.",
+  link_requires_password: "An account with this e-mail already exists. Sign in with your password.",
+  email_conflict: "This e-mail is already linked to a different Google account.",
+  email_not_verified: "Your Google e-mail address is not verified.",
+  exchange_failed: "Google sign-in expired. Please try again.",
+};
+
 export default function Login() {
-  const { signIn, signInWithGoogle } = useAuth();
+  const { signIn, startGoogleSignIn } = useAuth();
   const router = useRouter();
   // Responsive brand-mark size: compact on phones, larger on desktop.
   const { width: winWidth } = useWindowDimensions();
@@ -33,27 +43,17 @@ export default function Login() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (!window.location) return;
+    // Phase 2: Google callbacks deliver only error codes here (never tokens).
     const params = new URLSearchParams(window.location.search);
-    const token = params.get("token");
-    const err = params.get("error");
+    const err = params.get("auth_error") || params.get("error");
     if (err) {
-      const msg = err.replace(/_/g, " ");
-      setErrorMsg(`Google sign-in error: ${msg}`);
-      toast(`Google sign-in error: ${msg}`, "error");
+      const msg = GOOGLE_ERRORS[err] ?? "Google sign-in could not be completed. Please try again.";
+      setErrorMsg(msg);
+      toast(msg, "error");
       window.history.replaceState({}, "", window.location.pathname);
-    } else if (token) {
-      setBusy(true);
-      signInWithGoogle(token)
-        .then(() => {
-          toast("Signed in with Google!", "success");
-          window.history.replaceState({}, "", window.location.pathname);
-        })
-        .catch(() => {
-          toast("Failed to complete Google sign-in", "error");
-        })
-        .finally(() => setBusy(false));
     }
-  }, [signInWithGoogle, toast]);
+  }, [toast]);
 
   const onSubmit = async () => {
     if (!email.trim()) {
@@ -85,14 +85,11 @@ export default function Login() {
     setBusy(true);
     setErrorMsg(null);
     try {
-      if (Platform.OS === "web") {
-        window.location.href = `${API}/api/auth/google`;
-      } else {
-        Linking.openURL(`${API}/api/auth/google`);
-      }
-    } catch {
-      toast("Failed to start Google sign-in.", "error");
-    } finally {
+      await startGoogleSignIn("/");
+    } catch (e: any) {
+      const msg = e?.message ?? "Failed to start Google sign-in.";
+      setErrorMsg(msg);
+      toast(msg, "error");
       setBusy(false);
     }
   };

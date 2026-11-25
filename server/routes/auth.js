@@ -1,18 +1,40 @@
+/**
+ * server/routes/auth.js
+ * NEXUSFLOW Phase 2 — Google OIDC login (hardened), one-time login exchange,
+ * and secure password recovery. Every route is rate limited.
+ */
 import { Router } from "express";
-import mongoose from "mongoose";
+import crypto from "node:crypto";
 import User from "../models/User.js";
 import PasswordReset from "../models/PasswordReset.js";
-import { sign, verify, requireAuth, formatUser } from "../auth.js";
+import OAuthState from "../models/OAuthState.js";
+import AuthExchangeCode from "../models/AuthExchangeCode.js";
+import { sign, formatUser } from "../auth.js";
+import { authLimits } from "../utils/rateLimiter.js";
+import { validatePassword } from "../utils/passwordPolicy.js";
+import { sendPasswordResetEmail } from "../utils/mailer.js";
+import { logger } from "../utils/logger.js";
+import {
+  GOOGLE_AUTH_URL,
+  exchangeGoogleCode,
+  verifyGoogleIdToken,
+  googleIsAuthoritativeForEmail,
+  sanitizeRedirectPath,
+  randomToken,
+  sha256b64url,
+  sha256hex,
+  safeEqual,
+  GoogleAuthError,
+} from "../services/googleOAuth.js";
 
 const router = Router();
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const GENERIC_FORGOT = "If an account with that email exists, a reset link has been sent.";
 
 const GOOGLE_CLIENT_ID = () => process.env.GOOGLE_CLIENT_ID || "";
 const GOOGLE_CLIENT_SECRET = () => process.env.GOOGLE_CLIENT_SECRET || "";
 const GOOGLE_REDIRECT_URI = () => {
-  if (process.env.GOOGLE_REDIRECT_URI) {
-    return process.env.GOOGLE_REDIRECT_URI;
-  }
+  if (process.env.GOOGLE_REDIRECT_URI) return process.env.GOOGLE_REDIRECT_URI;
   if (process.env.NODE_ENV === "production" || process.env.RENDER) {
     return "https://nexusflow-nxeg.onrender.com/api/auth/google/callback";
   }
@@ -20,276 +42,277 @@ const GOOGLE_REDIRECT_URI = () => {
 };
 const getFrontendUrl = () => {
   const url = process.env.FRONTEND_URL || "";
-  if (!url || url.includes("your-frontend") || url.includes("example.com")) {
-    return "http://localhost:8081";
-  }
+  if (!url || url.includes("your-frontend") || url.includes("example.com")) return "http://localhost:8081";
   return url.replace(/\/+$/, "");
 };
 
-// Simple in-memory store for OAuth state tokens (CSRF protection)
-const oauthStateStore = new Map();
-const OAUTH_STATE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const STATE_TTL_MS = 10 * 60 * 1000;
+const EXCHANGE_TTL_MS = 2 * 60 * 1000;
+const BIND_COOKIE = "nf_oauth_bind";
+const resetTtlMinutes = () => {
+  const n = Number.parseInt(process.env.PASSWORD_RESET_TTL_MINUTES ?? "", 10);
+  return Number.isFinite(n) && n >= 5 && n <= 60 ? n : 20;
+};
+const isSecureCookie = () => process.env.NODE_ENV === "production" || Boolean(process.env.RENDER);
 
-function generateOAuthState() {
-  const state = cryptoRandomToken(32);
-  oauthStateStore.set(state, Date.now());
-  return state;
+function readCookie(req, name) {
+  const header = req.headers.cookie || "";
+  for (const part of header.split(";")) {
+    const [k, ...v] = part.trim().split("=");
+    if (k === name) return decodeURIComponent(v.join("="));
+  }
+  return "";
 }
 
-function validateOAuthState(state) {
-  if (!state) return false;
-  const timestamp = oauthStateStore.get(state);
-  if (!timestamp) return false;
-  if (Date.now() - timestamp > OAUTH_STATE_TTL_MS) {
-    oauthStateStore.delete(state);
-    return false;
-  }
-  oauthStateStore.delete(state);
-  return true;
+function redirectWithError(res, code) {
+  return res.redirect(`${getFrontendUrl()}/login?auth_error=${encodeURIComponent(code)}`);
 }
 
-// Clean up expired states periodically
-setInterval(() => {
-  const now = Date.now();
-  for (const [state, timestamp] of oauthStateStore.entries()) {
-    if (now - timestamp > OAUTH_STATE_TTL_MS) {
-      oauthStateStore.delete(state);
-    }
-  }
-}, 60_000);
-
-// ── GOOGLE OAUTH ────────────────────────────────────────────────────────────────
-
-router.get("/auth/google", (req, res) => {
-  const clientId = GOOGLE_CLIENT_ID();
-  const redirectUri = GOOGLE_REDIRECT_URI();
-  if (!clientId || !redirectUri) {
-    return res.status(500).json({ error: "Google OAuth is not configured on the server." });
-  }
-  const state = generateOAuthState();
-  const params = new URLSearchParams({
-    client_id: clientId,
-    redirect_uri: redirectUri,
-    response_type: "code",
-    scope: "openid email profile",
-    access_type: "offline",
-    prompt: "consent",
-    state,
-  });
-  res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
-});
-
-router.get("/auth/google/callback", async (req, res) => {
-  const frontendUrl = getFrontendUrl();
+// ── GOOGLE OAUTH ────────────────────────────────────────────────────────────
+// GET /api/auth/google?client_challenge=<b64url SHA-256 of client verifier>&redirect=/path
+router.get("/auth/google", authLimits.oauthIp, async (req, res) => {
   try {
-    const code = String(req.query.code || "").trim();
-    const state = String(req.query.state || "").trim();
-    
-    if (!code) return res.redirect(`${frontendUrl}/?error=missing_code`);
-    if (!validateOAuthState(state)) {
-      return res.redirect(`${frontendUrl}/?error=invalid_state`);
+    const clientId = GOOGLE_CLIENT_ID();
+    if (!clientId || !GOOGLE_CLIENT_SECRET()) {
+      return res.status(503).json({ error: "Google sign-in is not configured on the server." });
+    }
+    const clientChallenge = String(req.query.client_challenge || "");
+    if (!/^[A-Za-z0-9_-]{43}$/.test(clientChallenge)) {
+      return res.status(400).json({ error: "Missing or invalid client_challenge." });
     }
 
-    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        code,
-        client_id: GOOGLE_CLIENT_ID(),
-        client_secret: GOOGLE_CLIENT_SECRET(),
-        redirect_uri: GOOGLE_REDIRECT_URI(),
-        grant_type: "authorization_code",
-      }),
+    const state = randomToken(32);
+    const nonce = randomToken(24);
+    const codeVerifier = randomToken(48);
+    const binding = randomToken(32);
+
+    await OAuthState.create({
+      state,
+      provider: "google",
+      codeVerifier,
+      nonce,
+      browserBindingHash: sha256hex(binding),
+      clientChallenge,
+      redirectPath: sanitizeRedirectPath(req.query.redirect),
+      expiresAt: new Date(Date.now() + STATE_TTL_MS),
     });
 
-    if (!tokenRes.ok) {
-      const text = await tokenRes.text();
-      console.error("[Google OAuth] Token exchange failed:", tokenRes.status, text);
-      return res.redirect(`${frontendUrl}/?error=token_exchange_failed`);
-    }
-
-    const tokenData = await tokenRes.json();
-    const idToken = tokenData.id_token;
-    if (!idToken) return res.redirect(`${frontendUrl}/?error=no_id_token`);
-
-    const payloadRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`);
-    if (!payloadRes.ok) return res.redirect(`${frontendUrl}/?error=invalid_token`);
-    const payload = await payloadRes.json();
-
-    const googleId = String(payload.sub || "");
-    const email = String(payload.email || "").toLowerCase().trim();
-    const name = String(payload.name || "").trim();
-
-    if (!googleId || !email || !EMAIL_REGEX.test(email)) {
-      return res.redirect(`${frontendUrl}/?error=invalid_google_payload`);
-    }
-
-    let user = await User.findOne({ $or: [{ googleId }, { email }] });
-
-    if (user) {
-      if (user.googleId && user.googleId !== googleId) {
-        return res.redirect(`${frontendUrl}/?error=email_conflict`);
-      }
-      if (!user.googleId) {
-        user = await User.findByIdAndUpdate(user._id, { $set: { googleId, authProvider: "google" } }, { new: true });
-      }
-    } else {
-      user = await User.create({
-        name: name || email.split("@")[0],
-        email,
-        password: cryptoRandomToken(32),
-        googleId,
-        authProvider: "google",
-      });
-    }
-
-    const jwtToken = sign(user);
-    res.cookie("nf_jwt", jwtToken, {
+    // Binds the callback to the browser that started the flow (login CSRF).
+    res.cookie(BIND_COOKIE, binding, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
+      secure: isSecureCookie(),
       sameSite: "lax",
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-      path: "/",
+      maxAge: STATE_TTL_MS,
+      path: "/api/auth/google",
     });
-    res.redirect(`${frontendUrl}/?google=1&token=${encodeURIComponent(jwtToken)}`);
+
+    const params = new URLSearchParams({
+      client_id: clientId,
+      redirect_uri: GOOGLE_REDIRECT_URI(),
+      response_type: "code",
+      scope: "openid email profile",
+      state,
+      nonce,
+      code_challenge: sha256b64url(codeVerifier),
+      code_challenge_method: "S256",
+      prompt: "select_account",
+    });
+    res.redirect(`${GOOGLE_AUTH_URL}?${params.toString()}`);
   } catch (err) {
-    console.error("[Google OAuth] Callback error:", err.message);
-    res.redirect(`${frontendUrl}/?error=server_error`);
+    logger.error("google_oauth:init_failed", { reason: err?.message });
+    res.status(500).json({ error: "Failed to start Google sign-in." });
   }
 });
 
-// ── FORGOT PASSWORD ─────────────────────────────────────────────────────────────
-
-router.post("/auth/forgot-password", async (req, res) => {
+router.get("/auth/google/callback", authLimits.oauthIp, async (req, res) => {
+  const bindingCookie = readCookie(req, BIND_COOKIE);
+  res.clearCookie(BIND_COOKIE, { path: "/api/auth/google" });
   try {
-    const { email } = req.body ?? {};
-    const normalizedEmail = String(email || "").toLowerCase().trim();
+    if (req.query.error) return redirectWithError(res, req.query.error === "access_denied" ? "cancelled" : "google_error");
+    const code = String(req.query.code || "");
+    const state = String(req.query.state || "");
+    if (!code || !state) return redirectWithError(res, "missing_code");
 
-    if (!normalizedEmail || !EMAIL_REGEX.test(normalizedEmail)) {
-      return res.status(400).json({ error: "A valid email address is required." });
+    // Atomic single-use state consumption (expired / replayed → null).
+    const stored = await OAuthState.findOneAndUpdate(
+      { state, provider: "google", isConsumed: false, expiresAt: { $gt: new Date() } },
+      { $set: { isConsumed: true, consumedAt: new Date() } },
+      { new: false }
+    ).select("+codeVerifier");
+    if (!stored) return redirectWithError(res, "invalid_state");
+    if (!bindingCookie || !safeEqual(sha256hex(bindingCookie), stored.browserBindingHash)) {
+      return redirectWithError(res, "state_mismatch");
     }
 
-    const user = await User.findOne({ email: normalizedEmail }).select("_id email").lean();
+    const clientId = GOOGLE_CLIENT_ID();
+    const tokens = await exchangeGoogleCode({
+      code,
+      codeVerifier: stored.codeVerifier,
+      clientId,
+      clientSecret: GOOGLE_CLIENT_SECRET(),
+      redirectUri: GOOGLE_REDIRECT_URI(),
+    });
+    const claims = await verifyGoogleIdToken(tokens.id_token, { clientId, nonce: stored.nonce });
+
+    const googleId = claims.sub;
+    const email = String(claims.email || "").toLowerCase().trim();
+    if (!EMAIL_REGEX.test(email)) return redirectWithError(res, "invalid_google_payload");
+
+    // ── Account linking (stable subject id first) ─────────────────────────
+    let user = await User.findOne({ googleId });
     if (!user) {
-      return res.json({ success: true, message: "If an account with that email exists, a reset link has been sent." });
+      const byEmail = await User.findOne({ email });
+      if (byEmail) {
+        if (byEmail.googleId && byEmail.googleId !== googleId) return redirectWithError(res, "email_conflict");
+        if (!googleIsAuthoritativeForEmail(claims)) {
+          // Google is not this address's provider → no proof of control over
+          // the existing password account. User must sign in with password.
+          return redirectWithError(res, "link_requires_password");
+        }
+        user = await User.findOneAndUpdate(
+          { _id: byEmail._id, $or: [{ googleId: "" }, { googleId: null }, { googleId: { $exists: false } }] },
+          { $set: { googleId } },
+          { new: true }
+        );
+        if (!user) return redirectWithError(res, "email_conflict");
+        logger.info("google_oauth:account_linked", { userId: String(user._id) });
+      } else {
+        user = await User.create({
+          name: String(claims.name || "").trim() || email.split("@")[0],
+          email,
+          password: randomToken(32),
+          googleId,
+          authProvider: "google",
+        });
+      }
     }
 
-    const rawToken = cryptoRandomToken(32);
-    const tokenHash = await bcryptHash(rawToken);
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+    // One-time exchange code — the JWT never appears in a URL.
+    const exchangeCode = randomToken(32);
+    await AuthExchangeCode.create({
+      codeHash: sha256hex(exchangeCode),
+      userId: user._id,
+      clientChallenge: stored.clientChallenge,
+      redirectPath: stored.redirectPath || "/",
+      expiresAt: new Date(Date.now() + EXCHANGE_TTL_MS),
+    });
+    res.redirect(`${getFrontendUrl()}/?auth_code=${encodeURIComponent(exchangeCode)}`);
+  } catch (err) {
+    const code = err instanceof GoogleAuthError ? err.code : "server_error";
+    logger.warn("google_oauth:callback_rejected", { code });
+    redirectWithError(res, code);
+  }
+});
 
+// POST /api/auth/exchange { code, verifier } → { token, user, redirectPath }
+router.post("/auth/exchange", authLimits.oauthIp, async (req, res) => {
+  try {
+    const code = String(req.body?.code || "");
+    const verifier = String(req.body?.verifier || "");
+    if (!code || !verifier || code.length > 200 || verifier.length > 200) {
+      return res.status(400).json({ error: "Invalid sign-in exchange." });
+    }
+    // Atomic single-use consumption; a failed verifier check still burns it.
+    const record = await AuthExchangeCode.findOneAndUpdate(
+      { codeHash: sha256hex(code), used: false, expiresAt: { $gt: new Date() } },
+      { $set: { used: true } },
+      { new: false }
+    );
+    if (!record || !safeEqual(sha256b64url(verifier), record.clientChallenge)) {
+      return res.status(400).json({ error: "This sign-in link is invalid or has expired. Please try again.", code: "INVALID_EXCHANGE" });
+    }
+    const user = await User.findById(record.userId);
+    if (!user) return res.status(400).json({ error: "Account not found.", code: "INVALID_EXCHANGE" });
+    res.json({ success: true, token: sign(user), user: formatUser(user), redirectPath: record.redirectPath || "/" });
+  } catch (err) {
+    res.status(500).json({ error: "Sign-in exchange failed." });
+  }
+});
+
+// ── PASSWORD RECOVERY ──────────────────────────────────────────────────────
+router.post("/auth/forgot-password", authLimits.forgotIp, authLimits.forgotAccount, async (req, res) => {
+  const normalizedEmail = String(req.body?.email || "").toLowerCase().trim();
+  if (!normalizedEmail || !EMAIL_REGEX.test(normalizedEmail) || normalizedEmail.length > 254) {
+    return res.status(400).json({ error: "A valid email address is required." });
+  }
+  // Identical response for every valid address, sent BEFORE any account
+  // lookup or e-mail work, so neither content nor timing reveals existence.
+  res.json({ success: true, message: GENERIC_FORGOT });
+
+  try {
+    const user = await User.findOne({ email: normalizedEmail }).select("_id email name").lean();
+    if (!user) return;
+    const token = randomToken(32);
+    const minutes = resetTtlMinutes();
+    // Invalidate this user's older active tokens only (never other users').
+    await PasswordReset.updateMany({ userId: user._id, used: false }, { $set: { used: true, usedAt: new Date() } });
     await PasswordReset.create({
       userId: user._id,
-      email: normalizedEmail,
-      tokenHash,
-      expiresAt,
+      tokenHash: sha256hex(token),
+      expiresAt: new Date(Date.now() + minutes * 60 * 1000),
     });
-
-    await PasswordReset.updateMany(
-      { userId: user._id, _id: { $ne: new mongoose.Types.ObjectId() }, used: false },
-      { $set: { used: true } }
-    );
-
-    res.json({ success: true, message: "If an account with that email exists, a reset link has been sent." });
+    const delivery = await sendPasswordResetEmail({ to: user.email, name: user.name, token, expiresMinutes: minutes });
+    if (!delivery.delivered) {
+      logger.warn("password_reset:email_not_delivered", { userId: String(user._id), reason: delivery.reason });
+    }
   } catch (err) {
-    console.error("[Forgot Password] Error:", err.message);
-    res.status(500).json({ error: "Failed to process reset request." });
+    logger.error("password_reset:request_failed", { reason: err?.message });
   }
 });
 
-router.post("/auth/reset-password", async (req, res) => {
+async function findActiveReset(rawToken) {
+  if (!rawToken || rawToken.length > 200) return null;
+  return PasswordReset.findOne({ tokenHash: sha256hex(rawToken), used: false, expiresAt: { $gt: new Date() } }).lean();
+}
+
+const validateHandler = async (req, res) => {
+  try {
+    const rawToken = String(req.body?.token || req.query?.token || "").trim();
+    if (!rawToken) return res.status(400).json({ valid: false, error: "Token is required." });
+    res.json({ valid: Boolean(await findActiveReset(rawToken)) });
+  } catch {
+    res.status(500).json({ valid: false, error: "Failed to validate token." });
+  }
+};
+router.get("/auth/reset-password/validate", authLimits.resetIp, validateHandler);
+router.post("/auth/reset-password/validate", authLimits.resetIp, validateHandler);
+
+router.post("/auth/reset-password", authLimits.resetIp, async (req, res) => {
   try {
     const { token, password, confirmPassword } = req.body ?? {};
     const rawToken = String(token || "").trim();
-
-    if (!rawToken || !password) {
+    if (!rawToken || typeof password !== "string") {
       return res.status(400).json({ error: "Token and new password are required." });
     }
-    if (String(password).length < 6) {
-      return res.status(400).json({ error: "Password must be at least 6 characters long." });
-    }
-    if (password !== confirmPassword) {
-      return res.status(400).json({ error: "Passwords do not match." });
-    }
+    const policyError = validatePassword(password);
+    if (policyError) return res.status(400).json({ error: policyError });
+    if (password !== confirmPassword) return res.status(400).json({ error: "Passwords do not match." });
 
-    const matchedReset = await findValidResetToken(rawToken);
-
-    if (!matchedReset) {
-      return res.status(400).json({ error: "Invalid or expired reset token." });
-    }
-
-    const user = await User.findById(matchedReset.userId);
-    if (!user) {
-      return res.status(404).json({ error: "User not found." });
-    }
-
-    user.password = String(password);
-    await user.save();
-
-    await PasswordReset.findByIdAndUpdate(matchedReset._id, { $set: { used: true } });
-    await PasswordReset.updateMany(
-      { userId: matchedReset.userId, _id: { $ne: matchedReset._id }, used: false },
-      { $set: { used: true } }
+    // Atomic single-use consumption: concurrent submissions → exactly one wins.
+    const consumed = await PasswordReset.findOneAndUpdate(
+      { tokenHash: sha256hex(rawToken), used: false, expiresAt: { $gt: new Date() } },
+      { $set: { used: true, usedAt: new Date() } },
+      { new: false }
     );
+    if (!consumed) return res.status(400).json({ error: "This reset link is invalid or has expired.", code: "INVALID_RESET_TOKEN" });
 
-    const jwtToken = sign(user);
-    res.json({ success: true, token: jwtToken, user: formatUser(user) });
+    const user = await User.findById(consumed.userId).select("+password");
+    if (!user) return res.status(400).json({ error: "This reset link is invalid or has expired.", code: "INVALID_RESET_TOKEN" });
+
+    user.password = password; // hashed by the existing bcrypt pre-save hook
+    user.tokenVersion = (user.tokenVersion || 0) + 1; // revokes every existing session
+    user.passwordChangedAt = new Date();
+    await user.save();
+    await PasswordReset.updateMany({ userId: user._id, used: false }, { $set: { used: true, usedAt: new Date() } });
+
+    const io = req.app.get("io");
+    if (io) io.in(`user:${user._id}`).disconnectSockets(true);
+    logger.info("password_reset:completed", { userId: String(user._id) });
+    res.json({ success: true, message: "Your password has been reset. Please sign in with your new password." });
   } catch (err) {
-    console.error("[Reset Password] Error:", err.message);
+    logger.error("password_reset:failed", { reason: err?.message });
     res.status(500).json({ error: "Failed to reset password." });
   }
 });
-
-router.get("/auth/reset-password/validate", async (req, res) => {
-  try {
-    const rawToken = String(req.query.token || "").trim();
-    if (!rawToken) {
-      return res.status(400).json({ valid: false, error: "Token is required." });
-    }
-
-    const matchedReset = await findValidResetToken(rawToken);
-
-    res.json({ valid: !!matchedReset });
-  } catch (err) {
-    res.status(500).json({ valid: false, error: "Failed to validate token." });
-  }
-});
-
-// ── UTILS ──────────────────────────────────────────────────────────────────────
-
-// Shared helper: find a valid password reset token by raw token value.
-// Returns the matched reset document or null.
-async function findValidResetToken(rawToken) {
-  const candidateResets = await PasswordReset.find({ used: false, expiresAt: { $gt: new Date() } })
-    .sort({ createdAt: -1 })
-    .limit(1)
-    .lean();
-
-  if (candidateResets.length > 0 && await bcryptCompare(rawToken, candidateResets[0].tokenHash)) {
-    return candidateResets[0];
-  }
-  return null;
-}
-
-function cryptoRandomToken(length) {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  let result = "";
-  const randomValues = new Uint8Array(length);
-  crypto.getRandomValues(randomValues);
-  for (let i = 0; i < length; i++) {
-    result += chars[randomValues[i] % chars.length];
-  }
-  return result;
-}
-
-async function bcryptHash(plain) {
-  const bcrypt = await import("bcryptjs");
-  return bcrypt.hash(plain, 10);
-}
-
-async function bcryptCompare(plain, hash) {
-  const bcrypt = await import("bcryptjs");
-  return bcrypt.compare(plain, hash);
-}
 
 export default router;

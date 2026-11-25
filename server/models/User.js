@@ -51,6 +51,16 @@ const UserSchema = new mongoose.Schema(
       enum: ["local", "google"],
       default: "local",
     },
+    // Phase 2: bumped on password reset (and future "log out everywhere");
+    // tokens carry it as "tv" and are rejected when it no longer matches.
+    tokenVersion: {
+      type: Number,
+      default: 0,
+    },
+    passwordChangedAt: {
+      type: Date,
+      default: null,
+    },
     chatRead: {
       // Map of "<scope>" -> ISO timestamp of the last read message
       // scope = "global" for global chat, "<teamId>" for team chat.

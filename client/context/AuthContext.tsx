@@ -1,9 +1,17 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
+import { Platform } from "react-native";
 import { getItem, setItem, deleteItem } from "../utils/storage";
 import { API_BASE_URL } from "../utils/api";
 
 const API = API_BASE_URL;
 const TOKEN_KEY = "nf_jwt";
+const GOOGLE_VERIFIER_KEY = "nf_google_verifier";
+
+function base64Url(bytes: Uint8Array): string {
+  let bin = "";
+  bytes.forEach((b) => { bin += String.fromCharCode(b); });
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
 
 export type User = {
   id: string;
@@ -28,7 +36,10 @@ export type AuthState = {
   signOut: () => Promise<void>;
   updateProfile: (data: Partial<User>) => Promise<User>;
   refreshProfile: () => Promise<void>;
-  signInWithGoogle: (idToken: string) => Promise<void>;
+  /** Starts Google sign-in (web): stores a one-time verifier and navigates to the server. */
+  startGoogleSignIn: (redirectPath?: string) => Promise<void>;
+  /** Completes Google sign-in by exchanging the one-time code (never a JWT in the URL). */
+  completeGoogleSignIn: (code: string) => Promise<string>;
   forgotPassword: (email: string) => Promise<void>;
   resetPassword: (token: string, password: string, confirmPassword: string) => Promise<void>;
 };
@@ -145,20 +156,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [token]);
 
-  const signInWithGoogle = useCallback(async (idToken: string) => {
-    await setItem(TOKEN_KEY, idToken);
-    setToken(idToken);
-    try {
-      const res = await fetch(`${API}/api/me`, {
-        headers: { Authorization: `Bearer ${idToken}` },
-      });
-      if (res.ok) {
-        const userData = await res.json();
-        setUser(userData);
-      }
-    } catch (e) {
-      console.warn("[Auth] Failed to fetch profile after Google sign-in:", e);
+  // ── Google sign-in (Phase 2): PKCE-style verifier + one-time exchange code ──
+  const startGoogleSignIn = useCallback(async (redirectPath: string = "/") => {
+    const subtle = (globalThis as any).crypto?.subtle;
+    if (Platform.OS !== "web" || !subtle || typeof window === "undefined") {
+      throw new Error("Google sign-in is currently available in the web app.");
     }
+    const bytes = new Uint8Array(32);
+    (globalThis as any).crypto.getRandomValues(bytes);
+    const verifier = base64Url(bytes);
+    const digest = new Uint8Array(await subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
+    await setItem(GOOGLE_VERIFIER_KEY, verifier);
+    const q = new URLSearchParams({ client_challenge: base64Url(digest), redirect: redirectPath });
+    window.location.href = `${API}/api/auth/google?${q.toString()}`;
+  }, []);
+
+  const completeGoogleSignIn = useCallback(async (code: string): Promise<string> => {
+    const verifier = await getItem(GOOGLE_VERIFIER_KEY);
+    await deleteItem(GOOGLE_VERIFIER_KEY);
+    if (!verifier) throw new Error("This sign-in did not start in this browser. Please try again.");
+    const res = await fetch(`${API}/api/auth/exchange`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, verifier }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error ?? "Google sign-in failed. Please try again.");
+    await setItem(TOKEN_KEY, data.token);
+    setToken(data.token);
+    setUser(data.user);
+    return data.redirectPath || "/";
   }, []);
 
   const forgotPassword = useCallback(async (email: string) => {
@@ -167,7 +194,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email: email.trim().toLowerCase() }),
     });
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       throw new Error(data.error ?? "Failed to send reset link.");
     }
@@ -179,17 +206,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token, password, confirmPassword }),
     });
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       throw new Error(data.error ?? "Failed to reset password.");
     }
-    await setItem(TOKEN_KEY, data.token);
-    setToken(data.token);
-    setUser(data.user);
+    // Phase 2: a reset revokes every session; the user signs in again.
   }, []);
 
   return (
-    <AuthContext.Provider value={{ token, user, loading, signIn, signUp, signOut, updateProfile, refreshProfile, signInWithGoogle, forgotPassword, resetPassword }}>
+    <AuthContext.Provider value={{ token, user, loading, signIn, signUp, signOut, updateProfile, refreshProfile, startGoogleSignIn, completeGoogleSignIn, forgotPassword, resetPassword }}>
       {children}
     </AuthContext.Provider>
   );

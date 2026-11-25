@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, Pressable, ScrollView, useWindowDimensions } from "react-native";
 import NexusFlowLogo from "@/components/branding/NexusFlowLogo";
+import { passwordPolicyError } from "@/utils/passwordPolicy";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/context/AuthContext";
@@ -43,9 +44,10 @@ export default function Signup() {
       toast("Valid email is required", "error");
       return;
     }
-    if (!password || password.length < 6) {
-      setErrorMsg("Password must be at least 6 characters long.");
-      toast("Password too short (min 6 chars)", "error");
+    const pwError = passwordPolicyError(password);
+    if (pwError) {
+      setErrorMsg(pwError);
+      toast(pwError, "error");
       return;
     }
     if (password !== confirmPassword) {
@@ -128,7 +130,7 @@ export default function Signup() {
                 <Field
                   label="Password"
                   icon="lock-closed-outline"
-                  placeholder="At least 6 characters"
+                  placeholder="8+ characters, letters and numbers"
                   passwordToggle
                   value={password}
                   onChangeText={(v) => { setPassword(v); setErrorMsg(null); }}
