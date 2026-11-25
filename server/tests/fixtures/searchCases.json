@@ -1,0 +1,167 @@
+{
+  "description": "Shared server/client search fixture. expected = normalised naive substring test (NFC -> lower -> NFC, query trimmed). Both test suites must agree with it.",
+  "cases": [
+    {
+      "name": "empty query",
+      "text": "Build API",
+      "query": "",
+      "expected": true
+    },
+    {
+      "name": "whitespace query",
+      "text": "Build API",
+      "query": "   ",
+      "expected": true
+    },
+    {
+      "name": "exact",
+      "text": "Build API",
+      "query": "Build API",
+      "expected": true
+    },
+    {
+      "name": "case-insensitive",
+      "text": "Build API",
+      "query": "build api",
+      "expected": true
+    },
+    {
+      "name": "substring",
+      "text": "Implement login service",
+      "query": "login",
+      "expected": true
+    },
+    {
+      "name": "no match",
+      "text": "Implement login service",
+      "query": "logout",
+      "expected": false
+    },
+    {
+      "name": "pattern longer than text",
+      "text": "API",
+      "query": "API gateway",
+      "expected": false
+    },
+    {
+      "name": "empty text",
+      "text": "",
+      "query": "x",
+      "expected": false
+    },
+    {
+      "name": "repeated chars",
+      "text": "aaaaab",
+      "query": "aab",
+      "expected": true
+    },
+    {
+      "name": "trimmed query",
+      "text": "Deploy pipeline",
+      "query": "  pipeline  ",
+      "expected": true
+    },
+    {
+      "name": "kannada",
+      "text": "ಕನ್ನಡ ಪರೀಕ್ಷೆ ಕಾರ್ಯ",
+      "query": "ಪರೀಕ್ಷೆ",
+      "expected": true
+    },
+    {
+      "name": "kannada no match",
+      "text": "ಕನ್ನಡ ಪರೀಕ್ಷೆ",
+      "query": "ತಮಿಳು",
+      "expected": false
+    },
+    {
+      "name": "kannada after ascii",
+      "text": "xಅಬ",
+      "query": "ಅಬ",
+      "expected": true
+    },
+    {
+      "name": "accent precomposed",
+      "text": "Café menu",
+      "query": "café",
+      "expected": true
+    },
+    {
+      "name": "accent decomposed query",
+      "text": "Café menu",
+      "query": "café",
+      "expected": true
+    },
+    {
+      "name": "accent decomposed text",
+      "text": "Café menu",
+      "query": "CAFÉ",
+      "expected": true
+    },
+    {
+      "name": "accent missing",
+      "text": "Café menu",
+      "query": "cafe menu",
+      "expected": false
+    },
+    {
+      "name": "emoji",
+      "text": "Deploy 🚀 now",
+      "query": "🚀",
+      "expected": true
+    },
+    {
+      "name": "emoji absent",
+      "text": "Deploy now",
+      "query": "🚀",
+      "expected": false
+    },
+    {
+      "name": "german sharp s",
+      "text": "Straße bauen",
+      "query": "straße",
+      "expected": true
+    },
+    {
+      "name": "turkish dotted capital I",
+      "text": "İstanbul sprint",
+      "query": "i̇stanbul",
+      "expected": true
+    },
+    {
+      "name": "long 255",
+      "text": "xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": true
+    },
+    {
+      "name": "long 256",
+      "text": "xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": true
+    },
+    {
+      "name": "long 257",
+      "text": "xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": true
+    },
+    {
+      "name": "long 257 miss",
+      "text": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": false
+    },
+    {
+      "name": "combining sequence",
+      "text": "ño",
+      "query": "ñ",
+      "expected": true
+    },
+    {
+      "name": "mixed script",
+      "text": "Sprint ಯೋಜನೆ 2026",
+      "query": "ಯೋಜನೆ 2026",
+      "expected": true
+    }
+  ]
+}
