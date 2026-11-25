@@ -43,20 +43,15 @@ export function analyzeScrumDependencies(tasks, sprintId = null) {
   }
 
   // Build the graph using existing infrastructure
-  const { adjList, inDegree, nodeMap } = buildGraph(tasks);
+  const { adjList, inDegree, nodeMap, selfLoops } = buildGraph(tasks);
 
-  // Run topological sort (Kahn's algorithm) — reuse existing
-  const topoResult = topologicalSort(adjList, inDegree);
+  // Run topological sort (Kahn's algorithm, deterministic min-heap) — reuse existing
+  const topoResult = topologicalSort(adjList, inDegree, { selfLoops });
 
-  // Detect cycles
-  const cyclicNodes = [];
-  if (topoResult.hasCycle) {
-    // Find nodes not in topo order (they form cycles)
-    const orderedSet = new Set(topoResult.order);
-    for (const id of adjList.keys()) {
-      if (!orderedSet.has(id)) cyclicNodes.push(id);
-    }
-  }
+  // Phase 3: distinguish real cycle participants (strongly connected
+  // components) from tasks that are merely blocked downstream of a cycle.
+  const cyclicNodes = topoResult.hasCycle ? [...(topoResult.cycleNodes ?? [])] : [];
+  const blockedByCycle = topoResult.hasCycle ? [...(topoResult.blockedByCycle ?? [])] : [];
 
   // Calculate critical path (longest path through dependency graph)
   const criticalPath = calculateCriticalPath(tasks, adjList, inDegree, topoResult.order);
@@ -79,19 +74,18 @@ export function analyzeScrumDependencies(tasks, sprintId = null) {
     isCyclic: cyclicNodes.includes(t._id.toString()),
   }));
 
+  // One entry per distinct edge (adjList is already de-duplicated). O(V + E).
   const edges = [];
-  for (const t of tasks) {
-    const deps = (t.dependencies || []).map(String);
-    for (const dep of deps) {
-      if (adjList.has(dep)) {
-        const isCrossSprint = t.sprintId?.toString() !== tasks.find((x) => x._id.toString() === dep)?.sprintId?.toString();
-        edges.push({
-          source: dep,
-          target: t._id.toString(),
-          isCrossSprint,
-          isBlocking: tasks.find((x) => x._id.toString() === dep)?.scrumStatus === "BLOCKED",
-        });
-      }
+  for (const [source, targets] of adjList) {
+    const src = nodeMap.get(source);
+    for (const target of targets) {
+      const t = nodeMap.get(target);
+      edges.push({
+        source,
+        target,
+        isCrossSprint: t?.sprintId?.toString() !== src?.sprintId?.toString(),
+        isBlocking: src?.scrumStatus === "BLOCKED",
+      });
     }
   }
 
@@ -105,9 +99,15 @@ export function analyzeScrumDependencies(tasks, sprintId = null) {
 
   return {
     graph: { nodes, edges },
-    topologicalOrder: topoResult.order,
+    // A cyclic graph has no valid complete order: only the processed prefix is
+    // exposed, explicitly labelled as partial.
+    topologicalOrder: topoResult.hasCycle ? [] : topoResult.order,
+    partialOrder: topoResult.hasCycle ? topoResult.order : undefined,
+    orderComplete: !topoResult.hasCycle,
     hasCycle: topoResult.hasCycle,
     cyclicNodes,
+    blockedByCycle,
+    cycles: topoResult.cycles ?? [],
     criticalPath,
     crossSprintDeps,
     blockingChains,

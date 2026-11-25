@@ -43,73 +43,101 @@
  *                        NO built-in Array.sort() is used anywhere.
  * Space                : O(n)   – merge buffers + O(log n) recursion stack.
  *
- * SCORE FORMULA
- * -------------
- *   priorityScore = w_u * urgency
- *                 + w_i * impact
- *                 + w_d * min(dependencyCount, DEP_CAP) / DEP_CAP
- *
- * Weights (tunable via env-vars, defaults match academic literature on
- * weighted scheduling):
- *   w_u = 0.50  (urgency dominates – deadline pressure)
- *   w_i = 0.35  (business impact)
- *   w_d = 0.15  (structural fan-in: tasks many others depend on bubble up)
- *
- * All three components are normalised to [0, 1] before weighting so the
- * final score always lies in [0, 100].
- *
- * INPUT VALIDATION
- * ----------------
- * Every raw value is clamped with Math.min/max before arithmetic so that
- * malformed documents (e.g. urgency: 999) cannot corrupt the ordering.
+ * SCORE FORMULA — see "Constants & weight configuration" below (Phase 3).
  */
 
 // --------------------------------------------------------------------------
-// Constants & weight configuration
+// Constants & weight configuration (Phase 3 — validated, applied exactly once)
 // --------------------------------------------------------------------------
+//
+// INPUT DOMAINS
+//   urgency        integer-like in [1, 5]   (missing / non-finite → 1, the minimum)
+//   impact         integer-like in [1, 5]   (missing / non-finite → 1)
+//   dependentCount ≥ 0 — number of DIRECT DEPENDENTS (tasks this task unblocks,
+//                  i.e. out-degree under the A → B "A before B" convention).
+//                  Values above DEP_CAP saturate at 1.0. (Before Phase 3 the
+//                  stored prerequisite count was used here — audit D-21.)
+//
+// NORMALISATION   u = (urgency − 1)/4,  i = (impact − 1)/4,  d = min(dep, CAP)/CAP
+// SCORE           priorityScore = round(100 · (w_u·u + w_i·i + w_d·d)),  Σw = 1
+//                 ⇒ every score is an integer in [0, 100]; all-max inputs give 100.
 
-/** Maximum dependency count used for normalisation (cap to avoid runaway). */
-const DEP_CAP = 20;
+/** Maximum dependent count used for normalisation (saturation point). */
+export const DEP_CAP = 20;
 
 /** Scale the final score to a 0–100 integer for easy UI display. */
 const SCALE = 100;
 
-/** Weight for urgency dimension (0-based, sum of all weights = 1.0). */
-const W_URGENCY = parseFloat(process.env.GREEDY_W_URGENCY ?? "0.50");
+/** Rounding tolerance (half-up rounding robust to float noise). */
+export const ROUNDING_EPS = 1e-9;
 
-/** Weight for impact dimension. */
-const W_IMPACT = parseFloat(process.env.GREEDY_W_IMPACT ?? "0.35");
+export const DEFAULT_GREEDY_WEIGHTS = Object.freeze({ urgency: 0.5, impact: 0.35, dependents: 0.15 });
 
-/** Weight for dependency-count dimension. */
-const W_DEPS = parseFloat(process.env.GREEDY_W_DEPS ?? "0.15");
+/**
+ * resolveWeights(raw, defaults) — shared weight contract.
+ * Every weight must be a finite number ≥ 0 and their sum must be > 0; the set
+ * is then normalised to sum to exactly 1. Unknown keys are ignored, missing
+ * keys take the default. Returns { weights, valid, errors }.
+ */
+export function resolveWeights(raw, defaults) {
+  const errors = [];
+  const out = {};
+  for (const key of Object.keys(defaults)) {
+    const v = raw && Object.prototype.hasOwnProperty.call(raw, key) ? Number(raw[key]) : defaults[key];
+    if (!Number.isFinite(v) || v < 0) { errors.push(`${key} must be a finite number ≥ 0`); out[key] = defaults[key]; }
+    else out[key] = v;
+  }
+  let sum = Object.values(out).reduce((a, b) => a + b, 0);
+  if (!(sum > 0)) { errors.push("weights must not all be zero"); Object.assign(out, defaults); sum = Object.values(out).reduce((a, b) => a + b, 0); }
+  if (errors.length) {
+    // Invalid configuration never mixes with valid values: fall back entirely.
+    const dSum = Object.values(defaults).reduce((a, b) => a + b, 0);
+    return { weights: Object.fromEntries(Object.entries(defaults).map(([k, v]) => [k, v / dSum])), valid: false, errors };
+  }
+  return { weights: Object.fromEntries(Object.entries(out).map(([k, v]) => [k, v / sum])), valid: true, errors };
+}
+
+const envGreedy = resolveWeights(
+  {
+    urgency: process.env.GREEDY_W_URGENCY ?? DEFAULT_GREEDY_WEIGHTS.urgency,
+    impact: process.env.GREEDY_W_IMPACT ?? DEFAULT_GREEDY_WEIGHTS.impact,
+    dependents: process.env.GREEDY_W_DEPS ?? DEFAULT_GREEDY_WEIGHTS.dependents,
+  },
+  DEFAULT_GREEDY_WEIGHTS
+);
+if (!envGreedy.valid) console.warn(`[greedyScheduler] invalid GREEDY_W_* configuration (${envGreedy.errors.join("; ")}) — using defaults.`);
+
+/** Effective (validated, normalised) greedy weights. */
+export const GREEDY_WEIGHTS = Object.freeze(envGreedy.weights);
 
 // --------------------------------------------------------------------------
 // Core algorithm
 // --------------------------------------------------------------------------
 
 /**
- * computePriorityScore
- * --------------------
- * Pure function – no side effects, deterministic, safe to call in
- * pre-save hooks, API handlers, and unit tests alike.
- *
- * @param {object} params
- * @param {number} params.urgency         Raw urgency [1..5]  (1 = low, 5 = critical)
- * @param {number} params.impact          Raw impact  [1..5]  (1 = minor, 5 = strategic)
- * @param {number} params.dependencyCount Number of tasks that list this task
- *                                        as a prerequisite (fan-in count).
- * @returns {number} Integer priority score in [0, 100].
- *
- * Complexity: O(1) – six arithmetic operations, three clamps.
+ * computePriorityComponents — the un-rounded greedy evaluation with its
+ * explanation. Pure and deterministic. O(1).
+ * @returns {{ raw: number (0..1), score: number (0..100 integer),
+ *             normalized: {urgency, impact, dependents}, inputs, weights }}
  */
-export function computePriorityScore({ urgency = 1, impact = 1, dependencyCount = 0 }) {
-  // Normalise each dimension to [0, 1].
-  const u = (clamp(urgency, 1, 5) - 1) / 4;          // maps [1..5] → [0..1]
-  const i = (clamp(impact, 1, 5) - 1) / 4;           // maps [1..5] → [0..1]
-  const d = clamp(dependencyCount, 0, DEP_CAP) / DEP_CAP; // maps [0..cap] → [0..1]
+export function computePriorityComponents({ urgency, impact, dependentCount } = {}, weights = GREEDY_WEIGHTS) {
+  const U = clampOrDefault(urgency, 1, 5, 1);
+  const I = clampOrDefault(impact, 1, 5, 1);
+  const D = clampOrDefault(dependentCount, 0, Infinity, 0);
+  const normalized = { urgency: (U - 1) / 4, impact: (I - 1) / 4, dependents: Math.min(D, DEP_CAP) / DEP_CAP };
+  const raw = weights.urgency * normalized.urgency + weights.impact * normalized.impact + weights.dependents * normalized.dependents;
+  // ROUNDING_EPS absorbs binary floating-point error at exact .5 boundaries
+  // (e.g. 32.5 evaluates to 32.49999999999999); verified against an exact
+  // integer reference for every input on the domain grid.
+  return { raw, score: Math.round(raw * SCALE + ROUNDING_EPS), normalized, inputs: { urgency: U, impact: I, dependentCount: D }, weights };
+}
 
-  const raw = W_URGENCY * u + W_IMPACT * i + W_DEPS * d;
-  return Math.round(raw * SCALE);
+/**
+ * computePriorityScore — integer greedy priority in [0, 100]. O(1).
+ * @param {{urgency?:number, impact?:number, dependentCount?:number}} params
+ */
+export function computePriorityScore(params = {}) {
+  return computePriorityComponents(params).score;
 }
 
 // --------------------------------------------------------------------------
@@ -183,7 +211,10 @@ function compareTasks(a, b) {
   const scoreDiff = (b.priorityScore ?? 0) - (a.priorityScore ?? 0);
   if (scoreDiff !== 0) return scoreDiff;
   // Tie-break: createdAt ASCENDING — older task first (FIFO fairness).
-  return new Date(a.createdAt) - new Date(b.createdAt);
+  const ta = new Date(a.createdAt).getTime(), tb = new Date(b.createdAt).getTime();
+  const ca = Number.isFinite(ta) ? ta : Infinity, cb = Number.isFinite(tb) ? tb : Infinity;
+  if (ca !== cb) return ca < cb ? -1 : 1;
+  return 0; // equal keys: Merge Sort stability keeps input order
 }
 
 /**
@@ -297,9 +328,10 @@ export function greedySortTasks(tasks) {
 // Helper
 // --------------------------------------------------------------------------
 
-/** Clamp n to [min, max]. */
-function clamp(n, min, max) {
+/** Clamp n to [min, max]; missing / non-numeric / non-finite → fallback. */
+function clampOrDefault(n, min, max, fallback) {
+  if (n === null || n === undefined || n === "") return fallback;
   const parsed = Number(n);
-  if (!Number.isFinite(parsed)) return min;
+  if (!Number.isFinite(parsed)) return fallback;
   return Math.min(Math.max(parsed, min), max);
 }

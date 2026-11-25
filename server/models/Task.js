@@ -59,7 +59,10 @@ const TaskSchema = new mongoose.Schema(
     // ── Greedy Scheduler inputs ───────────────────────────────────────────────
     urgency:         { type: Number, min: 1, max: 5, default: 1 },
     impact:          { type: Number, min: 1, max: 5, default: 1 },
-    dependencyCount: { type: Number, min: 0, default: 0 },
+    // Phase 3 (D-21): both counts are DERIVED by services/taskGraphService.js
+    // from the persisted graph (edge A → B: A must finish before B).
+    dependencyCount: { type: Number, min: 0, default: 0 }, // distinct active prerequisites (in-degree)
+    dependentCount:  { type: Number, min: 0, default: 0 }, // distinct active dependents (out-degree) — greedy input
 
     // ── Derived state versioning (Fix 3) ──────────────────────────────────────
     // StateVersion: increments on any task mutation. Clients use this to detect
@@ -235,20 +238,30 @@ TaskSchema.pre("save", function (next) {
     this.completedAt = new Date();
   }
 
-  if (this.isNew || this.isModified("urgency") || this.isModified("impact") || this.isModified("dependencyCount")) {
+  // Full document state is available here, so the greedy score is exact.
+  if (this.isNew || this.isModified("urgency") || this.isModified("impact") || this.isModified("dependentCount")) {
     this.priorityScore = computePriorityScore({
       urgency: this.urgency,
       impact: this.impact,
-      dependencyCount: this.dependencyCount,
+      dependentCount: this.dependentCount,
     });
   }
+  this.$locals.graphDirty = this.isNew || this.isModified("dependencies") || this.isModified("archivedAt") || this.isModified("teamId");
   next();
+});
+
+TaskSchema.post("save", async function (doc) {
+  if (doc.$locals?.graphDirty && doc.teamId) {
+    doc.$locals.graphDirty = false;
+    const { recomputeForTeams } = await import("../services/taskGraphService.js");
+    await recomputeForTeams([doc.teamId]);
+  }
 });
 
 // ── pre('updateOne'): versioning ──────────────────────────────────────────────
 TaskSchema.pre("updateOne", function (next) {
   const update = this.getUpdate();
-  if (update) {
+  if (update && !Array.isArray(update)) {
     if (update.stateVersion !== undefined) {
       update.$set = update.$set || {};
       update.$set.stateVersion = update.stateVersion;
@@ -277,42 +290,105 @@ TaskSchema.pre("updateOne", function (next) {
   next();
 });
 
-// ── pre('findOneAndUpdate'): recompute when update touches priority inputs ────
+// ── pre('findOneAndUpdate'): versioning ──────────────────────────────────────
+// Phase 3 (D-20): this hook used to recompute priorityScore from the update
+// payload alone, substituting DEFAULTS (urgency 1, impact 1, deps 0) for every
+// field the update did not mention. Priority is now recomputed after the write
+// from the persisted document (see priority/graph hooks below).
 TaskSchema.pre("findOneAndUpdate", function (next) {
   const update = this.getUpdate();
-  if (update) {
+  if (update && !Array.isArray(update)) {
     if (update.stateVersion !== undefined) {
       update.$set = update.$set || {};
       update.$set.stateVersion = update.stateVersion;
       delete update.stateVersion;
     }
     const set = update.$set ?? update;
-
     if (set.stateVersion === undefined && !update.$inc?.stateVersion) {
-      if (update.$inc) {
-        update.$inc.stateVersion = 1;
-      } else {
-        update.$inc = { stateVersion: 1 };
-      }
-    }
-
-    if (set.urgency !== undefined || set.impact !== undefined || set.dependencyCount !== undefined) {
-      const urgency = set.urgency ?? 1;
-      const impact  = set.impact  ?? 1;
-      const dependencyCount = set.dependencyCount ?? 0;
-      const newScore = computePriorityScore({ urgency, impact, dependencyCount });
-
-      if (update.$set) {
-        update.$set.priorityScore = newScore;
-      } else {
-        update.$set = { priorityScore: newScore };
-        delete update.urgency;
-        delete update.impact;
-        delete update.dependencyCount;
-      }
+      if (update.$inc) update.$inc.stateVersion = 1;
+      else update.$inc = { stateVersion: 1 };
     }
   }
   next();
+});
+
+// ── Phase 3: priority + dependency-graph maintenance for query writes ────────
+const PRIORITY_INPUTS = new Set(["urgency", "impact", "dependentCount"]);
+const GRAPH_INPUTS = new Set(["dependencies", "archivedAt", "teamId"]);
+
+function touchedFields(update) {
+  const keys = new Set();
+  if (!update || Array.isArray(update)) return keys;
+  for (const [k, v] of Object.entries(update)) {
+    if (k.startsWith("$")) {
+      if (v && typeof v === "object") for (const f of Object.keys(v)) keys.add(f.split(".")[0]);
+    } else keys.add(k.split(".")[0]);
+  }
+  return keys;
+}
+
+async function captureAffected(query, kind) {
+  const opts = query.getOptions?.() ?? {};
+  if (opts.__skipPriorityHook) return;
+  let priority = false, graph = false;
+  if (kind === "delete") graph = true;
+  else {
+    const keys = touchedFields(query.getUpdate());
+    priority = [...keys].some((k) => PRIORITY_INPUTS.has(k));
+    graph = [...keys].some((k) => GRAPH_INPUTS.has(k));
+  }
+  if (!priority && !graph) return;
+  const docs = await query.model
+    .find(query.getFilter(), { _id: 1, teamId: 1 }, { includeArchived: true })
+    .limit(kind === "one" ? 1 : 0)
+    .lean();
+  query.$locals = query.$locals || {};
+  query._phase3 = { priority, graph, ids: docs.map((d) => d._id), teams: docs.map((d) => d.teamId) };
+}
+
+async function applyAffected(query, res) {
+  const st = query._phase3;
+  if (!st) return;
+  query._phase3 = null;
+  const svc = await import("../services/taskGraphService.js");
+  if (st.graph) {
+    // teamId may have changed: include the post-update workspace as well.
+    const after = st.ids.length
+      ? await query.model.find({ _id: { $in: st.ids } }, { teamId: 1 }, { includeArchived: true }).lean()
+      : [];
+    await svc.recomputeForTeams([...st.teams, ...after.map((d) => d.teamId)]);
+  }
+  if (st.priority && st.ids.length) await svc.recomputePriorityScores({ _id: { $in: st.ids } });
+  // findOneAndUpdate returns the document as written by the update itself;
+  // refresh the derived fields so callers never see a stale score.
+  if (res && typeof res === "object" && res._id && (st.priority || st.graph)) {
+    const fresh = await query.model
+      .findOne({ _id: res._id }, { priorityScore: 1, dependencyCount: 1, dependentCount: 1 }, { includeArchived: true })
+      .lean();
+    if (fresh) for (const k of ["priorityScore", "dependencyCount", "dependentCount"]) {
+      if (typeof res.set === "function") res.set(k, fresh[k]); else res[k] = fresh[k];
+    }
+  }
+}
+
+for (const op of ["updateOne", "findOneAndUpdate"]) {
+  TaskSchema.pre(op, async function () { await captureAffected(this, "one"); });
+  TaskSchema.post(op, async function (res) { await applyAffected(this, res); });
+}
+TaskSchema.pre("updateMany", async function () { await captureAffected(this, "many"); });
+TaskSchema.post("updateMany", async function () { await applyAffected(this); });
+for (const op of ["deleteOne", "findOneAndDelete"]) {
+  TaskSchema.pre(op, { document: false, query: true }, async function () { await captureAffected(this, "delete"); });
+  TaskSchema.post(op, { document: false, query: true }, async function () { await applyAffected(this); });
+}
+TaskSchema.pre("deleteMany", async function () { await captureAffected(this, "delete"); });
+TaskSchema.post("deleteMany", async function () { await applyAffected(this); });
+TaskSchema.post("insertMany", async function (docs) {
+  const list = Array.isArray(docs) ? docs : [docs];
+  if (!list.length) return;
+  const svc = await import("../services/taskGraphService.js");
+  await svc.recomputePriorityScores({ _id: { $in: list.map((d) => d._id) } });
+  await svc.recomputeForTeams(list.map((d) => d.teamId));
 });
 
 // ── Compound indexes for frequent query patterns across methodologies ─────────

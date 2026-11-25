@@ -1,7 +1,6 @@
 import mongoose from "mongoose";
 import Team from "../models/Team.js";
 import Task from "../models/Task.js";
-import { computePriorityScore } from "../algorithms/greedyScheduler.js";
 import { buildGraph, topologicalSort as topoSortGraph } from "../algorithms/graphTraversal.js";
 
 import { verifyTeamAccess, isAssignableMember } from "../routes/teams.js";
@@ -105,8 +104,7 @@ export function registerTaskHandlers(io, socket) {
         title,
         urgency,
         impact,
-        dependencyCount: dependencies.length,
-        dependencies,
+        dependencies, // dependencyCount / dependentCount are derived (taskGraphService)
         source,
         ...(validCreator(socket.data.user?.id) ? { createdBy: validCreator(socket.data.user?.id) } : {}),
         ...(status          !== undefined ? { status } : {}),
@@ -191,12 +189,11 @@ export function registerTaskHandlers(io, socket) {
 
       const priorityChanging = urgency !== undefined || impact !== undefined;
       if (priorityChanging) {
-        const existing = await Task.findOne(scope).select("urgency impact dependencyCount stateVersion greedyVersion planningVersion").lean();
-        if (!existing) return ack?.({ ok: false, error: "not_found" });
-        updatePayload.urgency         = urgency ?? existing.urgency;
-        updatePayload.impact          = impact  ?? existing.impact;
-        updatePayload.dependencyCount = existing.dependencyCount;
-        updatePayload.stateVersion    = existing.stateVersion + 1;
+        // Phase 3 (D-20): write ONLY the provided factors; the model recomputes
+        // priorityScore atomically from the persisted document afterwards, so
+        // unchanged factors keep their stored values and no stale read exists.
+        if (urgency !== undefined) updatePayload.urgency = urgency;
+        if (impact !== undefined) updatePayload.impact = impact;
         updatePayload.greedyVersion   = 0;   // mark greedy result stale
         updatePayload.planningVersion = 0;   // mark planning result stale
       }
@@ -265,14 +262,12 @@ export function registerTaskHandlers(io, socket) {
       const auth = await verifyTeamAccess(teamId, socket.data.user);
       if (auth.error) return ack?.({ ok: false, error: auth.error });
 
-      const tasks = await Task.find({ teamId, status: { $ne: "done" } })
-        .select("urgency impact dependencyCount").lean();
-      let updated = 0;
-      for (const t of tasks) {
-        const newScore = computePriorityScore({ urgency: t.urgency, impact: t.impact, dependencyCount: t.dependencyCount });
-        await Task.findByIdAndUpdate(t._id, { $set: { priorityScore: newScore } });
-        updated++;
-      }
+      // Phase 3: one graph recompute + one atomic pipeline update instead of
+      // N read-modify-write round trips.
+      const { recomputeDependencyMetrics, recomputePriorityScores } = await import("../services/taskGraphService.js");
+      await recomputeDependencyMetrics(teamId);
+      const { modified } = await recomputePriorityScores({ teamId: auth.team._id, status: { $ne: "done" } });
+      const updated = modified;
       io.to(`team:${teamId}`).emit("task:priority_refreshed", { teamId, count: updated });
       ack?.({ ok: true, updated });
     } catch (e) {

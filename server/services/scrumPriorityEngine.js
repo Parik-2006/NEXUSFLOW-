@@ -103,7 +103,9 @@ export function calculateScrumPriority(item, context = {}) {
   }
 
   // ── Dependency Importance (0-100) ──────────────────────────────────────
-  const depCount = safeNum(item.dependencyCount, (item.dependencies || []).length);
+  // Phase 3 (D-21): importance = DIRECT DEPENDENTS (items this one unblocks),
+  // not the item's own prerequisite count.
+  const depCount = safeNum(item.dependentCount, 0);
   const blockingCount = safeNum(item.blockingPotential, 0);
   factors.dependencyImportance = clamp(depCount * 15 + blockingCount * 20, 0, 100);
   if (blockingCount >= 3) explanationParts.push(`Blocks ${blockingCount} items`);

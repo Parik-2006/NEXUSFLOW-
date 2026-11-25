@@ -750,7 +750,6 @@ export async function persistGeneratedTasks(teamId, projectId, proposedTasks, op
       source: "ai",
       status: "todo",
       dependencies: [],
-      dependencyCount: 0,
       ...(options.user && mongoose.isValidObjectId(options.user.id) ? { createdBy: options.user.id } : {}),
     });
 
@@ -778,8 +777,7 @@ export async function persistGeneratedTasks(teamId, projectId, proposedTasks, op
             filter: { _id: doc._id },
             update: {
               $set: {
-                dependencies: uniqueDepIds,
-                dependencyCount: uniqueDepIds.length,
+                dependencies: uniqueDepIds, // counts derived by taskGraphService
               },
             },
           },
@@ -790,6 +788,11 @@ export async function persistGeneratedTasks(teamId, projectId, proposedTasks, op
 
   if (depBulkOps.length > 0) {
     await Task.bulkWrite(depBulkOps, { ordered: false });
+    {
+      const { recomputeDependencyMetrics } = await import("./taskGraphService.js");
+      const teamIds = [...new Set(createdDocs.map(({ doc }) => String(doc.teamId)))];
+      for (const tid of teamIds) await recomputeDependencyMetrics(tid); // bulkWrite bypasses hooks
+    }
   }
 
   // 3. Third pass: Recompute Kahn's Topological Sort order

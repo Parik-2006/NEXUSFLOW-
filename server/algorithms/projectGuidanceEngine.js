@@ -303,7 +303,8 @@ function buildPhasedRoadmap(projectTitle, text, hwInfo, aiInfo) {
           impact: t.impact,
           estimatedHours: t.estimatedHours,
           businessValue: t.businessValue,
-          priorityScore: computePriorityScore({ urgency: t.urgency, impact: t.impact, dependencyCount: idx }),
+          // Proposed seeds have no persisted dependents yet (the old code passed the list index).
+          priorityScore: computePriorityScore({ urgency: t.urgency, impact: t.impact, dependentCount: 0 }),
           isCoreMvp: t.impact >= 3 || cat === "Planning" || cat === "Backend" || cat === "Hardware",
         }))
       : [];

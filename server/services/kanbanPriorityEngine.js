@@ -49,7 +49,7 @@ export function calculateKanbanPriority(task, context = {}) {
   }
 
   // 3. Dependency Importance / Blocking Potential (0-100)
-  const blockingCount = task.blockingPotential || (Array.isArray(task.dependents) ? task.dependents.length : 0);
+  const blockingCount = task.blockingPotential || (Array.isArray(task.dependents) ? task.dependents.length : Number(task.dependentCount) || 0);
   const dependencyScore = Math.min(100, blockingCount * 25);
 
   // 4. Teacher Importance Factor (0-100)

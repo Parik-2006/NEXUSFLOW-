@@ -45,7 +45,7 @@ import {
   greedySprintRanking,
 } from "./taskOptimiser.js";
 import { assignTasksToMembers, buildCostMatrix } from "./branchAndBound.js";
-import { computeTaskPriority, rankTasks } from "./taskPriorityEngine.js";
+import { computeTaskPriority, rankTasks, resolvePriorityWeights, DEFAULT_WEIGHTS as PRIORITY_DEFAULT_WEIGHTS } from "./taskPriorityEngine.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Decision Type Registry
@@ -338,13 +338,17 @@ function evaluateScoredOptions(decisionType, options, ctx, preferences, aiQualit
 // TYPE B: Task Priority — uses centralized TaskPriorityEngine
 // ─────────────────────────────────────────────────────────────────────────────
 
-// V4: Mode labels are preserved for UI compatibility. The centralized engine
-// applies its own authoritative weights; these modes now only adjust the
-// engine's weight overrides for the top-level decision call.
+// Phase 3 (D-23): every mode's weights are now PASSED to rankTasks and drive
+// the actual ranking (before Phase 3 they were only displayed). "balanced" is
+// the documented Task Intelligence 2.0 default weighting — exactly what every
+// ranking used in practice before Phase 3, so the default ranking is unchanged.
+// Modes express preference only; hard constraints (unfinished prerequisites,
+// Waterfall phase gates, Kanban WIP) are applied by the eligibility layer and
+// can never be overridden by a weight.
 const TASK_PRIORITY_MODES = {
   balanced: {
     label: "Balanced",
-    weights: { greedy: 0.50, value: 0.15, deadline: 0.15, risk: 0.10, depth: 0.05, skillGap: 0.03, overload: 0.02 },
+    weights: { ...PRIORITY_DEFAULT_WEIGHTS },
   },
   fast_delivery: {
     label: "Fast Delivery",
@@ -371,9 +375,11 @@ function evaluateTaskPriority(tasks, ctx, aiQualitative, options = {}) {
 
   const modeKey = TASK_PRIORITY_MODES[options.mode] ? options.mode : "balanced";
   const mode = TASK_PRIORITY_MODES[modeKey];
-  const weightOverrides = (options.weights && typeof options.weights === "object")
-    ? options.weights
-    : mode.weights;
+  const custom = options.weights && typeof options.weights === "object";
+  const resolved = resolvePriorityWeights(custom ? options.weights : mode.weights);
+  // Invalid custom weights are rejected (reported) and the mode's weights apply.
+  const effective = custom && !resolved.valid ? resolvePriorityWeights(mode.weights) : resolved;
+  const weightOverrides = effective.weights;
 
   // Build context for the centralized engine
   const riskTaskIds = new Set();
@@ -392,6 +398,9 @@ function evaluateTaskPriority(tasks, ctx, aiQualitative, options = {}) {
     riskTaskIds: riskTaskIds.size > 0 ? riskTaskIds : undefined,
     teamSkills: engineCtx.teamSkills,
     memberWorkload: engineCtx.memberWorkload,
+    weights: weightOverrides,
+    waterfallPhase: engineCtx.waterfallPhase,
+    wipBlocked: engineCtx.wipBlocked,
   };
 
   // Authoritative ranking from the centralized engine
@@ -402,11 +411,16 @@ function evaluateTaskPriority(tasks, ctx, aiQualitative, options = {}) {
     taskId: r._id?.toString(),
     title: r.title,
     priorityScore: r.priorityResult.score,
-    v2GreedyScore: Number(r.priorityScore ?? 0),
+    rawScore: r.priorityResult.rawScore,
+    // The greedy sub-score actually used in this computation (not a stored copy).
+    v2GreedyScore: Math.round(r.priorityResult.factors.greedy.score),
+    eligible: r.priorityResult.eligible,
+    constraints: r.priorityResult.constraints,
     priority: r.priorityResult.tier.toUpperCase(),
     urgency: r.urgency || 1,
     impact: r.impact || 1,
-    dependencyCount: r.dependencyCount || 0,
+    dependencyCount: r.dependencyCount || 0,   // direct prerequisites (in-degree)
+    dependentCount: r.dependentCount || 0,     // direct dependents (out-degree)
     status: r.status,
     dueDate: r.dueDate || r.deadline || null,
     businessValue: Number.isFinite(r.businessValue) ? r.businessValue : null,
@@ -429,11 +443,11 @@ function evaluateTaskPriority(tasks, ctx, aiQualitative, options = {}) {
       reason: t.reason,
     })),
     factors: [
-      { factor: "v2Greedy",   label: "V2 Greedy Score",   weight: weightOverrides.greedy ?? 0.35,    description: "Canonical urgency + impact + dependency fan-in score" },
+      { factor: "v2Greedy",   label: "V2 Greedy Score",   weight: weightOverrides.greedy ?? 0.35,    description: "Urgency + impact + direct dependents (tasks this one unblocks)" },
       { factor: "value",       label: "Business Value",    weight: weightOverrides.value ?? 0.15,     description: "Strategic business value of the task" },
       { factor: "deadline",    label: "Deadline Pressure", weight: weightOverrides.deadline ?? 0.20,  description: "Proximity to the task's due date" },
       { factor: "risk",        label: "Risk Reduction",    weight: weightOverrides.risk ?? 0.10,      description: "Whether completing this task reduces project risk" },
-      { factor: "depth",       label: "Dependency Depth",  weight: weightOverrides.depth ?? 0.10,     description: "How many downstream tasks depend on this task" },
+      { factor: "depth",       label: "Downstream Impact", weight: weightOverrides.depth ?? 0.10,     description: "Unique tasks that transitively wait on this task" },
       { factor: "skillGap",    label: "Skill Gap",        weight: weightOverrides.skillGap ?? 0.05,  description: "Whether the team has the required skills" },
       { factor: "overload",    label: "Workload Balance", weight: weightOverrides.overload ?? 0.05,  description: "Assignee capacity and current load" },
     ],
@@ -459,6 +473,9 @@ function evaluateTaskPriority(tasks, ctx, aiQualitative, options = {}) {
     ],
     mode: modeKey,
     modeLabel: mode.label,
+    effectiveWeights: weightOverrides,
+    weightSource: custom ? (resolved.valid ? "custom" : "mode (invalid custom weights rejected)") : "mode",
+    weightErrors: custom && !resolved.valid ? resolved.errors : [],
     taskPriorityModes: Object.fromEntries(
       Object.entries(TASK_PRIORITY_MODES).map(([k, v]) => [k, v.label])
     ),
@@ -467,7 +484,7 @@ function evaluateTaskPriority(tasks, ctx, aiQualitative, options = {}) {
       options: topTasks.slice(0, 5).map((t) => t.title),
       scores: topTasks.slice(0, 5).map((t) => [
         t.v2GreedyScore,
-        Number.isFinite(t.businessValue) ? Math.min(100, Math.round((t.businessValue / 10) * 100)) : 50,
+        t.factorBreakdown?.value?.score ?? 50,  // the value factor actually used
         t.factorBreakdown?.deadline?.score ?? 50,
         t.factorBreakdown?.risk?.score ?? 40,
         t.factorBreakdown?.depth?.score ?? 50,
@@ -597,12 +614,12 @@ function evaluateAssignment(tasks, members, ctx, aiQualitative) {
   if (!members || members.length === 0) return { error: "No members for assignment." };
 
   // Use existing assignTasksToMembers() — authoritative
-  const { assignments, totalCost, costMatrix, meta } = assignTasksToMembers(members, tasks);
+  const { assignments, unassigned = [], totalCost, costMatrix, meta } = assignTasksToMembers(members, tasks);
 
-  const memberMap = Object.fromEntries(members.map((m) => [m.userId?.toString(), m]));
+  const memberMap = Object.fromEntries(members.filter((m) => m.userId).map((m) => [m.userId?.toString(), m]));
   const taskMap = Object.fromEntries(tasks.map((t) => [t._id?.toString(), t]));
 
-  const enrichedAssignments = assignments.map(({ taskId, memberId, cost }) => {
+  const enrichedAssignments = assignments.map(({ taskId, memberId, cost, explanation }) => {
     const member = memberMap[memberId];
     const task = taskMap[taskId];
     const maxCost = 60; // theoretical max cost with all-skill-gap
@@ -615,33 +632,35 @@ function evaluateAssignment(tasks, members, ctx, aiQualitative) {
       cost,
       fitScore,
       strength: strengthLabel(fitScore),
-      reason: cost === 0
+      explanation,
+      reason: explanation?.reason ?? (cost === 0
         ? `Perfect skill match — ${member?.name} meets all skill requirements.`
-        : `Skill gap cost: ${cost} (lower = better fit). ${member?.name} is the closest available match.`,
+        : `Skill gap cost: ${cost} (lower = better fit).`),
     };
   });
 
   const reason = aiQualitative?.reason ||
-    `Branch & Bound found optimal assignments with total skill-gap cost ${totalCost}. ` +
-    `Lower cost = better skill match. ` +
-    `${meta.nodesPruned || 0} branches pruned (${meta.pruningRatio || "N/A"} efficiency).`;
+    `Branch & Bound ${meta.exact ? "proved an optimal" : "returned a best-found (not proven optimal)"} plan: ${assignments.length} assigned, ` +
+    `${unassigned.length} unassigned, total skill-gap cost ${totalCost}. ` +
+    `${meta.nodesExplored || 0} nodes explored, ${meta.nodesPruned || 0} pruned (${meta.terminationReason || "search_complete"}).`;
 
   return {
     recommendation: {
-      option: `${assignments.length} optimal assignments`,
+      option: `${assignments.length} ${meta.exact ? "optimal" : "best-found"} assignments`,
       score: Math.max(0, Math.round((1 - totalCost / Math.max(assignments.length * 10, 1)) * 100)),
       strength: strengthLabel(totalCost === 0 ? 100 : Math.max(0, 100 - totalCost * 5)),
     },
     assignments: enrichedAssignments,
     alternatives: [],
     factors: [
-      { factor: "skillMatch", label: "Skill Match",     weight: 0.70, description: "How well member skills satisfy task requirements" },
-      { factor: "workload",   label: "Workload Balance", weight: 0.30, description: "Even distribution of tasks across members" },
+      // Phase 3: the solver minimises skill-gap cost only; workload is a HARD
+      // constraint (hour capacity + per-member task cap), not a weighted factor.
+      { factor: "skillMatch", label: "Skill-gap cost (objective)", weight: 1.0, description: "Σ max(0, required − member skill) over 6 skill dimensions" },
     ],
     tradeoffs: [
       {
         option: "B&B Optimal Assignment",
-        pros: ["Minimizes total skill-gap cost", "Guarantees global optimum for available members", "Considers all skill dimensions"],
+        pros: ["Minimizes total skill-gap cost", meta.exact ? "Proven optimal under the stated constraints" : "Best plan found within the search budget (not proven optimal)", "Respects member hour capacity and a balanced per-member task limit"],
         cons: ["Does not account for member preferences", "Does not model task sequencing"],
       },
     ],
@@ -657,7 +676,7 @@ function evaluateAssignment(tasks, members, ctx, aiQualitative) {
     confidence: computeConfidence(ctx, tasks.length),
     keyFactors: ["Skill-Gap Cost Matrix", "Branch & Bound Optimality"],
     daaAlgorithmsUsed: [
-      "Branch & Bound — assignTasksToMembers() O(n! / pruning) practical O(n²–n³)",
+      "Branch & Bound — assignTasksToMembers() worst case O(mⁿ); exact up to 16 tasks / 200k nodes",
       "Cost Matrix — buildCostMatrix() O(n × m × skills)",
     ],
     meta,

@@ -2043,10 +2043,7 @@ const handleAddDependency = async (req, res) => {
     // Persist dependency
     await Task.updateOne(
       { _id: toTask._id },
-      {
-        $addToSet: { dependencies: fromTask._id },
-        $inc: { dependencyCount: 1 },
-      }
+      { $addToSet: { dependencies: fromTask._id } } // counts derived (no $inc drift on re-adds)
     );
 
     const userId = req.user?._id?.toString() || req.user?.id?.toString();
@@ -2105,10 +2102,7 @@ const handleRemoveDependency = async (req, res) => {
 
     await Task.updateOne(
       { _id: toId, $or: [{ projectId: project._id }, { teamId: team._id }] },
-      {
-        $pull: { dependencies: fromId },
-        $inc: { dependencyCount: -1 },
-      }
+      { $pull: { dependencies: fromId } }
     );
 
     res.json({
