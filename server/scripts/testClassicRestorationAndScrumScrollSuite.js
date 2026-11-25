@@ -63,7 +63,7 @@ async function runTestSuite() {
     // --------------------------------------------------------------------------
     console.log("? GROUP 1: Fix 1 ? Six-Tab Classic Navigation & Shell Isolation");
 
-    const teamPageCode = fs.readFileSync("client/app/team/[teamId].tsx", "utf-8");
+    const teamPageCode = fs.readFileSync(path.join(__dirname, "../..", "client/app/team/[teamId].tsx"), "utf-8");
 
     // 1.1 Exactly six tabs in Classic
     const classicTabsMatch = teamPageCode.includes("const CLASSIC_PRIMARY_TABS:");
@@ -107,7 +107,7 @@ async function runTestSuite() {
     report("Deep-link normalization routes Classic requests safely and prevents foreign tab access", normClassicCheck);
 
     // 1.5 Methodology normalization recognizes aliases
-    const methodologyConfigCode = fs.readFileSync("client/utils/methodologyConfig.ts", "utf-8");
+    const methodologyConfigCode = fs.readFileSync(path.join(__dirname, "../..", "client/utils/methodologyConfig.ts"), "utf-8");
     report("normalizeMethodologyId maps 'CLASSIC', 'classic', 'NEXUSFLOW', and 'V3' to CLASSIC",
       methodologyConfigCode.includes('if (s === "CLASSIC" || s === "NEXUSFLOW" || s === "V3") return "CLASSIC";')
     );
@@ -157,12 +157,12 @@ async function runTestSuite() {
     report("Boyer-Moore pattern matching finds exact substrings in task titles", bmResults.length === 1 && bmResults[0].title.includes("database") && bmNotFound.length === 0);
 
     // 2.4 Classic AI Chat Lockout verification
-    const aiOrchestratorCode = fs.readFileSync("server/socket/aiOrchestrator.js", "utf-8");
+    const aiOrchestratorCode = fs.readFileSync(path.join(__dirname, "../..", "server/socket/aiOrchestrator.js"), "utf-8");
     const aiLockoutCheck = aiOrchestratorCode.includes('if (team?.methodology === "CLASSIC") return;');
     report("Classic methodology strictly excludes @ai chatbot triggering and LLM invocation in socket layer", aiLockoutCheck);
 
     // 2.5 Classic Tasks Panel contains NO AI story generator calls
-    const classicTasksCode = fs.readFileSync("client/components/workspace/ClassicTasksPanel.tsx", "utf-8");
+    const classicTasksCode = fs.readFileSync(path.join(__dirname, "../..", "client/components/workspace/ClassicTasksPanel.tsx"), "utf-8");
     const noAiInTasks = !classicTasksCode.includes("AiTaskAssistant") &&
       !classicTasksCode.includes("onGenerateAI") &&
       !classicTasksCode.includes("aiSuggest");
@@ -173,7 +173,7 @@ async function runTestSuite() {
     // --------------------------------------------------------------------------
     console.log("\n? GROUP 3: Fix 2 ? Scrum Tasks Board Horizontal Scroll Controls");
 
-    const scrumTasksCode = fs.readFileSync("client/components/workspace/ScrumTasksPanel.tsx", "utf-8");
+    const scrumTasksCode = fs.readFileSync(path.join(__dirname, "../..", "client/components/workspace/ScrumTasksPanel.tsx"), "utf-8");
 
     // 3.1 Visible Scroll Controls
     const hasScrollControls = scrumTasksCode.includes('s.scrollControls');

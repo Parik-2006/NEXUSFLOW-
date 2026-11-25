@@ -65,7 +65,7 @@ async function main() {
   const create = await api("/api/teams", {
     method: "POST",
     headers: { Authorization: `Bearer ${owner.body.token}` },
-    body: JSON.stringify({ name: `DelSmoke-${suffix}`, projectTitle: "Test", projectDescription: "Test desc" }),
+    body: JSON.stringify({ name: `DelSmoke-${suffix}`, projectTitle: "Test", projectDescription: "Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. " }),
   });
   check("team created", create.status === 201 && create.body?._id, `status=${create.status}`);
   const teamId = create.body._id;
@@ -97,9 +97,11 @@ async function main() {
   check("no-auth DELETE is 401", delNoAuth.status === 401, `status=${delNoAuth.status}`);
 
   // Owner deletes
+  // Phase 1: owner deletion requires the exact workspace name (now archives, Phase 2).
   const delOk = await api(`/api/teams/${teamId}`, {
     method: "DELETE",
-    headers: { Authorization: `Bearer ${owner.body.token}` },
+    headers: { Authorization: `Bearer ${owner.body.token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ confirmName: create.body.name }),
   });
   check("owner DELETE is 200", delOk.status === 200, `status=${delOk.status}`);
 
@@ -109,9 +111,18 @@ async function main() {
   });
   check("GET after delete is 404", getAfter.status === 404, `status=${getAfter.status}`);
 
-  // Tasks cascaded
+  // Phase 2: DELETE archives (recoverable). Permanent deletion goes through
+  // Trash and must cascade to every owned record.
+  const purge = await api(`/api/trash/workspaces/${teamId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${owner.body.token}` },
+    body: JSON.stringify({ confirmName: create.body.name }),
+  });
+  check("owner permanent delete (Trash) is 200", purge.status === 200, `status=${purge.status}`);
+
+  // Tasks cascaded (archived documents included in the count)
   const Task = (await import("../models/Task.js")).default;
-  const taskCount = await Task.countDocuments({ teamId });
+  const taskCount = await Task.countDocuments({ teamId }).setOptions({ includeArchived: true });
   check("tasks cascaded", taskCount === 0, `leftover=${taskCount}`);
 
   // Cleanup

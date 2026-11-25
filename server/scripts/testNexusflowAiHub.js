@@ -30,9 +30,9 @@ import ResearchItem from "../models/ResearchItem.js";
 import AIConversation from "../models/AIConversation.js";
 import AIMessage from "../models/AIMessage.js";
 
+// Phase 2: callOpenAI/callGemini were removed in the OmniRoute refactor and were
+// never used by this suite; importing them crashed the script at load time.
 import {
-  callOpenAI,
-  callGemini,
   extractMemoryUpdates,
   orchestrateCopilotChat,
 } from "../services/aiOrchestrator.js";

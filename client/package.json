@@ -6,7 +6,8 @@
     "start": "expo start",
     "web": "expo start --web",
     "android": "expo start --android",
-    "ios": "expo start --ios"
+    "ios": "expo start --ios",
+    "test": "node --test --test-force-exit --experimental-transform-types --no-warnings --import ./test/node-runner.mjs \"hooks/*.test.ts\""
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.0.0",

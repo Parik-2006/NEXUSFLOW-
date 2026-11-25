@@ -98,9 +98,12 @@ const AIMessageSchema = new mongoose.Schema(
 
     // ── AI Provider Tracking ──────────────────────────────────────────────────
     // Which provider generated this response?
+    // "none" (Phase 2): no AI provider produced this content — the stored text
+    // is the graceful "AI unavailable" notice (e.g. no free-tier key configured
+    // or all providers rate-limited). Never relabelled as a real provider.
     provider: {
       type: String,
-      enum: ["openai", "gemini", "groq", "openrouter", "deterministic"],
+      enum: ["openai", "gemini", "groq", "openrouter", "deterministic", "none"],
       default: "deterministic",
     },
 

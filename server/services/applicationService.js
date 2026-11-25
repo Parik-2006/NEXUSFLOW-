@@ -309,7 +309,11 @@ export async function acceptApplication({ applicationId, leaderUser }) {
   if (!claimed) {
     throw { status: 409, message: "Application was already processed." };
   }
+  // Reflect the committed review fields on the returned application.
   application.status = claimed.status;
+  application.reviewerId = claimed.reviewerId;
+  application.reviewerName = claimed.reviewerName;
+  application.reviewedAt = claimed.reviewedAt;
 
   const added = await Team.updateOne(
     { _id: team._id, "members.userId": { $ne: candidate._id } },

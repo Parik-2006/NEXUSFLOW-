@@ -99,7 +99,14 @@ async function runTests() {
       project = await Project.findOne();
     }
     if (!project) {
-      throw new Error("No project found in database to test against.");
+      // Phase 2: isolated test DB has no pre-existing data — create a synthetic
+      // Waterfall project (its team/user are created below) instead of relying
+      // on a production project id.
+      project = await Project.create({
+        teamId: new mongoose.Types.ObjectId(),
+        title: "Artifact Persistence Fixture",
+        methodology: "WATERFALL",
+      });
     }
 
     let team = await Team.findById(project.teamId);

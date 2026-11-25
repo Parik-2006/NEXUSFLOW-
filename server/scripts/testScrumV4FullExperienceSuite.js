@@ -82,7 +82,7 @@ async function runSuite() {
     ];
 
     // Read client/app/team/[teamId].tsx to verify tabs contract
-    const teamPageContent = fs.readFileSync("client/app/team/[teamId].tsx", "utf-8");
+    const teamPageContent = fs.readFileSync(path.join(__dirname, "../..", "client/app/team/[teamId].tsx"), "utf-8");
 
     const hasAllTabsInOrder = EXPECTED_TABS.every((t) => teamPageContent.includes(`label: "${t.label}"`));
     report("Scrum navigation contains exactly the 8 required primary tabs in order", hasAllTabsInOrder);

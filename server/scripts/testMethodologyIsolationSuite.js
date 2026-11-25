@@ -73,7 +73,7 @@ async function runIsolationSuite() {
     // ── Group 1: Navigation & Routing Isolation ─────────────────────────────
     console.log("\n--- Group 1: Navigation & Deep-Link Routing Isolation ---");
 
-    const teamPageCode = fs.readFileSync("client/app/team/[teamId].tsx", "utf-8");
+    const teamPageCode = fs.readFileSync(path.join(__dirname, "../..", "client/app/team/[teamId].tsx"), "utf-8");
 
     // 1.1 Waterfall Tab Order & Definition
     const waterfallTabsMatch = teamPageCode.includes('const WATERFALL_PRIMARY_TABS:');

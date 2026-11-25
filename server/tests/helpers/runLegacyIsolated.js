@@ -5,7 +5,13 @@
  * blanked so no external provider is contacted. Each script gets a fresh
  * database name. Prints a PASS/FAIL/TIMEOUT/BLOCKED line per script.
  *
- * Usage: node tests/helpers/runLegacyIsolated.js [concurrency]
+ * Usage: node tests/helpers/runLegacyIsolated.js [concurrency] [script.js …] [--with-server]
+ *
+ * --with-server (Phase 2): also starts the real API (app.js) in-process on
+ * :4000, connected to ONE shared in-memory test database, and runs scripts
+ * sequentially with NEXUSFLOW_TEST_SERVER=1 so live-API scripts can execute.
+ * The API process uses the .env JWT secret (so script-signed tokens verify)
+ * but never MONGO_URI; AI/OAuth keys are blanked.
  */
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -17,12 +23,15 @@ import { assertSafeTestUri } from "./dbTargetGuard.js";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const serverDir = path.resolve(here, "..", "..");
 const scriptsDir = path.join(serverDir, "scripts");
-const concurrency = Number(process.argv[2] || 3);
+const withServer = process.argv.includes("--with-server");
+const args = process.argv.slice(2).filter((a) => a !== "--with-server");
+const concurrency = withServer ? 1 : Number(args[0] || 3);
+const only = args.slice(1);
 
 const scripts = fs
   .readdirSync(scriptsDir)
   .filter((f) => f.endsWith(".js") && fs.readFileSync(path.join(scriptsDir, f), "utf8").includes("_testDbGuard.js") && f !== "_testDbGuard.js")
-  .filter((f) => process.argv.length <= 3 || process.argv.slice(3).includes(f))
+  .filter((f) => !only.length || only.includes(f))
   .sort();
 
 const replSet = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
@@ -30,14 +39,34 @@ const blank = Object.fromEntries(
   ["GEMINI_API_KEY", "GEMINI_KEY", "GROQ_API_KEY", "GROQ_KEY", "OPENROUTER_API_KEY", "OPENROUTER_KEY", "GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "OPENAI_API_KEY"].map((k) => [k, ""])
 );
 
+let liveServer = null;
+let liveUri = null;
+if (withServer) {
+  const dotenv = (await import("dotenv")).default;
+  dotenv.config({ path: path.join(serverDir, ".env") });
+  Object.assign(process.env, blank, { MONGO_URI: "", NODE_ENV: "test" });
+  // Harness only: legacy scripts create many accounts from 127.0.0.1; lift the
+  // per-IP auth limits (dedicated rate-limit tests cover the real defaults).
+  for (const k of ["RATE_LIMIT_LOGIN_IP_MAX", "RATE_LIMIT_LOGIN_FAILURES_MAX", "RATE_LIMIT_SIGNUP_IP_MAX", "RATE_LIMIT_FORGOT_IP_MAX", "RATE_LIMIT_FORGOT_ACCOUNT_MAX", "RATE_LIMIT_RESET_IP_MAX", "RATE_LIMIT_OAUTH_IP_MAX"]) {
+    process.env[k] = "100000";
+  }
+  liveUri = replSet.getUri("legacy_live_test");
+  assertSafeTestUri(liveUri, { productionUri: "" });
+  const mongoose = (await import("mongoose")).default;
+  await mongoose.connect(liveUri);
+  ({ server: liveServer } = await import("../../app.js"));
+  await new Promise((resolve, reject) => { liveServer.once("error", reject); liveServer.listen(4000, "127.0.0.1", resolve); });
+  console.log("[runner] in-process API on :4000 → isolated database legacy_live_test");
+}
+
 function run(file, idx) {
-  const uri = replSet.getUri(`legacy_test_${idx}`);
+  const uri = withServer ? liveUri : replSet.getUri(`legacy_test_${idx}`);
   assertSafeTestUri(uri, { productionUri: "" });
   return new Promise((resolve) => {
     const started = Date.now();
     const child = spawn(process.execPath, [path.join(scriptsDir, file)], {
       cwd: serverDir,
-      env: { ...process.env, ...blank, MONGO_URI_TEST: uri, NEXUSFLOW_TEST_SERVER: "" },
+      env: { ...process.env, ...blank, MONGO_URI_TEST: uri, NEXUSFLOW_TEST_SERVER: withServer ? "1" : "", ...(withServer ? { TEST_BASE: "http://localhost:4000" } : {}) },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let out = "";
@@ -68,6 +97,7 @@ await Promise.all(
     }
   })
 );
+if (liveServer) await new Promise((r) => liveServer.close(() => r()));
 await replSet.stop();
 const count = (s) => results.filter((r) => r.status === s).length;
 console.log(`\nLEGACY SUMMARY: ${results.length} scripts — PASS ${count("PASS")}, FAIL ${count("FAIL")}, TIMEOUT ${count("TIMEOUT")}, BLOCKED ${count("BLOCKED")}`);

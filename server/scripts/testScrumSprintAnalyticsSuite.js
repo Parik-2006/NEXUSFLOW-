@@ -1,4 +1,6 @@
 import "./_testDbGuard.js"; // Phase 1: blocks non-test databases (must stay first)
+import { seedPhishShieldFixture } from "./fixtures/phishShieldFixture.js";
+import { fileURLToPath } from "node:url";
 /**
  * server/scripts/testScrumSprintAnalyticsSuite.js
  * ============================================================================
@@ -28,7 +30,7 @@ import Team from "../models/Team.js";
 import Project from "../models/Project.js";
 
 // Load environment
-const envPath = path.resolve("server/.env");
+const envPath = fileURLToPath(new URL("../.env", import.meta.url)); // module-relative (Phase 2)
 if (fs.existsSync(envPath)) {
   const envContent = fs.readFileSync(envPath, "utf8");
   for (const line of envContent.split("\n")) {
@@ -68,7 +70,8 @@ async function runSuite() {
 
   try {
     // Target: TEAM OP3 (PhishShield)
-    const teamId = "6ae19ab12b6004b647c971e6";
+    // Phase 2: deterministic isolated fixture replaces the hard-coded production team.
+    const teamId = (await seedPhishShieldFixture()).teamId;
     const team = await Team.findById(teamId).lean();
     assert.ok(team, `Team ${teamId} must exist`);
 

@@ -1,4 +1,6 @@
 import "./_testDbGuard.js"; // Phase 1: blocks non-test databases (must stay first)
+import { seedPhishShieldFixture } from "./fixtures/phishShieldFixture.js";
+import { fileURLToPath } from "node:url";
 /**
  * server/scripts/testScrumTeamRestorationSuite.js
  * ============================================================================
@@ -33,7 +35,7 @@ import Sprint from "../models/Sprint.js";
 import User from "../models/User.js";
 
 // Load environment
-const envPath = path.resolve("server/.env");
+const envPath = fileURLToPath(new URL("../.env", import.meta.url)); // module-relative (Phase 2)
 if (fs.existsSync(envPath)) {
   const envContent = fs.readFileSync(envPath, "utf8");
   for (const line of envContent.split("\n")) {
@@ -109,7 +111,8 @@ async function runSuite() {
 
   try {
     // Target Team: TEAM OP3 (PhishShield)
-    const teamId = "6ae19ab12b6004b647c971e6";
+    // Phase 2: deterministic isolated fixture replaces the hard-coded production team.
+    const teamId = (await seedPhishShieldFixture()).teamId;
     let team = await Team.findById(teamId);
     assert.ok(team, `Team ${teamId} must exist`);
 
@@ -159,7 +162,8 @@ async function runSuite() {
     const scrumModule = await import("../routes/scrum.js");
     const scrumRouter = scrumModule.default;
     const scrumAssignRoute = scrumRouter.stack.find(
-      (l) => l.route && l.route.path === "/capability/:id/bulk-assign" && l.route.methods.post
+      // Phase 2: Scrum route params carry an ObjectId constraint; compare the bare path.
+      (l) => l.route && String(l.route.path).replace(/\(\[0-9a-fA-F\]\{24\}\)/g, "") === "/capability/:id/bulk-assign" && l.route.methods.post
     );
     const scrumAssignHandler = scrumAssignRoute.route.stack[0].handle;
 

@@ -939,6 +939,7 @@ router.post("/ai/quiz/submit", requireAuth, async (req, res) => {
         skill: skillKey,
         score: correct,
         total: 5,
+        percentage: Math.round((correct / 5) * 100), // additive (Phase 2)
         verified,
         threshold: 3,
         difficulty: difficulty || "intermediate",

@@ -370,7 +370,8 @@ if (MONGO_URI) {
       password:           "test",
       projectTitle:       "Smart Irrigation System",
       projectDescription: "An IoT system that monitors soil moisture and automates irrigation using ESP32 and ML.",
-      members:            [{ name: "Alice", role: "Full Stack", skillLevel: "Intermediate" }],
+      // Phase 2: members require an immutable userId (schema since Phase 1); synthetic id.
+      members:            [{ userId: new mongoose.Types.ObjectId(), name: "Alice", role: "Full Stack", placeholder: true }],
     });
     testTeamId = team._id;
     if (!testTeamId) throw new Error("Team was not created");
@@ -388,7 +389,7 @@ if (MONGO_URI) {
       teamSize:       3,
       sprintWeeks:    8,
       status:         "active",
-      currentPhase:   "planning",
+      currentPhase:   "idea", // "planning" is not a valid currentPhase value
       context: {
         problemStatement: "Farmers waste water due to manual, uninformed irrigation decisions",
         targetUsers:      ["Small-scale farmers", "Agricultural extension officers"],

@@ -276,7 +276,7 @@ describe("FIX 3 — Capability Selection + Mandatory Quiz Attempt Flow", () => {
     });
 
     test("2. Capability can be selected", () => {
-      let selected: string[] = [];
+      let selected = []; // (Phase 2: TS annotation removed — this is a .js file)
       const skill = "DevOps";
       selected = [...selected, skill];
       expect(selected).toContain("DevOps");
@@ -326,7 +326,7 @@ describe("FIX 3 — Capability Selection + Mandatory Quiz Attempt Flow", () => {
   describe("Continue Button Logic", () => {
     test("10. Attempted failed quiz allows Continue", () => {
       const selectedCapabilities = ["DevOps"];
-      const attempts: Record<string, { attempted: boolean; verified: boolean }> = {
+      const attempts = {
         "DevOps": { attempted: true, verified: false }, // Failed but attempted
       };
       const allAttempted = selectedCapabilities.every(sk => attempts[sk]?.attempted);
@@ -335,7 +335,7 @@ describe("FIX 3 — Capability Selection + Mandatory Quiz Attempt Flow", () => {
 
     test("11. Unattempted selected capability blocks Continue", () => {
       const selectedCapabilities = ["DevOps", "Docker"];
-      const attempts: Record<string, { attempted: boolean; verified: boolean }> = {
+      const attempts = {
         "DevOps": { attempted: true, verified: true },
         // Docker not attempted
       };
@@ -345,7 +345,7 @@ describe("FIX 3 — Capability Selection + Mandatory Quiz Attempt Flow", () => {
 
     test("12. All selected quizzes attempted → Continue enabled", () => {
       const selectedCapabilities = ["DevOps", "Docker", "Testing"];
-      const attempts: Record<string, { attempted: boolean; verified: boolean; score: number }> = {
+      const attempts = {
         "DevOps": { attempted: true, verified: true, score: 4 },
         "Docker": { attempted: true, verified: false, score: 2 },
         "Testing": { attempted: true, verified: true, score: 5 },
@@ -356,7 +356,7 @@ describe("FIX 3 — Capability Selection + Mandatory Quiz Attempt Flow", () => {
 
     test("13. One selected capability unattempted → Continue disabled", () => {
       const selectedCapabilities = ["DevOps", "Docker", "Testing"];
-      const attempts: Record<string, { attempted: boolean; verified: boolean }> = {
+      const attempts = {
         "DevOps": { attempted: true, verified: true },
         // Docker not attempted
         "Testing": { attempted: true, verified: true },
@@ -366,7 +366,7 @@ describe("FIX 3 — Capability Selection + Mandatory Quiz Attempt Flow", () => {
     });
 
     test("14. No selected capabilities → Continue allowed", () => {
-      const selectedCapabilities: string[] = [];
+      const selectedCapabilities = [];
       const allAttempted = selectedCapabilities.length === 0 || selectedCapabilities.every(sk => false);
       expect(selectedCapabilities.length === 0 ? true : allAttempted).toBe(true);
     });
@@ -383,7 +383,7 @@ describe("FIX 3 — Capability Selection + Mandatory Quiz Attempt Flow", () => {
     });
 
     test("16. Failed skill does NOT sync to verified skills", () => {
-      const verifiedSkills: string[] = [];
+      const verifiedSkills = [];
       const score = 2;
       const isVerified = score >= 3;
       if (isVerified) verifiedSkills.push("DevOps");
@@ -418,7 +418,7 @@ describe("Integration — Complete Workspace Journey", () => {
     const selectedCapabilities = ["DevOps", "Cryptography", "Testing"];
     
     // Step 2: Verify each
-    const attempts: Record<string, { attempted: boolean; verified: boolean; score: number }> = {
+    const attempts = {
       "DevOps": { attempted: true, verified: true, score: 4 },
       "Cryptography": { attempted: true, verified: false, score: 2 },
       "Testing": { attempted: true, verified: true, score: 5 },

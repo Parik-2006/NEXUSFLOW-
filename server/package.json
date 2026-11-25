@@ -11,9 +11,12 @@
     "test:security": "node --test --test-force-exit --test-concurrency=1 \"tests/security/*.test.js\"",
     "test:integration": "node --test --test-force-exit \"tests/integration/*.test.js\"",
     "test:logic": "node scripts/testTaskPriorityEngine.js && node scripts/testScrumV4FullSuite.js && node scripts/testFixes1to5Logic.js && node scripts/testLocalAICore.js && node scripts/testDomainMethodology.js && node scripts/testReactKeyDeduplication.js",
-    "test:phase1": "npm run test:unit && npm run test:security && npm run test:integration && npm run test:logic",
+    "test:phase1": "npm run test:unit && npm run test:jest-compat && npm run test:security && npm run test:integration && npm run test:logic",
     "test:scrum": "node scripts/testScrumV4FullSuite.js",
-    "test:legacy": "node scripts/testMasterCorrections.js && node scripts/testInvitationFlow.js && node scripts/testOmniRouteZeroCostPolicy.js && node scripts/testNexusflowV3.js && node scripts/testPhase3TaskDecomposition.js && node scripts/testPhase2ProjectIntelligence.js && node scripts/testPhase1DataFoundation.js && node scripts/testPhase6Fixes.js && node scripts/testMasterRefactorFixes.js && node scripts/testAuthAndIsolation.js && node scripts/testProjectBrain.js && node scripts/testLearningLoop.js && node scripts/testRetrospective.js && node scripts/testRiskEngine.js && node scripts/testTeamHealth.js && node scripts/testPhase10Sync.js && node scripts/testOpinionSystem.js && node scripts/testNexusflowAiHub.js"
+    "test:legacy": "node scripts/testMasterCorrections.js && node scripts/testInvitationFlow.js && node scripts/testOmniRouteZeroCostPolicy.js && node scripts/testNexusflowV3.js && node scripts/testPhase3TaskDecomposition.js && node scripts/testPhase2ProjectIntelligence.js && node scripts/testPhase1DataFoundation.js && node scripts/testPhase6Fixes.js && node scripts/testMasterRefactorFixes.js && node scripts/testAuthAndIsolation.js && node scripts/testProjectBrain.js && node scripts/testLearningLoop.js && node scripts/testRetrospective.js && node scripts/testRiskEngine.js && node scripts/testTeamHealth.js && node scripts/testPhase10Sync.js && node scripts/testOpinionSystem.js && node scripts/testNexusflowAiHub.js",
+    "test:jest-compat": "node --test --test-force-exit --import ./tests/helpers/jestCompat.js \"__tests__/*.test.js\"",
+    "test:legacy:isolated": "node tests/helpers/runLegacyIsolated.js 4",
+    "test:legacy:live": "node tests/helpers/runLegacyIsolated.js 1 --with-server"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

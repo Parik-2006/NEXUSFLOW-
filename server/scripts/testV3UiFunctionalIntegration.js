@@ -6,7 +6,7 @@ import "./_testDbGuard.js"; // Phase 1: blocks non-test databases (must stay fir
 import "dotenv/config";
 import mongoose from "mongoose";
 
-const BASE_URL = "http://localhost:4000";
+const BASE_URL = process.env.TEST_BASE || "http://localhost:4000";
 
 let userA, userB, userC;
 let tokenA, tokenB, tokenC;
@@ -73,7 +73,7 @@ async function run() {
     body: JSON.stringify({
       name: `Team Alpha ${ts}`,
       projectTitle: "Smart Irrigation & Crop Analytics System",
-      projectDescription: "IoT soil moisture monitoring with automated relay pumping",
+      projectDescription: "IoT soil moisture monitoring with automated relay pumping. " + "Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. ",
       members: [
         { name: userA.name, skills: { frontend: 8, backend: 7, ml: 4, devops: 6, testing: 5, design: 5 } },
         { name: userB.name, skills: { frontend: 4, backend: 8, ml: 9, devops: 7, testing: 6, design: 3 } },

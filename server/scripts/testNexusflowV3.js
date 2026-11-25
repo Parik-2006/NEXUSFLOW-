@@ -51,7 +51,7 @@ async function createUser(name, email, password) {
   return user;
 }
 
-const BASE_URL = "http://localhost:5000";
+const BASE_URL = process.env.TEST_BASE || "http://localhost:5000";
 
 async function call(method, path, token, body) {
   const headers = { "Content-Type": "application/json", ...(token ? authHeader(token) : {}) };
@@ -156,7 +156,7 @@ async function runTests() {
     console.log("--------------------------------------------");
 
     await test("User A creates team (becomes leader)", async () => {
-      const res = await call("POST", "/api/teams", tokenA, { name: "Team Alpha" });
+      const res = await call("POST", "/api/teams", tokenA, { name: "Team Alpha", projectDescription: "Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. " });
       if (res.status !== 201) throw new Error(`Expected 201, got ${res.status}`);
       teamA = res.data;
       if (teamA.ownerId?.toString() !== userA._id.toString()) throw new Error("Owner not set");
@@ -182,9 +182,13 @@ async function runTests() {
     });
 
     await test("Non-owner can leave team with reason", async () => {
-      const memberRes = await call("POST", `/api/teams/${teamA._id}/members`, tokenA, { name: userB.name });
-      const team = memberRes.data;
-      const bobMember = team.members?.find((m) => m.name === userB.name);
+      // Phase 1/2: registered users join only with consent (invitation + acceptance).
+      const inv = await call("POST", `/api/teams/${teamA._id}/invitations`, tokenA, { email: userB.email });
+      if (inv.status !== 201) throw new Error(`Invite failed: ${inv.status}`);
+      const acc = await call("POST", `/api/invitations/${inv.data.invitation._id}/accept`, tokenB);
+      if (acc.status !== 200) throw new Error(`Accept failed: ${acc.status}`);
+      const team = (await call("GET", `/api/teams/${teamA._id}`, tokenA)).data;
+      const bobMember = team.members?.find((m) => String(m.userId) === String(userB._id));
       if (!bobMember) throw new Error("Bob not added");
 
       const leaveRes = await call("POST", `/api/teams/${teamA._id}/leave`, tokenB, { reason: "project_completed", explanation: "Done" });
@@ -239,7 +243,7 @@ async function runTests() {
 
     await test("Socket.IO room strategy documented", async () => {
       const fs = await import("fs");
-      const contract = fs.readFileSync("../NEXUSFLOW_V3_SHARED_CONTRACT.md", "utf8");
+      const contract = fs.readFileSync(new URL("../../MD FILES/NEXUSFLOW_V3_SHARED_CONTRACT.md", import.meta.url), "utf8") /* moved to MD FILES */;
       if (!contract.includes("user:{userId}")) throw new Error("User room missing");
       if (!contract.includes("team:{teamId}")) throw new Error("Team room missing");
       if (!contract.includes("project:{projectId}")) throw new Error("Project room missing");
@@ -247,7 +251,8 @@ async function runTests() {
 
     await test("Chat socket handlers registered", async () => {
       const fs = await import("fs");
-      const index = fs.readFileSync("../server/index.js", "utf8");
+      // Phase 1 moved socket wiring from index.js into app.js.
+      const index = fs.readFileSync(new URL("../app.js", import.meta.url), "utf8");
       if (!index.includes("registerChatHandlers")) throw new Error("Chat handlers not registered");
     });
 
@@ -278,9 +283,22 @@ async function runTests() {
     });
 
     await test("Team chat allows members", async () => {
-      const memberRes = await call("POST", `/api/teams/${teamA._id}/members`, tokenA, { name: userB.name });
-      const team = memberRes.data;
-      const bobMember = team.members?.find((m) => m.name === userB.name);
+      // Phase 1/2: (re-)join with consent (invitation + acceptance) unless already a member.
+      const current = (await call("GET", `/api/teams/${teamA._id}`, tokenA)).data;
+      if (!current.members?.some((m) => String(m.userId) === String(userB._id))) {
+        // Reuse a pending invitation if one exists (duplicates are rejected with 409).
+        const pending = (await call("GET", "/api/invitations", tokenB)).data;
+        let invitationId = Array.isArray(pending) ? pending.find((i) => String(i.teamId) === String(teamA._id))?._id : null;
+        if (!invitationId) {
+          const inv = await call("POST", `/api/teams/${teamA._id}/invitations`, tokenA, { email: userB.email });
+          if (inv.status !== 201) throw new Error(`Invite failed: ${inv.status} ${JSON.stringify(inv.data)}`);
+          invitationId = inv.data.invitation._id;
+        }
+        const acc = await call("POST", `/api/invitations/${invitationId}/accept`, tokenB);
+        if (acc.status !== 200) throw new Error(`Accept failed: ${acc.status}`);
+      }
+      const team = (await call("GET", `/api/teams/${teamA._id}`, tokenA)).data;
+      const bobMember = team.members?.find((m) => String(m.userId) === String(userB._id));
       if (!bobMember) throw new Error("Bob not in team");
 
       const chatRes = await call("GET", `/api/chat/team/${teamA._id}`, tokenB);
@@ -341,8 +359,8 @@ async function runTests() {
     await test("Quiz submission endpoint works", async () => {
       const res = await call("POST", "/api/ai/quiz/submit", tokenA, {
         skill: "Frontend",
-        answers: [0, 1, 0],
-        questionCount: 3,
+        answers: [0, 1, 0, 1, 0], // current rule: exactly 5 answers
+        questionCount: 5,
         difficulty: "intermediate",
       });
       if (res.status !== 200) throw new Error(`Expected 200, got ${res.status}`);

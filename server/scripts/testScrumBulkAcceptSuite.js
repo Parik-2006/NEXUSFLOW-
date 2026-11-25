@@ -1,4 +1,6 @@
 import "./_testDbGuard.js"; // Phase 1: blocks non-test databases (must stay first)
+import { seedPhishShieldFixture } from "./fixtures/phishShieldFixture.js";
+import { fileURLToPath } from "node:url";
 /**
  * server/scripts/testScrumBulkAcceptSuite.js
  * ============================================================================
@@ -26,7 +28,7 @@ import Task from "../models/Task.js";
 import Sprint from "../models/Sprint.js";
 
 // Load environment
-const envPath = path.resolve("server/.env");
+const envPath = fileURLToPath(new URL("../.env", import.meta.url)); // module-relative (Phase 2)
 if (fs.existsSync(envPath)) {
   const envContent = fs.readFileSync(envPath, "utf8");
   for (const line of envContent.split("\n")) {
@@ -102,7 +104,8 @@ async function runSuite() {
 
   try {
     // Target: TEAM OP3 (PhishShield)
-    const teamId = "6ae19ab12b6004b647c971e6";
+    // Phase 2: deterministic isolated fixture replaces the hard-coded production team.
+    const teamId = (await seedPhishShieldFixture()).teamId;
     const team = await Team.findById(teamId).lean();
     assert.ok(team, `Team ${teamId} must exist`);
 
@@ -150,7 +153,7 @@ async function runSuite() {
 
     // Find bulk-assign route handler
     const bulkRoute = router.stack.find(
-      (layer) => layer.route && layer.route.path === "/capability/:id/bulk-assign" && layer.route.methods.post
+      (layer) => layer.route && String(layer.route.path).replace(/\(\[0-9a-fA-F\]\{24\}\)/g, "") === "/capability/:id/bulk-assign" && layer.route.methods.post
     );
     assert.ok(bulkRoute, "Route POST /capability/:id/bulk-assign must be registered in scrum router");
     const handler = bulkRoute.route.stack[0].handle;

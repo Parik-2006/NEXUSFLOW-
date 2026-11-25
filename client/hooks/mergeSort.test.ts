@@ -2,7 +2,7 @@
  * mergeSort.test.ts  — NexusFlow v2
  *
  * Unit tests for the Merge Sort implementation in useTeamTasks.ts.
- * Run with:  npx jest mergeSort.test.ts
+ * Run with:  npm test   (Node built-in runner; see test/node-runner.mjs)
  *
  * These tests demonstrate:
  *   1. Correctness across all three SortMode comparators.
@@ -14,13 +14,14 @@
  * correct?"  Point to these tests.
  */
 
+// Phase 2: import the pure module (no React Native) so Node's runner can execute it.
 import {
   mergeSort,
   comparePriority,
   compareDeadline,
   compareProgress,
   SortMode,
-} from "../hooks/useTeamTasks";
+} from "../utils/taskSort";
 import type { Task } from "../hooks/useTeamTasks";
 
 // ─────────────────────────────────────────────────────────────────────────────

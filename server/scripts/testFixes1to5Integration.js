@@ -52,8 +52,8 @@ import projectRoutes from "../routes/projects.js";
 import { registerChatHandlers } from "../socket/chatHandlers.js";
 import { sign } from "../auth.js";
 
-const PORT = 4571;
-const SERVER_URL = `http://localhost:${PORT}`;
+const PORT = Number(process.env.TEST_PORT || 0); // 0 = ephemeral (Phase 2)
+let SERVER_URL = `http://localhost:${PORT}`;
 
 const TEST_USERS = [
   { email: "nexusflow.test.user1@gmail.com", name: "Test User A", skills: ["Frontend", "JavaScript", "React"] },
@@ -167,7 +167,8 @@ async function main() {
     registerChatHandlers(io, socket);
   });
   await new Promise((r) => server.listen(PORT, r));
-  console.log(`Test server up on :${PORT}`);
+  SERVER_URL = `http://localhost:${server.address().port}`;
+  console.log(`Test server up on ${SERVER_URL}`);
 
   let users, teamA, teamB, project;
   try {
@@ -488,14 +489,21 @@ async function main() {
       method: "POST",
       body: JSON.stringify({
         name: "Identity Test Workspace",
-        members: [
-          { userId: String(users[1]._id), name: users[1].name, email: users[1].email, skills: { backend: 9 } },
-          { userId: String(users[2]._id), name: users[2].name, email: users[2].email, skills: { ml: 9 } },
-        ],
+        projectDescription: "Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. Phase 2 legacy fixture description: a deterministic synthetic project used only inside the isolated test database. ",
       }),
     }, tokens[0]);
     assert([200, 201].includes(create.status), `Expected 2xx got ${create.status}`);
-    const newTeam = create.body;
+    // Phase 1/2: registered users join only with consent (invitation + acceptance).
+    for (const idx of [1, 2]) {
+      const inv = await fetchJson(`${SERVER_URL}/api/teams/${create.body._id}/invitations`, {
+        method: "POST",
+        body: JSON.stringify({ email: users[idx].email }),
+      }, tokens[0]);
+      assert(inv.status === 201, `Invite failed: ${inv.status}`);
+      const acc = await fetchJson(`${SERVER_URL}/api/invitations/${inv.body.invitation._id}/accept`, { method: "POST" }, tokens[idx]);
+      assert(acc.status === 200, `Accept failed: ${acc.status}`);
+    }
+    const newTeam = (await fetchJson(`${SERVER_URL}/api/teams/${create.body._id}`, {}, tokens[0])).body;
     const m1 = newTeam.members?.find((m) => m.name === users[1].name);
     assert(m1, "User B missing");
     assert(String(m1.userId) === String(users[1]._id) || m1.userId === String(users[1]._id), `Bad userId ${m1.userId}`);
