@@ -4,6 +4,7 @@ import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/context/AuthContext";
 import { Field, Button } from "@/components/ui";
+import NexusFlowLogo from "@/components/branding/NexusFlowLogo";
 import { useToast } from "@/components/feedback";
 import { colors, spacing, radius, font, shadow, layout } from "@/theme";
 
@@ -42,6 +43,7 @@ export default function ForgotPassword() {
     <View style={s.root}>
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
         <ScrollView contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled">
+          <NexusFlowLogo size={112} style={{ marginBottom: spacing.md }} />
           <View style={s.card}>
             <Text style={font.h2}>Forgot Password</Text>
             <Text style={s.cardSub}>

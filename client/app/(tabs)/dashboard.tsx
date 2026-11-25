@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { View, Text, ScrollView, StyleSheet, Pressable, RefreshControl } from "react-native";
+import { View, Text, ScrollView, StyleSheet, Pressable, RefreshControl, useWindowDimensions } from "react-native";
+import NexusFlowLogo from "@/components/branding/NexusFlowLogo";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -40,6 +41,9 @@ export default function Dashboard() {
   const toast = useToast();
   const confirm = useConfirm();
   const insets = useSafeAreaInsets();
+  // Compact brand mark in the header: smaller on phones so actions never overflow.
+  const { width: winWidth } = useWindowDimensions();
+  const headerLogoSize = winWidth < 480 ? 52 : winWidth < 900 ? 64 : 76;
   const [showCreate, setShowCreate] = useState(false);
   const [showJoin, setShowJoin] = useState(false);
   const [showDiscovery, setShowDiscovery] = useState(false);
@@ -82,9 +86,10 @@ export default function Dashboard() {
       message: "This permanently removes the workspace and all of its tasks. This action cannot be undone.",
       confirmLabel: "Delete Workspace",
       destructive: true,
+      requireTypedText: name,
     });
     if (!ok) return;
-    const { error } = await deleteTeam(id);
+    const { error } = await deleteTeam(id, name);
     toast(error ?? "Workspace deleted", error ? "error" : "success");
   };
 
@@ -109,13 +114,11 @@ export default function Dashboard() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
       >
         <View style={s.container}>
-          {/* Header */}
+          {/* Header: brand mark left, actions right; greeting underneath */}
           <View style={s.header}>
-            <View style={{ flex: 1 }}>
-              <Text style={s.greeting}>{greeting},</Text>
-              <Text style={font.h1}>{displayName}</Text>
-            </View>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+            <NexusFlowLogo size={headerLogoSize} />
+            <View style={{ flex: 1 }} />
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flexShrink: 1 }}>
               <Pressable
                 onPress={() => router.push("/docs" as any)}
                 hitSlop={8}
@@ -149,6 +152,10 @@ export default function Dashboard() {
                 <Avatar name={user?.name ?? "User"} size={46} image={user?.avatar || null} />
               </Pressable>
             </View>
+          </View>
+          <View style={s.greetBlock}>
+            <Text style={s.greeting}>{greeting},</Text>
+            <Text style={font.h1} numberOfLines={2}>{displayName}</Text>
           </View>
 
           {/* Command-center stats */}
@@ -296,6 +303,7 @@ const s = StyleSheet.create({
   scroll: { paddingHorizontal: spacing.lg, alignItems: "center" },
   container: { width: "100%", maxWidth: layout.maxWidth, gap: spacing.lg },
   header: { flexDirection: "row", alignItems: "center", gap: spacing.md },
+  greetBlock: { marginTop: -spacing.xs },
   greeting: { fontSize: 14, color: colors.textMuted, fontWeight: "600" },
   statsGrid: { flexDirection: "row", gap: spacing.sm },
   actions: { flexDirection: "row", gap: spacing.sm },

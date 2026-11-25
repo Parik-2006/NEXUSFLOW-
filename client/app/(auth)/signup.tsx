@@ -1,5 +1,6 @@
 import React, { useState } from "react";
-import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, Pressable, ScrollView } from "react-native";
+import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, Pressable, ScrollView, useWindowDimensions } from "react-native";
+import NexusFlowLogo from "@/components/branding/NexusFlowLogo";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/context/AuthContext";
@@ -18,6 +19,10 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export default function Signup() {
   const { signUp } = useAuth();
   const router = useRouter();
+  // Responsive brand-mark size: compact on phones, larger on desktop.
+  const { width: winWidth } = useWindowDimensions();
+  const isNarrow = winWidth < 760;
+  const logoSize = isNarrow ? Math.min(150, Math.round(winWidth * 0.4)) : 190;
   const toast = useToast();
 
   const [name, setName] = useState("");
@@ -70,10 +75,9 @@ export default function Signup() {
           <View style={s.split}>
             {/* Brand / value panel */}
             <View style={s.brandPane}>
-              <View style={s.logoRow}>
-                <View style={s.logo}><Ionicons name="git-network" size={24} color="#fff" /></View>
-                <Text style={s.wordmark}>NexusFlow</Text>
-              </View>
+              {/* Official brand mark (contains the NEXUSFLOW wordmark). Centered on
+                  narrow screens where the brand pane stacks above the form. */}
+              <NexusFlowLogo size={logoSize} style={{ alignSelf: isNarrow ? "center" : "flex-start", marginBottom: spacing.md }} />
               <Text style={s.heroTitle}>Create your account.</Text>
               <Text style={s.heroSub}>
                 Join NEXUSFLOW to plan sprints with DAA algorithms, collaborate on
@@ -165,9 +169,6 @@ const s = StyleSheet.create({
   split: { width: "100%", maxWidth: layout.maxWidth, flexDirection: "row", flexWrap: "wrap", gap: spacing.xxl, alignItems: "center", justifyContent: "center" },
 
   brandPane: { flex: 1, minWidth: 280, maxWidth: 420, gap: spacing.sm },
-  logoRow: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: spacing.lg },
-  logo: { width: 44, height: 44, borderRadius: 14, backgroundColor: colors.primary, alignItems: "center", justifyContent: "center" },
-  wordmark: { fontSize: 22, fontWeight: "800", letterSpacing: -0.5, color: colors.text },
   heroTitle: { fontSize: 34, fontWeight: "800", letterSpacing: -1, color: colors.text, lineHeight: 40 },
   heroSub: { fontSize: 15, color: colors.textMuted, lineHeight: 23, marginTop: spacing.sm },
   highlight: { flexDirection: "row", alignItems: "center", gap: 10 },
