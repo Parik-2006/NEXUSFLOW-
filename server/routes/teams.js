@@ -1444,10 +1444,20 @@ router.post("/teams/:teamId/decide", requireAuth, async (req, res) => {
       };
     }
 
+    // Phase 3 (D-23): methodology hard constraints for the eligibility layer.
+    // Waterfall: tasks outside the active phase are not executable regardless
+    // of score. (Unfinished prerequisites are always derived from allTasks.)
+    let waterfallPhase;
+    if (String(team?.methodology || "").toUpperCase() === "WATERFALL" && team?.activeProjectId) {
+      const wf = await getWaterfallPhaseStates(team.activeProjectId, team._id).catch(() => null);
+      waterfallPhase = wf?.currentPhase || undefined;
+    }
+
     const priorityContext = {
       riskTaskIds: riskTaskIds.size > 0 ? riskTaskIds : undefined,
       teamSkills: Object.keys(teamSkills).length > 0 ? teamSkills : undefined,
       memberWorkload,
+      waterfallPhase,
     };
 
     // ── Deterministic engine evaluation ───────────────────────────────────
