@@ -5,3 +5,8 @@ dist/
 *.log
 .kilo/
 server/tests/.artifacts/
+
+# Saved ChatGPT webpage the logo was extracted from (contains private account
+# identifiers). Root-level only; the real logo lives in client/assets/branding/.
+/logo.html
+/logo_files/
