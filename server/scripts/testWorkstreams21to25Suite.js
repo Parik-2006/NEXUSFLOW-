@@ -418,8 +418,12 @@ async function runSuite() {
 
     // 4. Missing Data Invariant Check (Empty Project)
     const emptyHealth = await evaluateProjectHealth2(projectB._id);
-    assert(emptyHealth.overallScore === 100, "INVARIANT: Empty project receives baseline healthy score (100) with no false alarms");
-    assert(emptyHealth.dimensions.every((d) => d.score === 100), "All 9 dimensions handle missing data deterministically");
+    // Phase 3 (D-24) expectation change: an empty project previously scored a
+    // fabricated 100 on all 9 dimensions. Missing evidence is now reported as
+    // missing (score null, INSUFFICIENT_DATA / NOT_APPLICABLE), never as perfect.
+    assert(emptyHealth.overallScore === null && emptyHealth.status === "INSUFFICIENT_DATA", "INVARIANT: Empty project is reported as insufficient data, not a fabricated healthy score");
+    assert(emptyHealth.dimensions.every((d) => d.score === null && ["INSUFFICIENT_DATA", "NOT_APPLICABLE"].includes(d.status)), "All 9 dimensions handle missing data deterministically (no fabricated scores)");
+    assert((emptyHealth.activeWarnings ?? []).length === 0, "INVARIANT: no false alarms for an empty project");
 
     // =========================================================================
     // WORKSTREAM 25: MASTER INTEGRATION CHAIN & SECURITY AUDIT

@@ -496,7 +496,8 @@ export async function computeUnifiedProjectHealth(projectIdOrTeamId, io = null) 
     schedule: { available: tasksWithDueDates > 0, reason: "no active task has a due date" },
     capacity: { available: activeTasks.length > 0 && members.length > 0, reason: "no active committed work" },
     dependencies: { available: activeTasks.length > 0, reason: "no active tasks" },
-    risk: { available: Boolean(pId), reason: "no project risk register" },
+    // An empty risk register is absence of evidence, not evidence of no risk.
+    risk: { available: Boolean(pId) && risks.length > 0, reason: "no risks recorded in the register" },
     skill: { available: requiredSkillsList.length > 0, reason: "no active task declares required skills" },
     requirements: { available: reqEval.available, applicable: reqEval.applicable, reason: reqEval.unavailableReason },
     process: { available: events.length > 0, reason: "no process events recorded yet" },

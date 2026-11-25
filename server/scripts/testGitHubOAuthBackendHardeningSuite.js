@@ -523,6 +523,11 @@ async function runSuite() {
   });
 
   await runAsyncTest("7. Exactly one active repository per workspace index constraint enforced", async () => {
+    // Phase 3 (test isolation): on a freshly created database Mongoose builds
+    // indexes asynchronously; under parallel load the duplicate insert below
+    // could run before the unique partial index existed (intermittent failure
+    // recorded in the Phase 2 report). Wait for the index build first.
+    await GitHubIntegration.init();
     const sampleToken = encryptToken("ghp_activeRepoSampleToken1234567890");
 
     await GitHubIntegration.create({

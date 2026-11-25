@@ -326,7 +326,12 @@ export async function evaluateProjectHealth2(projectId, io = null) {
     requirements: { available: reqEval.available, applicable: reqEval.applicable, reason: reqEval.unavailableReason },
     quality: { available: qualEval.available, reason: qualEval.unavailableReason },
     delivery: { available: tasks.length > 0, reason: "no tasks yet" },
-    schedule: { available: tasks.some((t) => t.dueDate || t.deadline), reason: "no task has a due date" },
+    schedule: { available: activeTasks.some((t) => t.dueDate || t.deadline), reason: "no active task has a due date" },
+    workload: { available: activeTasks.length > 0, reason: "no active committed work" },
+    capacity: { available: activeTasks.length > 0, reason: "no active committed work" },
+    dependencies: { available: activeTasks.length > 0, reason: "no active tasks" },
+    risk: { available: risks.length > 0, reason: "no risks recorded in the register" },
+    process: { available: events.length > 0, reason: "no process events recorded yet" },
   };
   const combined = combineHealthDimensions(
     dimensions.map((d) => {
@@ -338,7 +343,11 @@ export async function evaluateProjectHealth2(projectId, io = null) {
   for (const d of dimensions) {
     d.effectiveWeight = combined.effectiveWeights[d.key] ?? 0;
     const a = availableByKey[d.key];
-    if (a && !a.available) { d.score = null; d.status = d.status === "NOT_APPLICABLE" ? d.status : "INSUFFICIENT_DATA"; }
+    if (a && !a.available) {
+      d.score = null;
+      d.status = a.applicable === false ? "NOT_APPLICABLE" : "INSUFFICIENT_DATA";
+      d.explanation = `Not scored: ${a.reason}.`;
+    }
   }
   const overallScore = combined.score;
 

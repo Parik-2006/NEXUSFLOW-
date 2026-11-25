@@ -77,9 +77,12 @@ function run(file, idx) {
       clearTimeout(timer);
       const status = signal ? "TIMEOUT" : code === 0 ? "PASS" : code === 2 && out.includes("test-db-guard] BLOCKED") ? "BLOCKED" : "FAIL";
       const lines = out.trim().split(/\r?\n/);
+      // Phase 3: always surface the failing check / assertion message (the
+      // last-3-lines tail previously hid which assertion failed).
+      const failing = lines.filter((l) => /✗|❌|\[FAIL\]|FAIL:|AssertionError|message:|expected|actual/i.test(l));
       const tail = process.env.LEGACY_DETAIL === "1"
-        ? lines.filter((l) => /✗|\[FAIL\]|FAIL:|AssertionError|Error:|expected|actual|message:/i.test(l)).slice(0, 12).join("\n      ")
-        : lines.slice(-3).join(" | ").slice(0, 300);
+        ? failing.slice(0, 12).join("\n      ")
+        : (failing.length ? failing.slice(0, 4).join(" | ") : lines.slice(-3).join(" | ")).slice(0, 500);
       resolve({ file, status, code, secs: Math.round((Date.now() - started) / 1000), tail });
     });
   });

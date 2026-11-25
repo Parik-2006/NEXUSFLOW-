@@ -85,9 +85,15 @@ async function run() {
         title: "Integration Deployment",
         status: "todo",
         requiredSkills: ["devops"],
-        dependencyCount: 1,
       },
     ]);
+    // Phase 3 (D-21): dependencyCount is now DERIVED from real edges, so a
+    // bare "dependencyCount: 1" without a prerequisite is corrected to 0. Model
+    // the blocked task with a real, unfinished prerequisite instead.
+    {
+      const pre = await Task.findOne({ projectId: project._id, title: "Heavy ML Pipeline Construction" });
+      await Task.updateOne({ projectId: project._id, title: "Integration Deployment" }, { $set: { dependencies: [pre._id] } });
+    }
 
     console.log("\n[TEST 1] Running Deterministic Risk Scan...");
     const risks = await scanProjectRisks(project._id.toString());
