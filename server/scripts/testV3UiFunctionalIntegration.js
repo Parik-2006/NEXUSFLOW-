@@ -1,3 +1,4 @@
+import "./_testDbGuard.js"; // Phase 1: blocks non-test databases (must stay first)
 /**
  * testV3UiFunctionalIntegration.js
  * Comprehensive End-to-End Functional Test Suite for NexusFlow V3.0

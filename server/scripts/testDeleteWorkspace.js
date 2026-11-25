@@ -1,3 +1,4 @@
+import "./_testDbGuard.js"; // Phase 1: blocks non-test databases (must stay first)
 /**
  * scripts/testDeleteWorkspace.js
  * Smoke test for the DELETE /api/teams/:teamId endpoint after V3.0 fix.

@@ -1,3 +1,4 @@
+import "./_testDbGuard.js"; // Phase 1: blocks non-test databases (must stay first)
 /**
  * server/scripts/testRiskEngine.js
  * NEXUSFLOW 3.0 — Phase 13 Validation: Risk Intelligence Engine

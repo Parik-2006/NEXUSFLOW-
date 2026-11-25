@@ -1,3 +1,4 @@
+import "./_testDbGuard.js"; // Phase 1: blocks non-test databases (must stay first)
 /**
  * server/scripts/testV4PlanEngine.js
  * Test suite for V4 Plan, Artifacts, and DAA Requirement scoring engine.

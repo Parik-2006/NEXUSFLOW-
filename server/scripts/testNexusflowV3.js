@@ -1,3 +1,4 @@
+import "./_testDbGuard.js"; // Phase 1: blocks non-test databases (must stay first)
 /**
  * NEXUSFLOW 3.0 — Phase 1-9 Test Suite
  * Tests new features built on top of NexusFlow 2.0 baseline.

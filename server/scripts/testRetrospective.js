@@ -1,3 +1,4 @@
+import "./_testDbGuard.js"; // Phase 1: blocks non-test databases (must stay first)
 /**
  * server/scripts/testRetrospective.js
  * NEXUSFLOW 3.0 — Phase 15 Validation: AI Sprint Retrospective

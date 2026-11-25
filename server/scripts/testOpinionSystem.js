@@ -1,3 +1,4 @@
+import "./_testDbGuard.js"; // Phase 1: blocks non-test databases (must stay first)
 /**
  * server/scripts/testOpinionSystem.js
  * NEXUSFLOW 3.0 — Phase 14 Validation: Opinion Poll & Decision System

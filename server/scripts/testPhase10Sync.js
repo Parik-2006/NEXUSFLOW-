@@ -1,3 +1,4 @@
+import "./_testDbGuard.js"; // Phase 1: blocks non-test databases (must stay first)
 /**
  * server/scripts/testPhase10Sync.js
  * NEXUSFLOW 3.0 — Phase 10 Validation: Real-Time Socket Broadcast Helpers

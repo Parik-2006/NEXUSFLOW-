@@ -1,3 +1,4 @@
+import "./_testDbGuard.js"; // Phase 1: blocks non-test databases (must stay first)
 /**
  * server/scripts/testProjectBrain.js
  * NEXUSFLOW 3.0 — Phase 17 & Phase 20 Validation: Project Brain RAG Context Builder
