@@ -24,6 +24,7 @@
  * ============================================================================
  */
 
+import { combineHealthDimensions, requirementsDimension, qualityDimension } from "../algorithms/healthScoring.js";
 import mongoose from "mongoose";
 import Project from "../models/Project.js";
 import Team from "../models/Team.js";
@@ -285,21 +286,18 @@ export async function evaluateProjectHealth2(projectId, io = null) {
       : `${doneTasks.length} of ${totalTasks} tasks completed (${deliveryScore}%).`,
   };
 
-  // 9. Quality / Evidence Dimension
-  const qualityScore = totalTasks === 0
-    ? 100
-    : clamp(85 + (doneTasks.length > 0 ? 15 : 0) - (openRisks.length > 2 ? 15 : 0));
+  // 9. Quality / Evidence Dimension — Phase 3 (D-24): evidence-based (shared
+  // qualityDimension); the former near-constant 85/100 formula is removed.
+  const qualEval = qualityDimension(tasks, project.requirements || []);
   const qualityDim = {
     key: "quality",
     name: "Quality & Evidence",
-    score: qualityScore,
-    status: scoreToStatus(qualityScore),
-    signals: {
-      evidenceBackedTasks: doneTasks.length,
-    },
-    explanation: totalTasks === 0
-      ? "Baseline healthy: no quality defects or failed deliverables recorded."
-      : "Quality indicators evaluated from verification pass rates and completed deliverables.",
+    score: qualEval.score,
+    status: qualEval.available ? scoreToStatus(qualEval.score) : "INSUFFICIENT_DATA",
+    signals: qualEval.signals,
+    explanation: qualEval.available
+      ? `Quality evidence: ${qualEval.signals.subSignals.map((x) => `${x.key} ${x.value}%`).join(", ")}.`
+      : `Not scored: ${qualEval.unavailableReason}.`,
   };
 
   const dimensions = [
@@ -314,20 +312,37 @@ export async function evaluateProjectHealth2(projectId, io = null) {
     qualityDim,
   ];
 
-  // Weighted overall calculation
-  const overallScore = clamp(
-    scheduleScore * 0.18 +
-    dependenciesScore * 0.15 +
-    workloadScore * 0.12 +
-    capacityScore * 0.12 +
-    riskScore * 0.12 +
-    deliveryScore * 0.11 +
-    processScore * 0.08 +
-    requirementsDim.score * 0.06 +
-    qualityScore * 0.06
+  // Weighted overall calculation — Phase 3 (D-24): shared contract. This
+  // view keeps its own documented weight profile (it adds a workload-balance
+  // dimension); every displayed dimension now carries a real weight and
+  // evidence-less dimensions are excluded instead of scoring 100.
+  const HEALTH2_WEIGHTS = { schedule: 0.17, dependencies: 0.14, workload: 0.11, capacity: 0.11, risk: 0.11, delivery: 0.10, process: 0.08, requirements: 0.10, quality: 0.08 };
+  const reqEval = requirementsDimension(project.requirements || [], project.methodology);
+  requirementsDim.score = reqEval.score;
+  requirementsDim.status = reqEval.available ? scoreToStatus(reqEval.score) : reqEval.applicable ? "INSUFFICIENT_DATA" : "NOT_APPLICABLE";
+  requirementsDim.signals = { ...(requirementsDim.signals || {}), ...reqEval.signals };
+  if (!reqEval.available) requirementsDim.explanation = `Not scored: ${reqEval.unavailableReason}.`;
+  const availableByKey = {
+    requirements: { available: reqEval.available, applicable: reqEval.applicable, reason: reqEval.unavailableReason },
+    quality: { available: qualEval.available, reason: qualEval.unavailableReason },
+    delivery: { available: tasks.length > 0, reason: "no tasks yet" },
+    schedule: { available: tasks.some((t) => t.dueDate || t.deadline), reason: "no task has a due date" },
+  };
+  const combined = combineHealthDimensions(
+    dimensions.map((d) => {
+      const a = availableByKey[d.key] ?? { available: true };
+      return { key: d.key, score: d.score, applicable: a.applicable ?? true, available: a.available, unavailableReason: a.reason };
+    }),
+    HEALTH2_WEIGHTS
   );
+  for (const d of dimensions) {
+    d.effectiveWeight = combined.effectiveWeights[d.key] ?? 0;
+    const a = availableByKey[d.key];
+    if (a && !a.available) { d.score = null; d.status = d.status === "NOT_APPLICABLE" ? d.status : "INSUFFICIENT_DATA"; }
+  }
+  const overallScore = combined.score;
 
-  const grade = scoreToGrade(overallScore);
+  const grade = overallScore === null ? "N/A" : scoreToGrade(overallScore);
 
   // ── Early Warning Triggers & Deduplication ───────────────────────────────────
   const generatedWarnings = [];
@@ -482,7 +497,10 @@ export async function evaluateProjectHealth2(projectId, io = null) {
     domain: project.domain || "General Software",
     overallScore,
     grade,
-    status: scoreToStatus(overallScore),
+    status: overallScore === null ? "INSUFFICIENT_DATA" : scoreToStatus(overallScore),
+    confidence: combined.confidence,
+    effectiveWeights: combined.effectiveWeights,
+    excludedDimensions: combined.excluded,
     dimensions,
     activeWarnings,
     evaluatedAt: new Date(),

@@ -16,6 +16,7 @@
  * ============================================================================
  */
 
+import { combineHealthDimensions, applyCaps, requirementsDimension, qualityDimension, UNIFIED_HEALTH_WEIGHTS } from "../algorithms/healthScoring.js";
 import mongoose from "mongoose";
 import Project from "../models/Project.js";
 import Team from "../models/Team.js";
@@ -134,12 +135,16 @@ export async function computeUnifiedProjectHealth(projectIdOrTeamId, io = null) 
   const members = team?.members || [];
 
   // Query live persisted records
-  const taskQuery = [];
-  if (pId) taskQuery.push({ projectId: pId });
-  if (tId) taskQuery.push({ teamId: tId });
+  // Phase 3 (D-24): scope = tasks of THIS project plus workspace-level tasks
+  // (projectId null). Previously $or [{projectId}, {teamId}] also pulled in
+  // every other project of the workspace. Archived tasks are excluded by the
+  // archive plugin.
+  const taskFilter = tId
+    ? (pId ? { teamId: tId, $or: [{ projectId: pId }, { projectId: null }] } : { teamId: tId })
+    : { projectId: pId };
 
   const [tasks, risks, events, ghIntegration, earlyWarnings] = await Promise.all([
-    Task.find(taskQuery.length > 1 ? { $or: taskQuery } : taskQuery[0]).lean(),
+    Task.find(taskFilter).lean(),
     pId ? Risk.find({ projectId: pId }).lean() : [],
     pId ? ProjectEvent.find({ projectId: pId }).sort({ createdAt: -1 }).limit(50).lean() : [],
     pId ? GitHubIntegration.findOne({ projectId: pId, isActive: true }).lean() : null,
@@ -169,15 +174,15 @@ export async function computeUnifiedProjectHealth(projectIdOrTeamId, io = null) 
   });
 
   // 2. Blocked tasks: accurately defined as active tasks whose direct prerequisite dependencies are NOT yet done
+  // A prerequisite blocks only if it exists in the scoped active task set and is
+  // not done (deleted / archived / foreign references no longer block forever).
+  const knownTaskIds = new Set(tasks.map((t) => t._id.toString()));
   const blockedTasks = activeTasks.filter((t) => {
     if (t.isBlocked) return true;
-    if (Array.isArray(t.dependencies) && t.dependencies.length > 0) {
-      return t.dependencies.some((dep) => {
-        const dId = (typeof dep === "object" ? dep._id : dep)?.toString();
-        return !doneTaskIds.has(dId);
-      });
-    }
-    return false;
+    return (t.dependencies ?? []).some((dep) => {
+      const dId = (typeof dep === "object" ? dep._id : dep)?.toString();
+      return dId && dId !== t._id.toString() && knownTaskIds.has(dId) && !doneTaskIds.has(dId);
+    });
   });
 
   // 3. Workload and Capacity
@@ -458,21 +463,16 @@ export async function computeUnifiedProjectHealth(projectIdOrTeamId, io = null) 
     explanation: processExplanation,
   };
 
-  // Dimension 9: Quality & Delivery Evidence
-  const qualityScore = totalTasks === 0
-    ? 100
-    : clamp(85 + (doneTasks.length > 0 ? 15 : 0) - (openRisks.length > 2 ? 15 : 0));
+  // Dimension 9: Quality & Verification Evidence — Phase 3 (D-24): the former
+  // near-constant formula (85 + 15 once any task was done) is replaced by
+  // qualityDimension() evidence below; score/explanation are filled there.
   const qualityDim = {
     key: "quality",
     name: "Quality & Verification Evidence",
-    score: qualityScore,
-    status: scoreToStatus(qualityScore),
-    signals: {
-      evidenceTasksCount: doneTasks.length,
-    },
-    explanation: totalTasks === 0
-      ? "Baseline healthy: verification criteria ready for testing."
-      : "Deliverable evidence evaluated from acceptance criteria checks and completed verification.",
+    score: null,
+    status: "INSUFFICIENT_DATA",
+    signals: {},
+    explanation: "",
   };
 
   const dimensions = [
@@ -487,48 +487,83 @@ export async function computeUnifiedProjectHealth(projectIdOrTeamId, io = null) 
     qualityDim,
   ];
 
-  // Weighted canonical overall score
-  const weightedScore = clamp(
-    deliveryScore * 0.18 +
-    scheduleScore * 0.15 +
-    capacityScore * 0.15 +
-    dependenciesScore * 0.14 +
-    riskScore * 0.12 +
-    skillCoveragePercent * 0.10 +
-    processScore * 0.08 +
-    qualityScore * 0.08
+  // ── Phase 3 (D-24): evidence-aware, methodology-aware weighting ────────────
+  const reqEval = requirementsDimension(project?.requirements || [], methodology);
+  const qualEval = qualityDimension(tasks, project?.requirements || []);
+  const tasksWithDueDates = activeTasks.filter((t) => t.dueDate || t.deadline).length;
+  const availability = {
+    delivery: { available: totalTasks > 0, reason: "no tasks yet" },
+    schedule: { available: tasksWithDueDates > 0, reason: "no active task has a due date" },
+    capacity: { available: activeTasks.length > 0 && members.length > 0, reason: "no active committed work" },
+    dependencies: { available: activeTasks.length > 0, reason: "no active tasks" },
+    risk: { available: Boolean(pId), reason: "no project risk register" },
+    skill: { available: requiredSkillsList.length > 0, reason: "no active task declares required skills" },
+    requirements: { available: reqEval.available, applicable: reqEval.applicable, reason: reqEval.unavailableReason },
+    process: { available: events.length > 0, reason: "no process events recorded yet" },
+    quality: { available: qualEval.available, reason: qualEval.unavailableReason },
+  };
+  // Requirements and quality dimensions now carry evidence-based scores.
+  requirementsDim.score = reqEval.score;
+  requirementsDim.signals = { ...requirementsDim.signals, ...reqEval.signals };
+  requirementsDim.explanation = reqEval.available
+    ? `${reqEval.signals.baselinedRequirements} of ${reqEval.signals.activeRequirements} active requirements are baselined (approved, in progress or verified).`
+    : `Not scored: ${reqEval.unavailableReason}.`;
+  qualityDim.score = qualEval.score;
+  qualityDim.signals = qualEval.signals;
+  qualityDim.explanation = qualEval.available
+    ? `Quality evidence: ${qualEval.signals.subSignals.map((x) => `${x.key} ${x.value}%`).join(", ")}.`
+    : `Not scored: ${qualEval.unavailableReason}.`;
+
+  for (const d of dimensions) {
+    const a = availability[d.key] ?? { available: true };
+    d.applicable = a.applicable ?? true;
+    d.available = Boolean(a.available) && d.applicable;
+    if (!d.available) {
+      d.score = null;
+      d.status = d.applicable ? "INSUFFICIENT_DATA" : "NOT_APPLICABLE";
+      d.unavailableReason = a.reason;
+      if (!["requirements", "quality"].includes(d.key)) d.explanation = `Not scored: ${a.reason}.`;
+    } else {
+      d.status = scoreToStatus(d.score);
+    }
+  }
+  const combined = combineHealthDimensions(
+    dimensions.map((d) => ({ key: d.key, score: d.score, applicable: d.applicable, available: d.available, unavailableReason: d.unavailableReason })),
+    UNIFIED_HEALTH_WEIGHTS
   );
+  for (const d of dimensions) {
+    d.baseWeight = UNIFIED_HEALTH_WEIGHTS[d.key] ?? 0;
+    d.effectiveWeight = combined.effectiveWeights[d.key] ?? 0;
+    d.contribution = combined.contributions[d.key] ?? 0;
+  }
 
   // ── Transparent Deterministic Severity Safeguards (Prompt 3.4) ─────────────
-  // A project with severe capacity overload (0/100) and low completion (10%)
-  // must NOT show an optimistic B grade (78/100) just because unrelated fields are 100.
-  let overallScore = weightedScore;
+  // Caps are applied AFTER weighting and reported (uncappedScore, appliedCaps).
   const criticalImpairments = [];
-
-  if (capacityScore <= 20 && totalActiveHours >= totalTeamCapacity * 1.5) {
+  if (availability.capacity.available && capacityScore <= 20 && totalActiveHours >= totalTeamCapacity * 1.5) {
     criticalImpairments.push("Severe capacity deficit: active commitments exceed team capacity by >50%");
   }
-  if (deliveryScore <= 15 && totalTasks >= 5) {
+  if (availability.delivery.available && deliveryScore <= 15 && totalTasks >= 5) {
     criticalImpairments.push("Early execution stage: over 85% of total project workload remains unfinished");
   }
-  if (dependenciesScore <= 30 && blockedTasks.length >= 3) {
+  if (availability.dependencies.available && dependenciesScore <= 30 && blockedTasks.length >= 3) {
     criticalImpairments.push("Substantial dependency congestion: multiple active tasks blocked by prerequisites");
   }
+  const caps = [];
+  if (criticalImpairments.length >= 2) caps.push({ cap: 45, reason: `${criticalImpairments.length} critical impairments` });
+  else if (criticalImpairments.length === 1 && capacityScore <= 20 && availability.capacity.available) caps.push({ cap: 48, reason: criticalImpairments[0] });
+  else if (criticalImpairments.length === 1) caps.push({ cap: 54, reason: criticalImpairments[0] });
+  const capped = applyCaps(combined.score, caps);
+  const overallScore = capped.score;
 
-  if (criticalImpairments.length >= 2) {
-    overallScore = Math.min(overallScore, 45); // Cap at Grade D/F
-  } else if (criticalImpairments.length === 1 && capacityScore <= 20) {
-    overallScore = Math.min(overallScore, 48); // Cap at Grade D
-  } else if (criticalImpairments.length === 1) {
-    overallScore = Math.min(overallScore, 54);
-  }
-
-  const grade = scoreToGrade(overallScore);
-  const status = scoreToStatus(overallScore);
+  const grade = overallScore === null ? "N/A" : scoreToGrade(overallScore);
+  const status = overallScore === null ? "INSUFFICIENT_DATA" : scoreToStatus(overallScore);
 
   // Concise Project Health Summary
   let summary = "";
-  if (overallScore >= 80) {
+  if (overallScore === null) {
+    summary = "Not enough project evidence yet to compute a health score. Add tasks, deadlines or requirements to begin tracking.";
+  } else if (overallScore >= 80) {
     summary = `Project is in good health with steady ${terms.paceLabel.toLowerCase()} and capacity balanced within limits.`;
   } else if (overallScore >= 60) {
     summary = `Project execution is progressing, but requires attention on ${criticalImpairments[0] || "workload capacity and prerequisite completion"}.`;
@@ -682,6 +717,15 @@ export async function computeUnifiedProjectHealth(projectIdOrTeamId, io = null) 
     calculatedAt: new Date().toISOString(),
     summary,
     criticalFactors: criticalImpairments,
+    // Phase 3 explainability
+    uncappedScore: capped.uncappedScore,
+    appliedCaps: capped.appliedCaps,
+    rawScore: combined.rawScore,
+    confidence: combined.confidence,
+    evidenceCoverage: combined.evidenceCoverage,
+    excludedDimensions: combined.excluded,
+    effectiveWeights: combined.effectiveWeights,
+    scoringContract: "Health = Σ w'·s over applicable, evidence-backed dimensions; w' = base weight renormalised; caps applied after weighting.",
     warnings,
     dimensions,
     teamExecution,

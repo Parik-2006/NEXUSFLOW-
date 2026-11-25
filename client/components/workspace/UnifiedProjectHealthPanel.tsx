@@ -36,10 +36,13 @@ import { getSocket } from "@/services/socket";
 interface HealthDimension {
   key: string;
   name: string;
-  score: number;
-  status: "HEALTHY" | "NEEDS_ATTENTION" | "CRITICAL";
+  score: number | null; // null = not scored (no evidence / not applicable)
+  status: "HEALTHY" | "NEEDS_ATTENTION" | "CRITICAL" | "INSUFFICIENT_DATA" | "NOT_APPLICABLE";
   explanation: string;
   signals?: any;
+  available?: boolean;
+  effectiveWeight?: number;
+  contribution?: number;
 }
 
 interface WarningItem {
@@ -108,10 +111,14 @@ interface TeamExecutionData {
 interface UnifiedHealthData {
   projectId?: string;
   teamId?: string;
-  overallScore: number;
+  overallScore: number | null;
   grade: string;
-  status: "HEALTHY" | "NEEDS_ATTENTION" | "CRITICAL";
+  status: "HEALTHY" | "NEEDS_ATTENTION" | "CRITICAL" | "INSUFFICIENT_DATA";
   methodology: string;
+  uncappedScore?: number | null;
+  appliedCaps?: { cap: number; reason: string }[];
+  confidence?: "high" | "medium" | "low" | "insufficient";
+  evidenceCoverage?: number;
   calculatedAt: string;
   summary: string;
   criticalFactors: string[];
@@ -266,7 +273,7 @@ export default function UnifiedProjectHealthPanel({
 
   if (!data) return null;
 
-  const scoreColor = STATUS_COLOR_MAP[data.status] || colors.primary;
+  const scoreColor = (STATUS_COLOR_MAP as Record<string, string>)[data.status] || colors.textMuted;
   const gradeColor =
     data.grade === "A"
       ? colors.success
@@ -319,7 +326,7 @@ export default function UnifiedProjectHealthPanel({
         {/* Score & Gauge Section */}
         <View style={s.scoreRow}>
           <View style={[s.scoreCircle, { borderColor: scoreColor }]}>
-            <Text style={[s.scoreNum, { color: scoreColor }]}>{data.overallScore}</Text>
+            <Text style={[s.scoreNum, { color: scoreColor }]}>{data.overallScore ?? "—"}</Text>
             <Text style={s.scoreDenom}>/100</Text>
           </View>
 
@@ -335,6 +342,17 @@ export default function UnifiedProjectHealthPanel({
             </View>
 
             <Text style={s.summaryTxt}>{data.summary}</Text>
+            {data.confidence ? (
+              <Text style={s.timestampTxt}>
+                Evidence confidence: {data.confidence}
+                {typeof data.evidenceCoverage === "number" ? ` (${Math.round(data.evidenceCoverage * 100)}% of the weighting is evidence-backed)` : ""}
+              </Text>
+            ) : null}
+            {data.appliedCaps && data.appliedCaps.length > 0 ? (
+              <Text style={s.timestampTxt}>
+                Capped at {data.appliedCaps[data.appliedCaps.length - 1].cap} from {data.uncappedScore}: {data.appliedCaps.map((c) => c.reason).join("; ")}
+              </Text>
+            ) : null}
 
             <Text style={s.timestampTxt}>
               Last calculated: {new Date(data.calculatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
@@ -422,25 +440,33 @@ export default function UnifiedProjectHealthPanel({
             <Ionicons name="layers-outline" size={18} color={colors.primary} />
             <Text style={s.sectionTitle}>Deterministic Health Dimensions</Text>
           </View>
-          <Text style={[font.caption, { color: colors.textMuted }]}>8 Evaluated Signals</Text>
+          <Text style={[font.caption, { color: colors.textMuted }]}>
+            {data.dimensions.filter((d) => d.score !== null && d.score !== undefined).length} of {data.dimensions.length} scored
+          </Text>
         </View>
 
         <View style={s.dimGrid}>
           {data.dimensions.map((dim) => {
-            const dimColor = STATUS_COLOR_MAP[dim.status] || colors.primary;
+            const scored = dim.score !== null && dim.score !== undefined;
+            const dimColor = scored ? ((STATUS_COLOR_MAP as Record<string, string>)[dim.status] || colors.primary) : colors.textMuted;
             return (
               <View key={dim.key} style={s.dimCard}>
                 <View style={s.dimHead}>
                   <Text style={s.dimName} numberOfLines={1}>{dim.name}</Text>
                   <View style={[s.dimStatusBadge, { backgroundColor: dimColor + "15" }]}>
-                    <Text style={[s.dimStatusTxt, { color: dimColor }]}>{dim.score}%</Text>
+                    <Text style={[s.dimStatusTxt, { color: dimColor }]}>{scored ? `${dim.score}%` : "No data"}</Text>
                   </View>
                 </View>
 
                 {/* Progress bar */}
                 <View style={s.dimBarTrack}>
-                  <View style={[s.dimBarFill, { width: `${dim.score}%`, backgroundColor: dimColor }]} />
+                  <View style={[s.dimBarFill, { width: `${scored ? (dim.score as number) : 0}%`, backgroundColor: dimColor }]} />
                 </View>
+                {typeof dim.effectiveWeight === "number" ? (
+                  <Text style={[font.caption, { color: colors.textMuted }]}>
+                    Weight {Math.round(dim.effectiveWeight * 100)}%{scored && typeof dim.contribution === "number" ? ` · contributes ${dim.contribution.toFixed(1)} pts` : " · excluded"}
+                  </Text>
+                ) : null}
 
                 <Text style={s.dimExplanation} numberOfLines={3}>{dim.explanation}</Text>
               </View>

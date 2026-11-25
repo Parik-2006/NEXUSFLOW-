@@ -32,8 +32,8 @@ import { getSocket } from "@/services/socket";
 interface HealthDimension {
   key: string;
   name: string;
-  score: number;
-  status: "HEALTHY" | "NEEDS_ATTENTION" | "CRITICAL";
+  score: number | null;
+  status: "HEALTHY" | "NEEDS_ATTENTION" | "CRITICAL" | "INSUFFICIENT_DATA" | "NOT_APPLICABLE";
   explanation: string;
   signals: any;
 }
@@ -54,9 +54,9 @@ interface EarlyWarningItem {
 }
 
 interface Health2Data {
-  overallScore: number;
+  overallScore: number | null;
   grade: string;
-  status: "HEALTHY" | "NEEDS_ATTENTION" | "CRITICAL";
+  status: "HEALTHY" | "NEEDS_ATTENTION" | "CRITICAL" | "INSUFFICIENT_DATA";
   dimensions: HealthDimension[];
   activeWarnings: EarlyWarningItem[];
 }
@@ -163,7 +163,7 @@ export default function ProjectHealth2Panel({ projectId }: { projectId: string }
           </View>
           <View style={styles.gradeBadge}>
             <Text style={[styles.gradeText, { color: gradeColor }]}>{data?.grade || "-"}</Text>
-            <Text style={styles.scoreNumber}>{data?.overallScore ?? 0}/100</Text>
+            <Text style={styles.scoreNumber}>{data?.overallScore ?? "—"}/100</Text>
           </View>
         </View>
       </Card>
@@ -272,9 +272,9 @@ export default function ProjectHealth2Panel({ projectId }: { projectId: string }
               <Card key={dim.key} style={styles.dimCard}>
                 <View style={styles.dimHeader}>
                   <Text style={styles.dimName}>{dim.name}</Text>
-                  <Text style={[styles.dimScore, { color: barColor }]}>{dim.score}/100</Text>
+                  <Text style={[styles.dimScore, { color: barColor }]}>{dim.score === null ? "No data" : `${dim.score}/100`}</Text>
                 </View>
-                <ProgressBar value={dim.score / 100} color={barColor} />
+                <ProgressBar value={(dim.score ?? 0) / 100} color={barColor} />
                 <Text style={styles.dimExplanation}>{dim.explanation}</Text>
               </Card>
             );
