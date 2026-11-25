@@ -12,6 +12,7 @@ import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Card, Badge } from "@/components/ui";
 import { colors, spacing, radius, font, layout } from "@/theme";
+import benchmarkData from "@/constants/daaBenchmarks.json";
 
 type Viz = "bars" | "graph" | "grid" | "search";
 
@@ -19,6 +20,7 @@ type Algo = {
   name: string; tag: string; color: string; viz: Viz;
   purpose: string; where: string; input: string; output: string;
   time: string; space: string;
+  guarantee: string; // exact / approximate behaviour, stated precisely
 };
 
 const ALGOS: Algo[] = [
@@ -26,49 +28,64 @@ const ALGOS: Algo[] = [
     name: "Greedy Scheduler", tag: "Task Prioritization", color: colors.greedy, viz: "bars",
     purpose: "Rank the backlog so the highest-leverage work surfaces first.",
     where: "Tasks tab — every task's priority score (urgency, impact, dependencies).",
-    input: "Tasks with urgency, impact and dependency counts.",
-    output: "A 0–100 priority score per task, ordered descending.",
-    time: "O(n log n)", space: "O(n)",
+    input: "Urgency (1–5), impact (1–5) and the number of tasks each task directly unblocks.",
+    output: "A 0–100 score: round(100·(0.50·u + 0.35·i + 0.15·d)), each weight applied once; all-max inputs give exactly 100.",
+    time: "O(1) per task + O(n log n) sort", space: "O(n)",
+    guarantee: "Deterministic. Ties: score → older first (stable merge sort). Unfinished prerequisites make a task ineligible regardless of score.",
   },
   {
     name: "0/1 Knapsack", tag: "Sprint Planning", color: colors.knapsack, viz: "grid",
     purpose: "Pick the set of tasks that maximises delivered value within a capacity.",
     where: "Sprint tab — 'Run Knapsack Optimizer' against a capacity in hours.",
-    input: "Tasks with estimated hours (weight) and business value, plus capacity.",
-    output: "The highest-value task subset that fits, with utilisation %.",
-    time: "O(n·W)", space: "O(n·W)",
+    input: "Dependency-ready tasks with estimated hours and business value, plus a capacity in hours.",
+    output: "The highest-value subset that fits; hours are counted in 0.01 h units (task hours rounded up, capacity down), so the plan never exceeds capacity.",
+    time: "O(n·W), W = capacity in 0.01 h", space: "O(W) + n·W bits",
+    guarantee: "Exact optimum (pseudo-polynomial). Above 20 M DP cells it switches to a labelled approximation guaranteed ≥ 50% of optimum.",
   },
   {
     name: "Depth-First Search", tag: "Cycle Detection", color: colors.dfs, viz: "graph",
     purpose: "Detect circular dependencies before they break execution order.",
     where: "Dependency graph + adding a dependency — blocks cycles.",
-    input: "The task dependency graph (nodes + directed edges).",
-    output: "A boolean 'has cycle', and the offending path when present.",
+    input: "The task dependency graph. Edge A → B means A must finish before B.",
+    output: "Discovery / finish times and post-order; adding an edge that would close a cycle is refused.",
     time: "O(V + E)", space: "O(V)",
+    guarantee: "Exact. Iterative, so very long dependency chains cannot overflow the call stack.",
   },
   {
-    name: "Breadth-First Search", tag: "Dependency Levels", color: colors.bfs, viz: "graph",
-    purpose: "Group tasks into dependency 'waves' that can run in parallel.",
-    where: "Dependency graph — level layout; AI recommendation readiness.",
-    input: "The dependency DAG and a set of root tasks.",
-    output: "Level (distance) per task from the roots.",
+    name: "Breadth-First Search", tag: "Reachability", color: colors.bfs, viz: "graph",
+    purpose: "Find which tasks are reachable from the starting tasks and their shortest hop distance.",
+    where: "Dependency graph API (bfsResult) — reachability only.",
+    input: "The dependency graph and its source tasks (no prerequisites).",
+    output: "Shortest-hop level per task (-1 when only reachable through a cycle).",
     time: "O(V + E)", space: "O(V)",
+    guarantee: "Exact shortest-hop distances. These are NOT safe execution waves — see the next card.",
+  },
+  {
+    name: "Execution Waves", tag: "Parallel Work Levels", color: colors.bfs, viz: "graph",
+    purpose: "Group tasks into waves that can run in parallel without violating any dependency.",
+    where: "Dependency graph (wavesResult), Scrum dependency analysis, sprint recommendation.",
+    input: "A directed acyclic dependency graph.",
+    output: "level(v) = max(level(u) + 1) over prerequisites u; sources are wave 0.",
+    time: "O(E + V log V)", space: "O(V + E)",
+    guarantee: "Every prerequisite is in a strictly earlier wave. A cyclic graph yields no schedule (cycle members are reported).",
   },
   {
     name: "Topological Sort", tag: "Execution Order", color: colors.topo, viz: "graph",
     purpose: "Produce a valid order so no task starts before its prerequisites.",
     where: "Dependency graph 'execution order' + AI sprint sequencing.",
     input: "A directed acyclic dependency graph.",
-    output: "A linear ordering of tasks respecting all dependencies.",
-    time: "O(V + E)", space: "O(V)",
+    output: "A linear order respecting every dependency; ties broken by smallest task id (binary min-heap of ready tasks).",
+    time: "O(E + V log V)", space: "O(V + E)",
+    guarantee: "Exact and deterministic. On a cycle the partial order is NOT presented as a schedule; cycle members are separated from tasks merely blocked by them.",
   },
   {
     name: "Branch & Bound", tag: "Task Assignment", color: colors.branch, viz: "grid",
     purpose: "Assign tasks to members at the lowest total skill-gap cost.",
     where: "Members tab — 'Run Assignment' over the skill cost matrix.",
-    input: "A member × task cost matrix derived from skills.",
-    output: "An optimal assignment with explored/pruned node stats.",
-    time: "O(n!) pruned", space: "O(n²)",
+    input: "Skill-gap cost per member × task, member hour capacity and current load.",
+    output: "Assigns as many tasks as capacity allows at the lowest total skill-gap cost, with per-task reasons and node statistics.",
+    time: "O(mⁿ) worst case", space: "O(m·n)",
+    guarantee: "Proven optimal when the search completes (≤ 16 tasks, ≤ 200 000 nodes); otherwise the result is labelled approximate with the reason. Pruning does not make it polynomial.",
   },
   {
     name: "Merge Sort", tag: "Task Ordering", color: colors.merge, viz: "bars",
@@ -77,14 +94,16 @@ const ALGOS: Algo[] = [
     input: "A task list and a comparator (priority, deadline or progress).",
     output: "A stably sorted task list (Θ(n log n) every time).",
     time: "O(n log n)", space: "O(n)",
+    guarantee: "Exact and stable: equal keys keep their original order.",
   },
   {
-    name: "Boyer-Moore", tag: "Task Search", color: colors.boyer, viz: "search",
+    name: "Boyer–Moore–Horspool", tag: "Task Search", color: colors.boyer, viz: "search",
     purpose: "Fast substring search across task titles as you type.",
-    where: "Tasks tab + AI panel search boxes (highlighted matches).",
-    input: "A search query and the set of task titles.",
-    output: "Matching tasks with the matched span highlighted.",
-    time: "O(n/m) avg", space: "O(σ)",
+    where: "Tasks tab + AI panel search boxes; the same variant runs on the server.",
+    input: "A query (≤ 512 characters) and task titles, both NFC-normalised and lower-cased.",
+    output: "Tasks whose title or description contains the query.",
+    time: "O(n·m) worst, ≈ n/m typical", space: "O(min(m, σ))",
+    guarantee: "Exact substring matching on UTF-16 code units (works for Kannada, accents and emoji); not grapheme-aware.",
   },
 ];
 
@@ -113,6 +132,8 @@ export default function DAAInsights() {
             where it runs.
           </Text>
           {ALGOS.map((a) => <AlgoCard key={a.name} a={a} />)}
+          <WavesExample />
+          <BenchmarkSection />
         </View>
       </ScrollView>
     </View>
@@ -143,6 +164,7 @@ function AlgoCard({ a }: { a: Algo }) {
           <Detail icon="navigate-outline" label="Where it runs" value={a.where} />
           <Detail icon="enter-outline" label="Input" value={a.input} />
           <Detail icon="exit-outline" label="Output" value={a.output} />
+          <Detail icon="shield-checkmark-outline" label="Guarantee" value={a.guarantee} />
         </View>
       )}
     </Card>
@@ -157,6 +179,117 @@ function Detail({ icon, label, value }: { icon: keyof typeof Ionicons.glyphMap; 
         <Text style={s.detailLabel}>{label}</Text>
         <Text style={s.detailValue}>{value}</Text>
       </View>
+    </View>
+  );
+}
+
+// ── Illustrative example (static, educational) ───────────────────────────────
+function WavesExample() {
+  const Row = ({ label, waves, ok }: { label: string; waves: string[][]; ok: boolean }) => (
+    <View style={{ gap: 6 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+        <Ionicons name={ok ? "checkmark-circle" : "close-circle"} size={15} color={ok ? colors.success : colors.danger} />
+        <Text style={s.detailLabel}>{label}</Text>
+      </View>
+      <View style={s.waveRow}>
+        {waves.map((w, i) => (
+          <View key={i} style={s.waveBox}>
+            <Text style={s.waveTitle}>Wave {i}</Text>
+            <Text style={s.waveTasks}>{w.join(", ")}</Text>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+  return (
+    <Card style={{ gap: spacing.sm }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <Ionicons name="git-branch-outline" size={18} color={colors.primary} />
+        <Text style={[font.h3, { flex: 1 }]}>Why BFS levels are not execution waves</Text>
+        <Badge label="Illustrative example" color={colors.textMuted} bg={colors.surfaceAlt} />
+      </View>
+      <Text style={s.purpose}>Dependencies A → B, A → C and B → C (C needs both A and B).</Text>
+      <Row label="First-discovery BFS (shortest hops)" waves={[["A"], ["B", "C"]]} ok={false} />
+      <Text style={s.caption}>C would start alongside B, before its prerequisite B has finished.</Text>
+      <Row label="Longest-prerequisite waves (used by NEXUSFLOW)" waves={[["A"], ["B"], ["C"]]} ok />
+    </Card>
+  );
+}
+
+// ── Measured synthetic benchmarks (offline CLI output) ───────────────────────
+type BenchRow = {
+  algorithm: string; variant: string; size: Record<string, number>;
+  complexity: { time: string; space: string };
+  current: { medianMs: number; p90Ms: number; ops?: Record<string, number>; [k: string]: unknown };
+  baseline?: { medianMs?: number; variant?: string; constraintViolations?: number; sameOrderAsCurrent?: boolean | null; [k: string]: unknown };
+  exact: boolean;
+};
+
+const BENCH_GROUPS: { key: string; title: string; filter: (r: BenchRow) => boolean; note?: string }[] = [
+  { key: "kahn", title: "Kahn topological sort", filter: (r) => r.algorithm === "Kahn topological sort", note: "Before: the ready list was re-sorted at every step. Same output order." },
+  { key: "waves", title: "Execution waves vs old BFS levels", filter: (r) => r.algorithm === "Dependency execution waves", note: "Bars show runtime; the old BFS levels put many prerequisites in the same or a later level." },
+  { key: "knap", title: "0/1 Knapsack (fractional hours)", filter: (r) => r.algorithm === "0/1 Knapsack" && r.variant.includes("fractional"), note: "The old DP could not index fractional hours, so it missed fitting tasks." },
+  { key: "bnb", title: "Branch and Bound assignment", filter: (r) => r.algorithm === "Branch and Bound assignment", note: "Old and new solve different problems (the old overflow ignored capacity), so costs are not comparable." },
+  { key: "bmh", title: "Boyer–Moore–Horspool (absent pattern, full scan)", filter: (r) => r.algorithm === "Boyer–Moore–Horspool" },
+  { key: "rank", title: "Task Intelligence ranking", filter: (r) => r.algorithm === "Task Intelligence ranking" },
+];
+
+const sizeLabel = (size: Record<string, number>) =>
+  Object.entries(size).map(([k, v]) => `${k}=${v.toLocaleString()}`).join(" · ");
+
+function BenchmarkSection() {
+  const data = benchmarkData as unknown as { generatedAt: string; environment: { node: string; cpu: string; platform: string }; method: { repetitions: number; warmup: number }; results: BenchRow[] };
+  if (!data?.results?.length) {
+    return (
+      <Card><Text style={s.purpose}>Benchmark results are unavailable. Run `npm run bench` in the server folder to generate them.</Text></Card>
+    );
+  }
+  return (
+    <Card style={{ gap: spacing.md }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <Ionicons name="speedometer-outline" size={18} color={colors.primary} />
+        <Text style={[font.h3, { flex: 1 }]}>Measured benchmarks</Text>
+        <Badge label="Synthetic data" color={colors.warning} />
+      </View>
+      <Text style={s.caption}>
+        Seeded synthetic datasets, not your project data. Median of {data.method.repetitions} runs after {data.method.warmup} warm-ups ·
+        Node {data.environment.node} · {data.environment.cpu} · {new Date(data.generatedAt).toLocaleDateString()}.
+        "Before" is the pre-Phase-3 implementation on the identical dataset.
+      </Text>
+      {BENCH_GROUPS.map((g) => {
+        const rows = data.results.filter(g.filter);
+        if (!rows.length) return null;
+        const max = Math.max(...rows.map((r) => Math.max(r.current.medianMs, typeof r.baseline?.medianMs === "number" ? r.baseline.medianMs : 0)), 0.001);
+        return (
+          <View key={g.key} style={{ gap: 6 }}>
+            <Text style={s.benchTitle}>{g.title}</Text>
+            <Text style={s.caption}>{rows[0].complexity.time} · {rows.every((r) => r.exact) ? "exact" : "includes approximate rows"}</Text>
+            {rows.map((r, i) => (
+              <View key={i} style={{ gap: 3 }}>
+                <Text style={s.benchSize}>{sizeLabel(r.size)}</Text>
+                <Bar label="Now" ms={r.current.medianMs} max={max} color={colors.primary} />
+                {typeof r.baseline?.medianMs === "number" ? <Bar label="Before" ms={r.baseline.medianMs} max={max} color={colors.textFaint} /> : null}
+                {typeof r.baseline?.constraintViolations === "number" ? (
+                  <Text style={s.caption}>Dependency violations — now 0, before {r.baseline.constraintViolations.toLocaleString()}</Text>
+                ) : null}
+                {r.current.ops ? <Text style={s.caption}>{Object.entries(r.current.ops).map(([k, v]) => `${k}: ${Number(v).toLocaleString()}`).join(" · ")}</Text> : null}
+              </View>
+            ))}
+            {g.note ? <Text style={s.caption}>{g.note}</Text> : null}
+          </View>
+        );
+      })}
+    </Card>
+  );
+}
+
+function Bar({ label, ms, max, color }: { label: string; ms: number; max: number; color: string }) {
+  const pct = Math.max(2, Math.min(100, (ms / max) * 100));
+  return (
+    <View style={s.barRow}>
+      <Text style={s.barLabel}>{label}</Text>
+      <View style={s.barTrack}><View style={[s.barFill, { width: `${pct}%`, backgroundColor: color }]} /></View>
+      <Text style={s.barValue}>{ms < 1 ? ms.toFixed(3) : ms.toFixed(1)} ms</Text>
     </View>
   );
 }
@@ -223,4 +356,17 @@ const s = StyleSheet.create({
   graphViz: { width: 32, height: 32 },
   node: { position: "absolute", width: 8, height: 8, borderRadius: 4 },
   edge: { position: "absolute", width: 14, height: 2, borderRadius: 1 },
+
+  caption: { fontSize: 12, color: colors.textMuted, lineHeight: 17 },
+  waveRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  waveBox: { minWidth: 64, paddingVertical: 6, paddingHorizontal: 10, borderRadius: radius.md, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.border },
+  waveTitle: { fontSize: 10, fontWeight: "700", color: colors.textFaint, textTransform: "uppercase" },
+  waveTasks: { fontSize: 13, fontWeight: "700", color: colors.text },
+  benchTitle: { fontSize: 14, fontWeight: "700", color: colors.text, marginTop: 4 },
+  benchSize: { fontSize: 11, fontWeight: "700", color: colors.textFaint },
+  barRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  barLabel: { width: 46, fontSize: 11, color: colors.textMuted },
+  barTrack: { flex: 1, height: 8, borderRadius: 4, backgroundColor: colors.surfaceAlt, overflow: "hidden" },
+  barFill: { height: 8, borderRadius: 4 },
+  barValue: { width: 72, fontSize: 11, color: colors.text, textAlign: "right" },
 });

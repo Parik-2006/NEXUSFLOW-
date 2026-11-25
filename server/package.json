@@ -16,7 +16,8 @@
     "test:legacy": "node scripts/testMasterCorrections.js && node scripts/testInvitationFlow.js && node scripts/testOmniRouteZeroCostPolicy.js && node scripts/testNexusflowV3.js && node scripts/testPhase3TaskDecomposition.js && node scripts/testPhase2ProjectIntelligence.js && node scripts/testPhase1DataFoundation.js && node scripts/testPhase6Fixes.js && node scripts/testMasterRefactorFixes.js && node scripts/testAuthAndIsolation.js && node scripts/testProjectBrain.js && node scripts/testLearningLoop.js && node scripts/testRetrospective.js && node scripts/testRiskEngine.js && node scripts/testTeamHealth.js && node scripts/testPhase10Sync.js && node scripts/testOpinionSystem.js && node scripts/testNexusflowAiHub.js",
     "test:jest-compat": "node --test --test-force-exit --import ./tests/helpers/jestCompat.js \"__tests__/*.test.js\"",
     "test:legacy:isolated": "node tests/helpers/runLegacyIsolated.js 4",
-    "test:legacy:live": "node tests/helpers/runLegacyIsolated.js 1 --with-server"
+    "test:legacy:live": "node tests/helpers/runLegacyIsolated.js 1 --with-server",
+    "bench": "node benchmarks/runBenchmarks.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

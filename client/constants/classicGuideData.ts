@@ -64,7 +64,7 @@ export const CLASSIC_GUIDE_STEPS: ClassicGuideStep[] = [
       "Progress View: Kanban swimlanes for manual status transitions",
     ],
     algorithmName: "Boyer-Moore & Merge Sort",
-    algorithmSummary: "Tasks are sorted using Merge Sort O(n log n) across deadline and priority keys, while search leverages Boyer-Moore preprocessing O(m + n).",
+    algorithmSummary: "Tasks are sorted using Merge Sort O(n log n) across deadline and priority keys, while search uses Boyer–Moore–Horspool (O(m) preprocessing, O(n·m) worst case, ≈ n/m comparisons on typical text).",
   },
   {
     step: 3,
@@ -77,7 +77,7 @@ export const CLASSIC_GUIDE_STEPS: ClassicGuideStep[] = [
     highlights: [
       "Input task business values and estimated completion hours",
       "Configure team sprint hour capacity (e.g. 40h)",
-      "Compute optimal task selection matrix via dynamic programming O(n × C)",
+      "Compute the optimal task selection via dynamic programming O(n × W), W = capacity in 0.01 h units (pseudo-polynomial)",
       "Inspect detailed selection breakdown (Selected vs Excluded items)",
       "View value-per-hour density metrics and residual capacity",
     ],
@@ -97,11 +97,11 @@ export const CLASSIC_GUIDE_STEPS: ClassicGuideStep[] = [
       "Directed edges representing prerequisite-to-dependent relationships",
       "Topological Sort via Kahn's Algorithm (in-degree reduction) for execution ordering",
       "Depth-First Search (DFS) for cycle and circular dependency detection",
-      "Breadth-First Search (BFS) for level-wise execution tiers and dependency depth",
+      "Longest-prerequisite execution waves (every prerequisite in an earlier wave); BFS for reachability",
       "Interactive SVG visualization of upstream and downstream task nodes",
     ],
     algorithmName: "Kahn's Algorithm (Topological Sort) & DFS / BFS",
-    algorithmSummary: "Ensures execution order satisfies all prerequisites in O(V + E) time, flagging illegal circular dependencies before scheduling.",
+    algorithmSummary: "Ensures execution order satisfies all prerequisites in O(E + V log V) time (deterministic min-heap), flagging circular dependencies before scheduling.",
   },
   {
     step: 5,
@@ -119,7 +119,7 @@ export const CLASSIC_GUIDE_STEPS: ClassicGuideStep[] = [
       "Branch and Bound state-space search for minimum-cost task assignment",
     ],
     algorithmName: "Branch & Bound Assignment",
-    algorithmSummary: "Explores the member-to-task assignment space with cost-bounding heuristics O(n!), pruning suboptimal branches to minimize misfit penalties.",
+    algorithmSummary: "Explores the member-to-task assignment space (worst case O(mⁿ)) with an admissible lower bound, respecting member hour capacity; proven optimal up to 16 tasks, otherwise labelled approximate.",
   },
   {
     step: 6,
@@ -141,27 +141,27 @@ export const CLASSIC_GUIDE_STEPS: ClassicGuideStep[] = [
 export const DAA_ALGORITHMS: DaaAlgorithmInfo[] = [
   {
     name: "0/1 Knapsack",
-    complexity: "O(n × W) Time · O(n × W) Space",
+    complexity: "O(n × W) Time · O(W) + n·W bits Space (W = capacity in 0.01 h)",
     originalApplication: "Sprint Optimizer — selects optimal task combination maximizing business value within sprint hour capacity.",
-    description: "Dynamic programming approach using a 2D recurrence table to determine whether to include or exclude each task based on remaining capacity.",
+    description: "Bottom-up dynamic programming over capacity; fractional hours are counted in 0.01 h units (task hours rounded up, capacity down) so the plan never exceeds capacity.",
   },
   {
     name: "Topological Sort (Kahn's)",
-    complexity: "O(V + E) Time · O(V) Space",
+    complexity: "O(E + V log V) Time · O(V + E) Space",
     originalApplication: "Dependency Graph — computes a linear ordering of tasks consistent with all prerequisite constraints.",
-    description: "Maintains in-degree counts for all tasks, iteratively dequeuing 0-in-degree vertices and reducing degrees of dependent tasks.",
+    description: "Maintains in-degree counts and a min-heap of ready tasks (smallest id first), so the order is deterministic; a FIFO queue variant runs in O(V + E).",
   },
   {
     name: "Depth-First Search (DFS)",
     complexity: "O(V + E) Time · O(V) Space",
     originalApplication: "Cycle Detection & Reachability — detects circular prerequisite deadlocks before execution.",
-    description: "Recursively traverses dependency paths tracking recursion-stack states to identify back-edges and circular dependency loops.",
+    description: "Iterative depth-first traversal (no recursion-depth limit) recording discovery/finish times; cycle members are identified with strongly connected components.",
   },
   {
     name: "Breadth-First Search (BFS)",
     complexity: "O(V + E) Time · O(V) Space",
-    originalApplication: "Dependency Leveling — calculates task execution tiers and shortest prerequisite distance.",
-    description: "Level-by-level queue traversal establishing dependency depth and identifying parallel execution opportunities.",
+    originalApplication: "Reachability — shortest hop distance from tasks without prerequisites.",
+    description: "Level-by-level queue traversal. Its levels are NOT execution waves: waves use the longest prerequisite chain so every prerequisite lands in an earlier wave.",
   },
   {
     name: "Greedy Scheduler",
@@ -177,15 +177,15 @@ export const DAA_ALGORITHMS: DaaAlgorithmInfo[] = [
   },
   {
     name: "Branch and Bound",
-    complexity: "O(n!) Worst · Pruned Average",
+    complexity: "O(mⁿ) Worst case · exact ≤ 16 tasks",
     originalApplication: "Optimal Member Assignment — allocates tasks to members minimizing skill mismatch cost.",
     description: "Constructs a state-space tree of member assignments, maintaining upper and lower bounds to prune provably suboptimal permutations.",
   },
   {
-    name: "Boyer-Moore",
-    complexity: "O(n / m) Best · O(n + m) Worst",
+    name: "Boyer–Moore–Horspool",
+    complexity: "≈ O(n / m) Typical · O(n·m) Worst",
     originalApplication: "Task Search — enables instant pattern matching across task titles, descriptions, and assignees.",
-    description: "Sub-linear string search using bad-character and good-suffix shift heuristics to skip unnecessary character comparisons.",
+    description: "Horspool variant: right-to-left window comparison with a bad-character shift table (no good-suffix rule), NFC + lower-case normalised.",
   },
   {
     name: "Merge Sort",

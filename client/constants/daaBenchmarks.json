@@ -1,0 +1,1353 @@
+{
+  "generatedAt": "2026-11-25T17:54:55.373Z",
+  "dataset": "synthetic, seeded (mulberry32) — no project data",
+  "seed": 20261125,
+  "quick": false,
+  "environment": {
+    "node": "v24.20.0",
+    "platform": "win32 10.0.26300",
+    "arch": "x64",
+    "cpu": "13th Gen Intel(R) Core(TM) i5-1345U",
+    "logicalCpus": 12
+  },
+  "method": {
+    "warmup": 3,
+    "repetitions": 11,
+    "statistic": "median (p90/min/max also reported)",
+    "timer": "process.hrtime.bigint"
+  },
+  "limits": {
+    "maxGraphVertices": 20000,
+    "maxKnapsackItems": 2000,
+    "maxExactAssignmentTasks": 12,
+    "maxSortSize": 100000,
+    "maxTextLength": 2000000
+  },
+  "results": [
+    {
+      "algorithm": "Kahn topological sort",
+      "variant": "binary min-heap (deterministic)",
+      "size": {
+        "V": 500,
+        "E": 1453
+      },
+      "complexity": {
+        "time": "O(E + V log V)",
+        "space": "O(V + E)"
+      },
+      "current": {
+        "medianMs": 2.107,
+        "p90Ms": 2.686,
+        "minMs": 1.473,
+        "maxMs": 4.115,
+        "reps": 11,
+        "ops": {
+          "heapOps": 3844,
+          "edgesExamined": 1453
+        }
+      },
+      "baseline": {
+        "medianMs": 3.721,
+        "p90Ms": 4.702,
+        "minMs": 2.92,
+        "maxMs": 5.016,
+        "reps": 11,
+        "variant": "ready list re-sorted every step",
+        "sameOrderAsCurrent": true
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "Dependency execution waves",
+      "variant": "longest-prerequisite depth over a topological order",
+      "size": {
+        "V": 500,
+        "E": 1453
+      },
+      "complexity": {
+        "time": "O(E + V log V)",
+        "space": "O(V + E)"
+      },
+      "current": {
+        "medianMs": 1.839,
+        "p90Ms": 3.183,
+        "minMs": 1.445,
+        "maxMs": 3.747,
+        "reps": 11,
+        "ops": {
+          "waves": 12
+        },
+        "constraintViolations": 0
+      },
+      "baseline": {
+        "variant": "first-discovery BFS levels",
+        "constraintViolations": 720,
+        "note": "edges whose prerequisite was NOT in an earlier level"
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "DFS",
+      "variant": "iterative",
+      "size": {
+        "V": 500,
+        "E": 1453
+      },
+      "complexity": {
+        "time": "O(V + E)",
+        "space": "O(V)"
+      },
+      "current": {
+        "medianMs": 0.826,
+        "p90Ms": 1.822,
+        "minMs": 0.712,
+        "maxMs": 2.008,
+        "reps": 11,
+        "ops": {
+          "verticesVisited": 500,
+          "edgesExamined": 1453
+        }
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "BFS",
+      "variant": "multi-source reachability (shortest-hop levels)",
+      "size": {
+        "V": 500,
+        "E": 1453
+      },
+      "complexity": {
+        "time": "O(V + E)",
+        "space": "O(V)"
+      },
+      "current": {
+        "medianMs": 0.642,
+        "p90Ms": 1.008,
+        "minMs": 0.356,
+        "maxMs": 1.382,
+        "reps": 11,
+        "ops": {
+          "verticesVisited": 500,
+          "edgesExamined": 1453
+        }
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "Kahn topological sort",
+      "variant": "binary min-heap (deterministic)",
+      "size": {
+        "V": 2000,
+        "E": 5535
+      },
+      "complexity": {
+        "time": "O(E + V log V)",
+        "space": "O(V + E)"
+      },
+      "current": {
+        "medianMs": 4.678,
+        "p90Ms": 5.295,
+        "minMs": 2.816,
+        "maxMs": 5.787,
+        "reps": 11,
+        "ops": {
+          "heapOps": 19070,
+          "edgesExamined": 5535
+        }
+      },
+      "baseline": {
+        "medianMs": 30.002,
+        "p90Ms": 39.802,
+        "minMs": 27.098,
+        "maxMs": 42.272,
+        "reps": 11,
+        "variant": "ready list re-sorted every step",
+        "sameOrderAsCurrent": true
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "Dependency execution waves",
+      "variant": "longest-prerequisite depth over a topological order",
+      "size": {
+        "V": 2000,
+        "E": 5535
+      },
+      "complexity": {
+        "time": "O(E + V log V)",
+        "space": "O(V + E)"
+      },
+      "current": {
+        "medianMs": 7.73,
+        "p90Ms": 10.954,
+        "minMs": 5.774,
+        "maxMs": 11.841,
+        "reps": 11,
+        "ops": {
+          "waves": 15
+        },
+        "constraintViolations": 0
+      },
+      "baseline": {
+        "variant": "first-discovery BFS levels",
+        "constraintViolations": 2703,
+        "note": "edges whose prerequisite was NOT in an earlier level"
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "DFS",
+      "variant": "iterative",
+      "size": {
+        "V": 2000,
+        "E": 5535
+      },
+      "complexity": {
+        "time": "O(V + E)",
+        "space": "O(V)"
+      },
+      "current": {
+        "medianMs": 1.874,
+        "p90Ms": 2.656,
+        "minMs": 1.731,
+        "maxMs": 3.561,
+        "reps": 11,
+        "ops": {
+          "verticesVisited": 2000,
+          "edgesExamined": 5535
+        }
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "BFS",
+      "variant": "multi-source reachability (shortest-hop levels)",
+      "size": {
+        "V": 2000,
+        "E": 5535
+      },
+      "complexity": {
+        "time": "O(V + E)",
+        "space": "O(V)"
+      },
+      "current": {
+        "medianMs": 1.91,
+        "p90Ms": 2.7,
+        "minMs": 1.216,
+        "maxMs": 4.036,
+        "reps": 11,
+        "ops": {
+          "verticesVisited": 2000,
+          "edgesExamined": 5535
+        }
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "Kahn topological sort",
+      "variant": "binary min-heap (deterministic)",
+      "size": {
+        "V": 5000,
+        "E": 14045
+      },
+      "complexity": {
+        "time": "O(E + V log V)",
+        "space": "O(V + E)"
+      },
+      "current": {
+        "medianMs": 10.083,
+        "p90Ms": 13.391,
+        "minMs": 8.067,
+        "maxMs": 21.165,
+        "reps": 11,
+        "ops": {
+          "heapOps": 53394,
+          "edgesExamined": 14045
+        }
+      },
+      "baseline": {
+        "medianMs": 189.323,
+        "p90Ms": 228.575,
+        "minMs": 168.036,
+        "maxMs": 232.596,
+        "reps": 11,
+        "variant": "ready list re-sorted every step",
+        "sameOrderAsCurrent": true
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "Dependency execution waves",
+      "variant": "longest-prerequisite depth over a topological order",
+      "size": {
+        "V": 5000,
+        "E": 14045
+      },
+      "complexity": {
+        "time": "O(E + V log V)",
+        "space": "O(V + E)"
+      },
+      "current": {
+        "medianMs": 25.202,
+        "p90Ms": 28.082,
+        "minMs": 21.252,
+        "maxMs": 31.887,
+        "reps": 11,
+        "ops": {
+          "waves": 17
+        },
+        "constraintViolations": 0
+      },
+      "baseline": {
+        "variant": "first-discovery BFS levels",
+        "constraintViolations": 6900,
+        "note": "edges whose prerequisite was NOT in an earlier level"
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "DFS",
+      "variant": "iterative",
+      "size": {
+        "V": 5000,
+        "E": 14045
+      },
+      "complexity": {
+        "time": "O(V + E)",
+        "space": "O(V)"
+      },
+      "current": {
+        "medianMs": 6.688,
+        "p90Ms": 10.536,
+        "minMs": 5.155,
+        "maxMs": 11.726,
+        "reps": 11,
+        "ops": {
+          "verticesVisited": 5000,
+          "edgesExamined": 14045
+        }
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "BFS",
+      "variant": "multi-source reachability (shortest-hop levels)",
+      "size": {
+        "V": 5000,
+        "E": 14045
+      },
+      "complexity": {
+        "time": "O(V + E)",
+        "space": "O(V)"
+      },
+      "current": {
+        "medianMs": 4.216,
+        "p90Ms": 5.962,
+        "minMs": 3.343,
+        "maxMs": 6.349,
+        "reps": 11,
+        "ops": {
+          "verticesVisited": 5000,
+          "edgesExamined": 14045
+        }
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "Kahn topological sort",
+      "variant": "binary min-heap (deterministic)",
+      "size": {
+        "V": 10000,
+        "E": 28262
+      },
+      "complexity": {
+        "time": "O(E + V log V)",
+        "space": "O(V + E)"
+      },
+      "current": {
+        "medianMs": 25.248,
+        "p90Ms": 35.247,
+        "minMs": 21.468,
+        "maxMs": 51.55,
+        "reps": 11,
+        "ops": {
+          "heapOps": 115754,
+          "edgesExamined": 28262
+        }
+      },
+      "baseline": {
+        "skipped": "baseline not run above 5000 vertices (quadratic re-sorting)"
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "Dependency execution waves",
+      "variant": "longest-prerequisite depth over a topological order",
+      "size": {
+        "V": 10000,
+        "E": 28262
+      },
+      "complexity": {
+        "time": "O(E + V log V)",
+        "space": "O(V + E)"
+      },
+      "current": {
+        "medianMs": 60.854,
+        "p90Ms": 84.567,
+        "minMs": 41.952,
+        "maxMs": 90.262,
+        "reps": 11,
+        "ops": {
+          "waves": 16
+        },
+        "constraintViolations": 0
+      },
+      "baseline": {
+        "variant": "first-discovery BFS levels",
+        "constraintViolations": 14210,
+        "note": "edges whose prerequisite was NOT in an earlier level"
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "DFS",
+      "variant": "iterative",
+      "size": {
+        "V": 10000,
+        "E": 28262
+      },
+      "complexity": {
+        "time": "O(V + E)",
+        "space": "O(V)"
+      },
+      "current": {
+        "medianMs": 31.715,
+        "p90Ms": 39.238,
+        "minMs": 17.87,
+        "maxMs": 42.749,
+        "reps": 11,
+        "ops": {
+          "verticesVisited": 10000,
+          "edgesExamined": 28262
+        }
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "BFS",
+      "variant": "multi-source reachability (shortest-hop levels)",
+      "size": {
+        "V": 10000,
+        "E": 28262
+      },
+      "complexity": {
+        "time": "O(V + E)",
+        "space": "O(V)"
+      },
+      "current": {
+        "medianMs": 10.356,
+        "p90Ms": 11.645,
+        "minMs": 7.841,
+        "maxMs": 11.754,
+        "reps": 11,
+        "ops": {
+          "verticesVisited": 10000,
+          "edgesExamined": 28262
+        }
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "Task Intelligence ranking",
+      "variant": "7-factor weighted score + eligibility + downstream reach",
+      "size": {
+        "n": 100
+      },
+      "complexity": {
+        "time": "O(V + E) metrics + O(V·(V+E)) reach (≤ 2000 tasks) + O(n log n) sort",
+        "space": "O(V + E)"
+      },
+      "current": {
+        "medianMs": 2.635,
+        "p90Ms": 3.474,
+        "minMs": 1.434,
+        "maxMs": 4.039,
+        "reps": 11,
+        "ops": {
+          "ranked": 100
+        },
+        "maxScore": 66
+      },
+      "baseline": {
+        "medianMs": 1.505,
+        "p90Ms": 4.579,
+        "minMs": 1.078,
+        "maxMs": 4.853,
+        "reps": 11,
+        "variant": "pre-Phase-3 engine (greedy factor capped at 75, O(n·E) depth scan)"
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "Task Intelligence ranking",
+      "variant": "7-factor weighted score + eligibility + downstream reach",
+      "size": {
+        "n": 500
+      },
+      "complexity": {
+        "time": "O(V + E) metrics + O(V·(V+E)) reach (≤ 2000 tasks) + O(n log n) sort",
+        "space": "O(V + E)"
+      },
+      "current": {
+        "medianMs": 16.469,
+        "p90Ms": 20.982,
+        "minMs": 11.11,
+        "maxMs": 29.662,
+        "reps": 11,
+        "ops": {
+          "ranked": 500
+        },
+        "maxScore": 68
+      },
+      "baseline": {
+        "medianMs": 19.156,
+        "p90Ms": 24.021,
+        "minMs": 14.032,
+        "maxMs": 25.223,
+        "reps": 11,
+        "variant": "pre-Phase-3 engine (greedy factor capped at 75, O(n·E) depth scan)"
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "Task Intelligence ranking",
+      "variant": "7-factor weighted score + eligibility + downstream reach",
+      "size": {
+        "n": 1000
+      },
+      "complexity": {
+        "time": "O(V + E) metrics + O(V·(V+E)) reach (≤ 2000 tasks) + O(n log n) sort",
+        "space": "O(V + E)"
+      },
+      "current": {
+        "medianMs": 22.303,
+        "p90Ms": 29.249,
+        "minMs": 13.319,
+        "maxMs": 29.457,
+        "reps": 11,
+        "ops": {
+          "ranked": 1000
+        },
+        "maxScore": 76
+      },
+      "baseline": {
+        "medianMs": 78.821,
+        "p90Ms": 82.75,
+        "minMs": 64.348,
+        "maxMs": 98.708,
+        "reps": 11,
+        "variant": "pre-Phase-3 engine (greedy factor capped at 75, O(n·E) depth scan)"
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "Merge sort",
+      "variant": "top-down, stable",
+      "size": {
+        "n": 1000
+      },
+      "complexity": {
+        "time": "O(n log n)",
+        "space": "O(n)"
+      },
+      "current": {
+        "medianMs": 1.002,
+        "p90Ms": 1.893,
+        "minMs": 0.693,
+        "maxMs": 3.201,
+        "reps": 11
+      },
+      "reference": {
+        "medianMs": 1.378,
+        "p90Ms": 1.626,
+        "minMs": 0.902,
+        "maxMs": 1.87,
+        "reps": 11,
+        "variant": "Array.prototype.sort (TimSort, built-in)"
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "Merge sort",
+      "variant": "top-down, stable",
+      "size": {
+        "n": 10000
+      },
+      "complexity": {
+        "time": "O(n log n)",
+        "space": "O(n)"
+      },
+      "current": {
+        "medianMs": 34.402,
+        "p90Ms": 37.568,
+        "minMs": 17.569,
+        "maxMs": 38.329,
+        "reps": 11
+      },
+      "reference": {
+        "medianMs": 25.413,
+        "p90Ms": 29.116,
+        "minMs": 20.209,
+        "maxMs": 29.359,
+        "reps": 11,
+        "variant": "Array.prototype.sort (TimSort, built-in)"
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "Merge sort",
+      "variant": "top-down, stable",
+      "size": {
+        "n": 50000
+      },
+      "complexity": {
+        "time": "O(n log n)",
+        "space": "O(n)"
+      },
+      "current": {
+        "medianMs": 240.588,
+        "p90Ms": 346.789,
+        "minMs": 159.443,
+        "maxMs": 454.019,
+        "reps": 11
+      },
+      "reference": {
+        "medianMs": 256.745,
+        "p90Ms": 339.127,
+        "minMs": 183.888,
+        "maxMs": 349.431,
+        "reps": 11,
+        "variant": "Array.prototype.sort (TimSort, built-in)"
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "0/1 Knapsack",
+      "variant": "bottom-up DP (integer efforts, scale 1)",
+      "size": {
+        "n": 50,
+        "capacity": 40,
+        "W": 40
+      },
+      "complexity": {
+        "time": "O(n·W)",
+        "space": "O(W) + O(n·W) bits"
+      },
+      "current": {
+        "medianMs": 0.381,
+        "p90Ms": 0.828,
+        "minMs": 0.147,
+        "maxMs": 1.058,
+        "reps": 11,
+        "ops": {
+          "dpCells": 2050
+        },
+        "totalValue": 125,
+        "utilizationPct": 100
+      },
+      "baseline": {
+        "medianMs": 0.307,
+        "p90Ms": 0.752,
+        "minMs": 0.129,
+        "maxMs": 0.891,
+        "reps": 11,
+        "variant": "2-D Int32Array table",
+        "totalValue": 125,
+        "sameOptimum": true
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "0/1 Knapsack",
+      "variant": "bottom-up DP (fractional efforts, 0.01 h units)",
+      "size": {
+        "n": 50,
+        "capacity": 40,
+        "W": 4000
+      },
+      "complexity": {
+        "time": "O(n·W)",
+        "space": "O(W) + O(n·W) bits"
+      },
+      "current": {
+        "medianMs": 3.927,
+        "p90Ms": 4.562,
+        "minMs": 2.282,
+        "maxMs": 4.83,
+        "reps": 11,
+        "ops": {
+          "dpCells": 200050
+        },
+        "totalValue": 126,
+        "utilizationPct": 99,
+        "selected": 17
+      },
+      "baseline": {
+        "note": "baseline cannot index fractional efforts",
+        "selected": 0
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "0/1 Knapsack",
+      "variant": "bottom-up DP (integer efforts, scale 1)",
+      "size": {
+        "n": 200,
+        "capacity": 80,
+        "W": 80
+      },
+      "complexity": {
+        "time": "O(n·W)",
+        "space": "O(W) + O(n·W) bits"
+      },
+      "current": {
+        "medianMs": 0.302,
+        "p90Ms": 0.418,
+        "minMs": 0.253,
+        "maxMs": 0.44,
+        "reps": 11,
+        "ops": {
+          "dpCells": 16200
+        },
+        "totalValue": 322,
+        "utilizationPct": 100
+      },
+      "baseline": {
+        "medianMs": 1.313,
+        "p90Ms": 1.652,
+        "minMs": 1.043,
+        "maxMs": 2.014,
+        "reps": 11,
+        "variant": "2-D Int32Array table",
+        "totalValue": 322,
+        "sameOptimum": true
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "0/1 Knapsack",
+      "variant": "bottom-up DP (fractional efforts, 0.01 h units)",
+      "size": {
+        "n": 200,
+        "capacity": 80,
+        "W": 8000
+      },
+      "complexity": {
+        "time": "O(n·W)",
+        "space": "O(W) + O(n·W) bits"
+      },
+      "current": {
+        "medianMs": 13.365,
+        "p90Ms": 15.494,
+        "minMs": 10.089,
+        "maxMs": 16.06,
+        "reps": 11,
+        "ops": {
+          "dpCells": 1600200
+        },
+        "totalValue": 337,
+        "utilizationPct": 99.7,
+        "selected": 51
+      },
+      "baseline": {
+        "note": "baseline cannot index fractional efforts",
+        "selected": 4
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "0/1 Knapsack",
+      "variant": "bottom-up DP (integer efforts, scale 1)",
+      "size": {
+        "n": 500,
+        "capacity": 200,
+        "W": 200
+      },
+      "complexity": {
+        "time": "O(n·W)",
+        "space": "O(W) + O(n·W) bits"
+      },
+      "current": {
+        "medianMs": 0.85,
+        "p90Ms": 0.982,
+        "minMs": 0.782,
+        "maxMs": 1.053,
+        "reps": 11,
+        "ops": {
+          "dpCells": 100500
+        },
+        "totalValue": 861,
+        "utilizationPct": 100
+      },
+      "baseline": {
+        "medianMs": 3.336,
+        "p90Ms": 5.39,
+        "minMs": 2.613,
+        "maxMs": 5.423,
+        "reps": 11,
+        "variant": "2-D Int32Array table",
+        "totalValue": 861,
+        "sameOptimum": true
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "0/1 Knapsack",
+      "variant": "bottom-up DP (fractional efforts, 0.01 h units)",
+      "size": {
+        "n": 500,
+        "capacity": 200,
+        "W": 20000
+      },
+      "complexity": {
+        "time": "O(n·W)",
+        "space": "O(W) + O(n·W) bits"
+      },
+      "current": {
+        "medianMs": 81.496,
+        "p90Ms": 90.487,
+        "minMs": 62.647,
+        "maxMs": 143.773,
+        "reps": 11,
+        "ops": {
+          "dpCells": 10000500
+        },
+        "totalValue": 886,
+        "utilizationPct": 99.9,
+        "selected": 124
+      },
+      "baseline": {
+        "note": "baseline cannot index fractional efforts",
+        "selected": 6
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "Branch and Bound assignment",
+      "variant": "capacity-constrained, lexicographic objective",
+      "size": {
+        "tasks": 4,
+        "members": 4
+      },
+      "complexity": {
+        "time": "O(m^n) worst case",
+        "space": "O(m·n)"
+      },
+      "current": {
+        "medianMs": 0.143,
+        "p90Ms": 0.368,
+        "minMs": 0.069,
+        "maxMs": 0.447,
+        "reps": 11,
+        "ops": {
+          "nodesExplored": 10,
+          "nodesPruned": 23
+        },
+        "totalCost": 15,
+        "assigned": 4
+      },
+      "baseline": {
+        "medianMs": 0.09,
+        "p90Ms": 0.178,
+        "minMs": 0.041,
+        "maxMs": 0.194,
+        "reps": 11,
+        "variant": "B&B on first min(n,m) tasks + greedy overflow, no capacity",
+        "ops": {
+          "nodesExplored": 19,
+          "nodesPruned": 15
+        },
+        "totalCost": 15
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "Branch and Bound assignment",
+      "variant": "capacity-constrained, lexicographic objective",
+      "size": {
+        "tasks": 6,
+        "members": 6
+      },
+      "complexity": {
+        "time": "O(m^n) worst case",
+        "space": "O(m·n)"
+      },
+      "current": {
+        "medianMs": 0.454,
+        "p90Ms": 0.734,
+        "minMs": 0.208,
+        "maxMs": 1.139,
+        "reps": 11,
+        "ops": {
+          "nodesExplored": 11,
+          "nodesPruned": 53
+        },
+        "totalCost": 21,
+        "assigned": 6
+      },
+      "baseline": {
+        "medianMs": 0.287,
+        "p90Ms": 0.352,
+        "minMs": 0.139,
+        "maxMs": 0.357,
+        "reps": 11,
+        "variant": "B&B on first min(n,m) tasks + greedy overflow, no capacity",
+        "ops": {
+          "nodesExplored": 114,
+          "nodesPruned": 185
+        },
+        "totalCost": 21
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "Branch and Bound assignment",
+      "variant": "capacity-constrained, lexicographic objective",
+      "size": {
+        "tasks": 8,
+        "members": 8
+      },
+      "complexity": {
+        "time": "O(m^n) worst case",
+        "space": "O(m·n)"
+      },
+      "current": {
+        "medianMs": 0.342,
+        "p90Ms": 0.667,
+        "minMs": 0.297,
+        "maxMs": 0.687,
+        "reps": 11,
+        "ops": {
+          "nodesExplored": 106,
+          "nodesPruned": 351
+        },
+        "totalCost": 7,
+        "assigned": 8
+      },
+      "baseline": {
+        "medianMs": 0.91,
+        "p90Ms": 1.131,
+        "minMs": 0.854,
+        "maxMs": 1.199,
+        "reps": 11,
+        "variant": "B&B on first min(n,m) tasks + greedy overflow, no capacity",
+        "ops": {
+          "nodesExplored": 428,
+          "nodesPruned": 1053
+        },
+        "totalCost": 7
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "Branch and Bound assignment",
+      "variant": "capacity-constrained, lexicographic objective",
+      "size": {
+        "tasks": 12,
+        "members": 4
+      },
+      "complexity": {
+        "time": "O(m^n) worst case",
+        "space": "O(m·n)"
+      },
+      "current": {
+        "medianMs": 0.254,
+        "p90Ms": 0.536,
+        "minMs": 0.231,
+        "maxMs": 0.705,
+        "reps": 11,
+        "ops": {
+          "nodesExplored": 86,
+          "nodesPruned": 250
+        },
+        "totalCost": 15,
+        "assigned": 12
+      },
+      "baseline": {
+        "medianMs": 0.08,
+        "p90Ms": 0.084,
+        "minMs": 0.048,
+        "maxMs": 0.104,
+        "reps": 11,
+        "variant": "B&B on first min(n,m) tasks + greedy overflow, no capacity",
+        "ops": {
+          "nodesExplored": 19,
+          "nodesPruned": 14
+        },
+        "totalCost": 7
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "Boyer–Moore–Horspool",
+      "variant": "Map shift table",
+      "size": {
+        "textLength": 10000,
+        "patternLength": 8
+      },
+      "complexity": {
+        "time": "O(n·m) worst, ≈ n/m typical",
+        "space": "O(min(m, σ))"
+      },
+      "current": {
+        "medianMs": 0.08,
+        "p90Ms": 0.148,
+        "minMs": 0.066,
+        "maxMs": 0.234,
+        "reps": 11,
+        "ops": {
+          "characterComparisons": 1250,
+          "windowShifts": 1250
+        }
+      },
+      "baseline": {
+        "medianMs": 0.076,
+        "p90Ms": 0.112,
+        "minMs": 0.068,
+        "maxMs": 0.125,
+        "reps": 11,
+        "variant": "Uint8Array(128) shift table + lower-casing per call (m < 256 only)"
+      },
+      "reference": {
+        "medianMs": 0.002,
+        "p90Ms": 0.003,
+        "minMs": 0.002,
+        "maxMs": 0.004,
+        "reps": 11,
+        "variant": "String.prototype.indexOf (native)"
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "Boyer–Moore–Horspool",
+      "variant": "Map shift table",
+      "size": {
+        "textLength": 10000,
+        "patternLength": 64
+      },
+      "complexity": {
+        "time": "O(n·m) worst, ≈ n/m typical",
+        "space": "O(min(m, σ))"
+      },
+      "current": {
+        "medianMs": 0.014,
+        "p90Ms": 0.02,
+        "minMs": 0.013,
+        "maxMs": 0.071,
+        "reps": 11,
+        "ops": {
+          "characterComparisons": 156,
+          "windowShifts": 156
+        }
+      },
+      "baseline": {
+        "medianMs": 0.058,
+        "p90Ms": 0.075,
+        "minMs": 0.045,
+        "maxMs": 0.103,
+        "reps": 11,
+        "variant": "Uint8Array(128) shift table + lower-casing per call (m < 256 only)"
+      },
+      "reference": {
+        "medianMs": 0.002,
+        "p90Ms": 0.002,
+        "minMs": 0.002,
+        "maxMs": 0.002,
+        "reps": 11,
+        "variant": "String.prototype.indexOf (native)"
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "Boyer–Moore–Horspool",
+      "variant": "Map shift table",
+      "size": {
+        "textLength": 10000,
+        "patternLength": 255
+      },
+      "complexity": {
+        "time": "O(n·m) worst, ≈ n/m typical",
+        "space": "O(min(m, σ))"
+      },
+      "current": {
+        "medianMs": 0.006,
+        "p90Ms": 0.006,
+        "minMs": 0.006,
+        "maxMs": 0.006,
+        "reps": 11,
+        "ops": {
+          "characterComparisons": 39,
+          "windowShifts": 39
+        }
+      },
+      "baseline": {
+        "medianMs": 0.1,
+        "p90Ms": 0.107,
+        "minMs": 0.045,
+        "maxMs": 0.14,
+        "reps": 11,
+        "variant": "Uint8Array(128) shift table + lower-casing per call (m < 256 only)"
+      },
+      "reference": {
+        "medianMs": 0.002,
+        "p90Ms": 0.002,
+        "minMs": 0.002,
+        "maxMs": 0.002,
+        "reps": 11,
+        "variant": "String.prototype.indexOf (native)"
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "Boyer–Moore–Horspool",
+      "variant": "Map shift table",
+      "size": {
+        "textLength": 100000,
+        "patternLength": 8
+      },
+      "complexity": {
+        "time": "O(n·m) worst, ≈ n/m typical",
+        "space": "O(min(m, σ))"
+      },
+      "current": {
+        "medianMs": 0.863,
+        "p90Ms": 0.886,
+        "minMs": 0.608,
+        "maxMs": 0.887,
+        "reps": 11,
+        "ops": {
+          "characterComparisons": 12500,
+          "windowShifts": 12500
+        }
+      },
+      "baseline": {
+        "medianMs": 0.661,
+        "p90Ms": 0.777,
+        "minMs": 0.625,
+        "maxMs": 0.832,
+        "reps": 11,
+        "variant": "Uint8Array(128) shift table + lower-casing per call (m < 256 only)"
+      },
+      "reference": {
+        "medianMs": 0.014,
+        "p90Ms": 0.014,
+        "minMs": 0.014,
+        "maxMs": 0.014,
+        "reps": 11,
+        "variant": "String.prototype.indexOf (native)"
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "Boyer–Moore–Horspool",
+      "variant": "Map shift table",
+      "size": {
+        "textLength": 100000,
+        "patternLength": 64
+      },
+      "complexity": {
+        "time": "O(n·m) worst, ≈ n/m typical",
+        "space": "O(min(m, σ))"
+      },
+      "current": {
+        "medianMs": 0.063,
+        "p90Ms": 0.064,
+        "minMs": 0.062,
+        "maxMs": 0.064,
+        "reps": 11,
+        "ops": {
+          "characterComparisons": 1562,
+          "windowShifts": 1562
+        }
+      },
+      "baseline": {
+        "medianMs": 0.492,
+        "p90Ms": 0.556,
+        "minMs": 0.458,
+        "maxMs": 0.616,
+        "reps": 11,
+        "variant": "Uint8Array(128) shift table + lower-casing per call (m < 256 only)"
+      },
+      "reference": {
+        "medianMs": 0.014,
+        "p90Ms": 0.014,
+        "minMs": 0.014,
+        "maxMs": 0.015,
+        "reps": 11,
+        "variant": "String.prototype.indexOf (native)"
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "Boyer–Moore–Horspool",
+      "variant": "Map shift table",
+      "size": {
+        "textLength": 100000,
+        "patternLength": 255
+      },
+      "complexity": {
+        "time": "O(n·m) worst, ≈ n/m typical",
+        "space": "O(min(m, σ))"
+      },
+      "current": {
+        "medianMs": 0.017,
+        "p90Ms": 0.018,
+        "minMs": 0.017,
+        "maxMs": 0.019,
+        "reps": 11,
+        "ops": {
+          "characterComparisons": 392,
+          "windowShifts": 392
+        }
+      },
+      "baseline": {
+        "medianMs": 0.479,
+        "p90Ms": 0.75,
+        "minMs": 0.451,
+        "maxMs": 0.833,
+        "reps": 11,
+        "variant": "Uint8Array(128) shift table + lower-casing per call (m < 256 only)"
+      },
+      "reference": {
+        "medianMs": 0.017,
+        "p90Ms": 0.022,
+        "minMs": 0.016,
+        "maxMs": 0.022,
+        "reps": 11,
+        "variant": "String.prototype.indexOf (native)"
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "Boyer–Moore–Horspool",
+      "variant": "Map shift table",
+      "size": {
+        "textLength": 1000000,
+        "patternLength": 8
+      },
+      "complexity": {
+        "time": "O(n·m) worst, ≈ n/m typical",
+        "space": "O(min(m, σ))"
+      },
+      "current": {
+        "medianMs": 6.016,
+        "p90Ms": 6.747,
+        "minMs": 4.902,
+        "maxMs": 7.001,
+        "reps": 11,
+        "ops": {
+          "characterComparisons": 125000,
+          "windowShifts": 125000
+        }
+      },
+      "baseline": {
+        "medianMs": 8.067,
+        "p90Ms": 11.729,
+        "minMs": 6.972,
+        "maxMs": 11.807,
+        "reps": 11,
+        "variant": "Uint8Array(128) shift table + lower-casing per call (m < 256 only)"
+      },
+      "reference": {
+        "medianMs": 0.305,
+        "p90Ms": 0.438,
+        "minMs": 0.277,
+        "maxMs": 0.51,
+        "reps": 11,
+        "variant": "String.prototype.indexOf (native)"
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "Boyer–Moore–Horspool",
+      "variant": "Map shift table",
+      "size": {
+        "textLength": 1000000,
+        "patternLength": 64
+      },
+      "complexity": {
+        "time": "O(n·m) worst, ≈ n/m typical",
+        "space": "O(min(m, σ))"
+      },
+      "current": {
+        "medianMs": 0.935,
+        "p90Ms": 1.042,
+        "minMs": 0.842,
+        "maxMs": 1.365,
+        "reps": 11,
+        "ops": {
+          "characterComparisons": 15625,
+          "windowShifts": 15625
+        }
+      },
+      "baseline": {
+        "medianMs": 8.356,
+        "p90Ms": 9.845,
+        "minMs": 7.27,
+        "maxMs": 10.473,
+        "reps": 11,
+        "variant": "Uint8Array(128) shift table + lower-casing per call (m < 256 only)"
+      },
+      "reference": {
+        "medianMs": 0.411,
+        "p90Ms": 0.67,
+        "minMs": 0.327,
+        "maxMs": 0.749,
+        "reps": 11,
+        "variant": "String.prototype.indexOf (native)"
+      },
+      "exact": true
+    },
+    {
+      "algorithm": "Boyer–Moore–Horspool",
+      "variant": "Map shift table",
+      "size": {
+        "textLength": 1000000,
+        "patternLength": 255
+      },
+      "complexity": {
+        "time": "O(n·m) worst, ≈ n/m typical",
+        "space": "O(min(m, σ))"
+      },
+      "current": {
+        "medianMs": 0.339,
+        "p90Ms": 0.451,
+        "minMs": 0.302,
+        "maxMs": 0.47,
+        "reps": 11,
+        "ops": {
+          "characterComparisons": 3921,
+          "windowShifts": 3921
+        }
+      },
+      "baseline": {
+        "medianMs": 7.899,
+        "p90Ms": 8.628,
+        "minMs": 5.731,
+        "maxMs": 8.854,
+        "reps": 11,
+        "variant": "Uint8Array(128) shift table + lower-casing per call (m < 256 only)"
+      },
+      "reference": {
+        "medianMs": 0.264,
+        "p90Ms": 0.319,
+        "minMs": 0.244,
+        "maxMs": 0.477,
+        "reps": 11,
+        "variant": "String.prototype.indexOf (native)"
+      },
+      "exact": true
+    }
+  ]
+}
