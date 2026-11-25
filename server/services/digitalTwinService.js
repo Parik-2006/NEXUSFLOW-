@@ -48,7 +48,7 @@ async function buildCommonState(projectId) {
   const [tasks, team, risks] = await Promise.all([
     Task.find({ $or: [{ projectId }, { teamId: project.teamId }] })
       .populate("assignedTo", "name email avatar")
-      .populate("dependencies", "title status")
+      .populate({ path: "dependencies", select: "title status", match: { teamId: project.teamId } })
       .lean(),
     Team.findById(project.teamId).lean(),
     Risk.find({ projectId }).lean().catch(() => []),

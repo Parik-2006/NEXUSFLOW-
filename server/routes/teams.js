@@ -28,6 +28,20 @@ import {
   normalizeMethodologyId,
 } from "../config/methodologyAvailability.js";
 import { getScrumTaskQuery } from "./scrum.js";
+import {
+  authorizeTeamAccess,
+  authorizeTaskAccess,
+  getMembership,
+  hasPermission,
+  classifyRoleLabel,
+  roleRank,
+  assertTasksInTeam,
+  revokeTeamRoomAccess,
+  initializeWorkspaceProject,
+} from "../services/accessControlService.js";
+import { requireTeamAccess } from "../middleware/authorization.js";
+import { getAuthUserId, idEquals, isValidId } from "../utils/identity.js";
+import { logger } from "../utils/logger.js";
 
 const router = Router();
 
@@ -52,73 +66,39 @@ const MAX_SPRINT_HOURS = 200;
  * to prevent "Cast to ObjectId failed" 500 errors.
  */
 export async function resolveAuthUser(reqUser) {
-  if (!reqUser) return null;
-  const rawId = reqUser._id || reqUser.id;
-  // Happy path: JWT id is already a valid ObjectId string
-  if (rawId && mongoose.isValidObjectId(rawId)) {
-    // Verify the user actually exists (prevent stale/spoofed JWTs)
-    const user = await User.findById(rawId).select("_id name email avatar").lean();
-    return user || null;
-  }
-  // Fallback: JWT id was an email (legacy). Resolve by email.
-  const email = (reqUser.email || "").toLowerCase().trim();
-  if (!email) return null;
-  const user = await User.findOne({ email }).select("_id name email avatar").lean();
+  // Phase 1 (D-5): identity is the verified token id only — no email fallback.
+  const userId = getAuthUserId(reqUser);
+  if (!userId) return null;
+  const user = await User.findById(userId).select("_id name email avatar").lean();
   return user || null;
 }
 
+/**
+ * Backward-compatible wrapper around the centralized access-control service.
+ * Membership is decided by immutable user id only (no display-name / email
+ * matching, no owner-less "legacy" bypass). Returns { team } or { error, status }.
+ */
+export async function verifyTeamAccess(teamId, user, { permission = "team:read" } = {}) {
+  const result = await authorizeTeamAccess(teamId, user, { permission });
+  if (result.error) return { error: result.error, status: result.status, code: result.code };
+  return { team: result.team, membership: result.membership, userId: result.userId };
+}
 
-export async function verifyTeamAccess(teamId, user) {
-  if (!mongoose.isValidObjectId(teamId)) return { error: "invalid_team_id", status: 400 };
-  const team = await Team.findById(teamId).lean();
-  if (!team) return { error: "team_not_found", status: 404 };
-
-  const userIdStr = (user?._id || user?.id)?.toString() || "";
-  const userEmail = (user?.email || "").toLowerCase().trim();
-  const userName = (user?.name || "").toLowerCase().trim();
-
-  const isOwner = team.ownerId && team.ownerId.toString() === userIdStr;
-  const isMember = Array.isArray(team.members) && team.members.some((m) => {
-    const mIdStr = (m.userId?._id || m.userId)?.toString() || "";
-    const mName = (m.name || "").toLowerCase().trim();
-    return (
-      (mIdStr && mIdStr === userIdStr) ||
-      (mName && userEmail && mName === userEmail) ||
-      (mName && userName && mName === userName)
-    );
-  });
-
-  // If team has no owner and no members (legacy data), allow access
-  const isLegacy = !team.ownerId && (!team.members || team.members.length === 0);
-
-  if (!isOwner && !isMember && !isLegacy) {
-    return { error: "Forbidden: You are not a member of this team.", status: 403 };
-  }
-
-  return { team };
+/** Assignee must be empty or a member (real or placeholder) of the team. */
+export function isAssignableMember(team, assigneeId) {
+  if (assigneeId === null || assigneeId === "" ) return true;
+  if (!isValidId(assigneeId)) return false;
+  return (team?.members || []).some((m) => idEquals(m.userId, assigneeId)) || idEquals(team?.ownerId, assigneeId);
 }
 
 // ── GET /api/teams ────────────────────────────────────────────────────────────
 // STRICT USER ISOLATION: Return ONLY teams where the user is owner or a member
 router.get("/teams", requireAuth, async (req, res) => {
   try {
-    const userId = req.user?._id || req.user?.id;
-    const userEmail = req.user?.email?.toLowerCase()?.trim();
-    const userName = req.user?.name?.trim();
-
-    const conditions = [];
-    if (userId && mongoose.isValidObjectId(userId)) {
-      conditions.push({ ownerId: userId });
-      conditions.push({ "members.userId": userId });
-    }
-    if (userEmail) {
-      conditions.push({ "members.name": userEmail });
-    }
-    if (userName) {
-      conditions.push({ "members.name": userName });
-    }
-
-    const filter = conditions.length > 0 ? { $or: conditions } : { _id: null };
+    const userId = getAuthUserId(req.user);
+    const filter = userId
+      ? { $or: [{ ownerId: userId }, { "members.userId": userId }] }
+      : { _id: null };
     const teams = await Team.find(filter).sort({ updatedAt: -1 }).lean();
     for (const t of teams) {
       if (!t.methodology) {
@@ -141,18 +121,9 @@ router.get("/teams", requireAuth, async (req, res) => {
 
 // ── Team-Scoped Authorization Guard ──────────────────────────────────────────
 // STRICT IDOR ISOLATION: Verifies user is owner or member of :teamId for ALL subroutes
-router.use("/teams/:teamId", requireAuth, async (req, res, next) => {
-  const { teamId } = req.params;
-  if (!teamId || !mongoose.isValidObjectId(teamId)) {
-    return res.status(400).json({ error: "Invalid team ID." });
-  }
-  const authCheck = await verifyTeamAccess(teamId, req.user);
-  if (authCheck.error) {
-    return res.status(authCheck.status || 403).json({ error: authCheck.error });
-  }
-  req.team = authCheck.team;
-  next();
-});
+// Applies to every /api/teams/:teamId/* route in ANY router mounted after this
+// one (discovery, workstreams, skills …). Read-only; sets req.teamAccess.
+router.use("/teams/:teamId", requireAuth, requireTeamAccess({ param: "teamId" }));
 
 // ── GET /api/teams/:teamId ────────────────────────────────────────────────────
 // Single team (with members) for the workspace / assignment board.
@@ -237,10 +208,11 @@ router.post("/teams", requireAuth, async (req, res) => {
       });
     }
 
-    const creatorId = mongoose.isValidObjectId(req.user?.id)
-      ? new mongoose.Types.ObjectId(req.user.id)
-      : new mongoose.Types.ObjectId();
+    const authUserId = getAuthUserId(req.user);
+    if (!authUserId) return res.status(401).json({ error: "Unauthorized" });
+    const creatorId = new mongoose.Types.ObjectId(authUserId);
 
+    // The creator is the owner (ownerId); the role label is informational.
     const creatorRole = typeof role === "string" && role.trim() ? role.trim() : "leader";
     const creator = {
       userId: creatorId,
@@ -252,18 +224,29 @@ router.post("/teams", requireAuth, async (req, res) => {
 
     // Separate direct mock members (only if explicitly supplied without invitation flow, for legacy test compatibility)
     // from teammates invited via email. Teammates with emails receive genuine Invitations!
+    // Phase 1 (D-8): a caller-supplied userId is NEVER trusted to attach a real
+    // account. If it belongs to a registered user, that user is invited
+    // (consent required); otherwise the entry becomes an unlinked planning
+    // placeholder with a fresh id that can never authenticate.
     const extraMembers = [];
+    const consentInvites = [];
     const directList = Array.isArray(members) ? members : [];
     for (const m of directList) {
       if (!m || !m.name?.trim()) continue;
-      // If member is explicitly passed as direct member with a valid userId
       if (m.userId && mongoose.isValidObjectId(m.userId)) {
+        if (idEquals(m.userId, authUserId)) continue; // creator already added
+        const realUser = await User.findById(m.userId).select("_id email").lean();
+        if (realUser) {
+          consentInvites.push({ email: realUser.email, role: m.role || "member" });
+          continue;
+        }
         extraMembers.push({
-          userId: new mongoose.Types.ObjectId(m.userId),
+          userId: new mongoose.Types.ObjectId(),
           name: m.name.trim(),
           avatar: typeof m.avatar === "string" ? m.avatar : "",
-          role: m.role || "member",
+          role: classifyRoleLabel(m.role) === "member" ? (m.role || "member") : "member",
           skills: normalizeSkills(m.skills),
+          placeholder: true,
         });
       }
     }
@@ -361,11 +344,14 @@ router.post("/teams", requireAuth, async (req, res) => {
     }
 
     // Dispatch invitations for teammates added by email (from workflow creation)
-    const rawInvites = Array.isArray(invitations) && invitations.length > 0
-      ? invitations
-      : Array.isArray(members)
-        ? members.filter((m) => m && m.email && !m.userId)
-        : [];
+    const rawInvites = [
+      ...(Array.isArray(invitations) && invitations.length > 0
+        ? invitations
+        : Array.isArray(members)
+          ? members.filter((m) => m && m.email && !m.userId)
+          : []),
+      ...consentInvites,
+    ];
 
     const invitationsSent = [];
     const inviter = await resolveAuthUser(req.user);
@@ -400,34 +386,38 @@ router.post("/teams", requireAuth, async (req, res) => {
 // Add a member. Body: { name, skills? }
 router.post("/teams/:teamId/members", requireAuth, async (req, res) => {
   try {
-    const authCheck = await verifyTeamAccess(req.params.teamId, req.user);
-    if (authCheck.error) return res.status(authCheck.status).json({ error: authCheck.error });
+    const authCheck = await verifyTeamAccess(req.params.teamId, req.user, { permission: "member:add_placeholder" });
+    if (authCheck.error) return res.status(authCheck.status).json({ error: authCheck.error, code: authCheck.code });
 
     let { name, skills, avatar = "", role = "member" } = req.body ?? {};
-    if (!name || !name.trim()) return res.status(400).json({ error: "Member name is required." });
+    if (typeof name !== "string" || !name.trim()) return res.status(400).json({ error: "Member name is required." });
 
-    const trimmedName = name.trim();
-    let memberUserId = new mongoose.Types.ObjectId();
+    const trimmedName = name.trim().slice(0, 120);
 
-    // Check if member corresponds to an existing registered user
-    const existingUser = await User.findOne({
-      $or: [
-        { email: trimmedName.toLowerCase() },
-        { name: trimmedName },
-      ],
-    }).lean();
-
-    if (existingUser) {
-      memberUserId = existingUser._id;
-      if (!avatar && existingUser.avatar) avatar = existingUser.avatar;
+    // Phase 1 (D-8): real registered accounts join ONLY through a consent-based
+    // invitation or application. This endpoint creates unlinked planning
+    // placeholders and never matches existing users by name or email.
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedName)) {
+      return res.status(409).json({
+        error: "Registered teammates must be invited by email and accept the invitation.",
+        code: "INVITATION_REQUIRED",
+      });
+    }
+    const roleLabel = typeof role === "string" && role.trim() ? role.trim() : "member";
+    if (classifyRoleLabel(roleLabel) !== "member") {
+      return res.status(400).json({
+        error: "Placeholder members cannot hold leader or manager roles.",
+        code: "INVALID_ROLE",
+      });
     }
 
     const member = {
-      userId: memberUserId,
+      userId: new mongoose.Types.ObjectId(),
       name: trimmedName,
       avatar: typeof avatar === "string" ? avatar : "",
-      role: typeof role === "string" ? role : "member",
+      role: roleLabel,
       skills: normalizeSkills(skills),
+      placeholder: true,
     };
     const team = await Team.findByIdAndUpdate(
       req.params.teamId,
@@ -477,6 +467,33 @@ router.post("/teams/:teamId/invitations", requireAuth, async (req, res) => {
   } catch (e) {
     console.error("[POST /invitations] Error:", e.message);
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ── DELETE /api/teams/:teamId/invitations/:invitationId ───────────────────────
+// Phase 1: cancel a pending invitation (inviting roles only, scoped to team).
+router.delete("/teams/:teamId/invitations/:invitationId", requireAuth, async (req, res) => {
+  try {
+    const { teamId, invitationId } = req.params;
+    if (!isValidId(invitationId)) return res.status(400).json({ error: "Invalid invitation ID." });
+    if (!hasPermission(req.teamAccess.team, req.teamAccess.userId, "member:invite")) {
+      return res.status(403).json({ error: "Forbidden: Your workspace role does not permit this action.", code: "INSUFFICIENT_ROLE" });
+    }
+    const inv = await Invitation.findOneAndUpdate(
+      { _id: invitationId, teamId, status: "pending" },
+      { $set: { status: "canceled" } },
+      { new: true }
+    );
+    if (!inv) return res.status(404).json({ error: "Pending invitation not found." });
+    await Notification.updateMany(
+      { userId: inv.invitedUserId, "data.invitationId": inv._id },
+      { $set: { read: true, status: "archived" } }
+    );
+    const io = req.app.get("io");
+    if (io) io.to(`user:${inv.invitedUserId}`).emit("invitation:updated", { invitationId: inv._id, status: "canceled", teamId });
+    res.json({ success: true, invitationId: inv._id, status: "canceled" });
+  } catch (e) {
+    res.status(500).json({ error: "Failed to cancel invitation." });
   }
 });
 
@@ -533,28 +550,42 @@ router.post("/invitations/:invitationId/accept", requireAuth, async (req, res) =
     const expiryCheck = await checkInvitationExpiry(inv);
     if (expiryCheck.error) return res.status(expiryCheck.status).json({ error: expiryCheck.error });
 
-    const team = await Team.findById(inv.teamId);
-    if (!team) return res.status(404).json({ error: "Team no longer exists." });
+    const existingTeam = await Team.findById(inv.teamId).lean();
+    if (!existingTeam) return res.status(404).json({ error: "Team no longer exists." });
 
-    // Add user to team.members if not already present
-    const isMember = team.members.some((m) =>
-      (m.userId?._id || m.userId)?.toString() === authUser._id.toString()
+    // Atomically consume the invitation: exactly one concurrent accept wins.
+    const consumed = await Invitation.findOneAndUpdate(
+      { _id: inv._id, invitedUserId: authUser._id, status: "pending", expiresAt: { $gt: new Date() } },
+      { $set: { status: "accepted" } },
+      { new: true }
     );
-    if (!isMember) {
-      team.members.push({
-        userId: authUser._id,        // ObjectId
-        name: authUser.name || authUser.email,
-        avatar: authUser.avatar || "",
-        role: inv.role || "member",
-        skills: { frontend: 5, backend: 5, devops: 5, design: 5, ml: 5, testing: 5 },
-        capacity: 40,
-        assignedLoad: 0,
-      });
-      await team.save();
+    if (!consumed) return res.status(409).json({ error: "Invitation is no longer pending." });
+
+    // The granted role cannot exceed what the inviter can currently grant.
+    let grantedRole = inv.role || "member";
+    const inviterAccess = getMembership(existingTeam, inv.inviterId).accessRole;
+    if (!inviterAccess || roleRank(classifyRoleLabel(grantedRole)) > roleRank(inviterAccess)) {
+      grantedRole = "member";
     }
 
-    inv.status = "accepted";
-    await inv.save();
+    // Add the member only if absent (atomic uniqueness guard).
+    await Team.updateOne(
+      { _id: existingTeam._id, "members.userId": { $ne: authUser._id } },
+      {
+        $push: {
+          members: {
+            userId: authUser._id,
+            name: authUser.name || authUser.email,
+            avatar: authUser.avatar || "",
+            role: grantedRole,
+            skills: { frontend: 5, backend: 5, devops: 5, design: 5, ml: 5, testing: 5 },
+            capacity: 40,
+            assignedLoad: 0,
+          },
+        },
+      }
+    );
+    const team = await Team.findById(existingTeam._id).lean();
 
     // Mark corresponding notification as read
     await Notification.updateMany(
@@ -580,7 +611,7 @@ router.post("/invitations/:invitationId/accept", requireAuth, async (req, res) =
           userId: authUser._id,
           name: authUser.name || authUser.email,
           avatar: authUser.avatar || "",
-          role: inv.role || "member",
+          role: grantedRole,
         },
         team,
       });
@@ -711,8 +742,8 @@ router.patch("/notifications/:id/read", requireAuth, async (req, res) => {
 // changes; persists instantly so all live views (which re-fetch the team) update.
 router.patch("/teams/:teamId", requireAuth, async (req, res) => {
   try {
-    const authCheck = await verifyTeamAccess(req.params.teamId, req.user);
-    if (authCheck.error) return res.status(authCheck.status).json({ error: authCheck.error });
+    const authCheck = await verifyTeamAccess(req.params.teamId, req.user, { permission: "team:update" });
+    if (authCheck.error) return res.status(authCheck.status).json({ error: authCheck.error, code: authCheck.code });
 
     const update = {};
     const top = ["name", "logo", "projectTitle", "projectDescription"];
@@ -1721,33 +1752,31 @@ router.delete("/teams/:teamId/members/:userId", requireAuth, async (req, res) =>
     const authUser = await resolveAuthUser(req.user);
     if (!authUser) return res.status(401).json({ error: "Unauthorized" });
     const authUserIdStr = authUser._id.toString();
+    if (!isValidId(userId)) return res.status(400).json({ error: "Invalid member ID." });
 
-    // 1. Authorization check: only workspace owner or leader/manager can remove members
-    const isOwner = team.ownerId && team.ownerId.toString() === authUserIdStr;
-    const callerMember = (team.members || []).find((m) => {
-      const mId = (m.userId?._id || m.userId)?.toString();
-      return mId && mId === authUserIdStr;
-    });
-    const callerRole = String(callerMember?.role || "").toLowerCase();
-    const isLeader = isOwner || ["owner", "leader", "team leader", "manager", "project manager"].includes(callerRole);
-
-    if (!isLeader) {
-      return res.status(403).json({ error: "Forbidden: Only authorized team leaders can remove members." });
+    // 1. Authorization (central matrix): owner/leader/manager may remove, and
+    //    only members they strictly outrank (the owner may remove anyone else).
+    if (!hasPermission(team, authUserIdStr, "member:remove")) {
+      return res.status(403).json({ error: "Forbidden: Only authorized team leaders can remove members.", code: "INSUFFICIENT_ROLE" });
     }
 
     // 2. Prevent removing workspace owner
-    if (team.ownerId && team.ownerId.toString() === userId) {
+    if (idEquals(team.ownerId, userId)) {
       return res.status(400).json({ error: "Cannot remove the workspace owner from the team." });
+    }
+    if (idEquals(userId, authUserIdStr)) {
+      return res.status(400).json({ error: "Use 'Leave team' to remove yourself." });
     }
 
     // 3. Find target member in workspace
-    const targetMember = (team.members || []).find((m) => {
-      const mId = (m.userId?._id || m.userId)?.toString();
-      return mId === userId;
-    });
+    const targetMember = (team.members || []).find((m) => idEquals(m.userId, userId));
 
     if (!targetMember) {
       return res.status(404).json({ error: "Team member not found in this workspace." });
+    }
+    const callerAccess = getMembership(team, authUserIdStr).accessRole;
+    if (callerAccess !== "owner" && roleRank(classifyRoleLabel(targetMember.role)) >= roleRank(callerAccess)) {
+      return res.status(403).json({ error: "Forbidden: You can only remove members with a lower workspace role.", code: "INSUFFICIENT_ROLE" });
     }
 
     const targetUserIdObj = targetMember.userId?._id || targetMember.userId;
@@ -1800,9 +1829,13 @@ router.delete("/teams/:teamId/members/:userId", requireAuth, async (req, res) =>
       // non-fatal
     }
 
-    // 8. Real-time events
+    logger.info("security:member_removed", { teamId, targetUserId: userId, actorId: authUserIdStr });
+
+    // 8. Real-time events — revoke private room access FIRST so the removed
+    //    member's live sessions stop receiving workspace broadcasts.
     const io = req.app.get("io");
     if (io) {
+      await revokeTeamRoomAccess(io, teamId, userId);
       io.to(`team:${teamId}`).emit("member:removed", {
         teamId,
         userId,
@@ -1831,23 +1864,60 @@ router.delete("/teams/:teamId/members/:userId", requireAuth, async (req, res) =>
 router.patch("/teams/:teamId/members/:userId", requireAuth, async (req, res) => {
   try {
     const { teamId, userId } = req.params;
-    const authCheck = await verifyTeamAccess(teamId, req.user);
-    if (authCheck.error) return res.status(authCheck.status).json({ error: authCheck.error });
+    const authCheck = await verifyTeamAccess(teamId, req.user, { permission: "member:update" });
+    if (authCheck.error) return res.status(authCheck.status).json({ error: authCheck.error, code: authCheck.code });
+    if (!isValidId(userId)) return res.status(400).json({ error: "Invalid member ID." });
+
+    // Phase 1 (D-7) role-management rules:
+    //  - nobody edits their own role (no self-promotion);
+    //  - the owner's entry cannot be changed here (use ownership transfer);
+    //  - non-owners may only edit members they strictly outrank;
+    //  - a granted role may not exceed the granter's own access role.
+    const team = authCheck.team;
+    const callerId = authCheck.userId;
+    const callerAccess = authCheck.membership.accessRole;
+    const target = (team.members || []).find((m) => idEquals(m.userId, userId));
+    if (!target) return res.status(404).json({ error: "Team or member not found." });
+    if (idEquals(team.ownerId, userId) && callerAccess !== "owner") {
+      return res.status(403).json({ error: "Forbidden: The workspace owner's membership cannot be changed here.", code: "OWNER_PROTECTED" });
+    }
+    if (callerAccess !== "owner" && roleRank(classifyRoleLabel(target.role)) >= roleRank(callerAccess)) {
+      return res.status(403).json({ error: "Forbidden: You can only manage members with a lower workspace role.", code: "INSUFFICIENT_ROLE" });
+    }
 
     const set = {};
-    if (req.body.name !== undefined) set["members.$.name"] = String(req.body.name);
-    if (req.body.role !== undefined) set["members.$.role"] = String(req.body.role);
+    if (req.body.name !== undefined) {
+      const n = String(req.body.name).trim();
+      if (!n) return res.status(400).json({ error: "Name cannot be empty." });
+      set["members.$.name"] = n.slice(0, 120);
+    }
+    if (req.body.role !== undefined) {
+      const newRole = String(req.body.role).trim().slice(0, 60) || "member";
+      if (idEquals(userId, callerId)) {
+        return res.status(403).json({ error: "Forbidden: You cannot change your own workspace role.", code: "SELF_ROLE_CHANGE" });
+      }
+      if (roleRank(classifyRoleLabel(newRole)) > roleRank(callerAccess)) {
+        return res.status(403).json({ error: "Forbidden: You cannot grant a role higher than your own.", code: "INSUFFICIENT_ROLE" });
+      }
+      if (target.placeholder && classifyRoleLabel(newRole) !== "member") {
+        return res.status(400).json({ error: "Placeholder members cannot hold leader or manager roles.", code: "INVALID_ROLE" });
+      }
+      set["members.$.role"] = newRole;
+    }
     if (!Object.keys(set).length) return res.status(400).json({ error: "No valid member fields." });
     const result = await Team.updateOne({ _id: teamId, "members.userId": userId }, { $set: set });
+    if (set["members.$.role"]) {
+      logger.info("security:member_role_changed", { teamId, targetUserId: userId, actorId: callerId, role: set["members.$.role"] });
+    }
     if (!result.matchedCount) return res.status(404).json({ error: "Team or member not found." });
-    const team = await Team.findById(teamId).lean();
+    const updatedTeam = await Team.findById(teamId).lean();
 
     const io = req.app.get("io");
     if (io) {
-      io.to(`team:${teamId}`).emit("member:updated", { teamId, userId, team });
+      io.to(`team:${teamId}`).emit("member:updated", { teamId, userId, team: updatedTeam });
     }
 
-    res.json(team);
+    res.json(updatedTeam);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1923,45 +1993,28 @@ router.post("/teams/:teamId/leave", requireAuth, async (req, res) => {
     const team = await Team.findById(teamId);
     if (!team) return res.status(404).json({ error: "Team not found." });
 
-    const authUser = await resolveAuthUser(req.user);
-    const userIdStr = (authUser?._id || req.user?._id || req.user?.id)?.toString() || "";
-    const userEmail = (authUser?.email || req.user?.email || "").toLowerCase().trim();
-    const userName = (authUser?.name || req.user?.name || "").toLowerCase().trim();
+    const userIdStr = getAuthUserId(req.user) || "";
 
-    // Check if user is owner
-    if (team.ownerId && team.ownerId.toString() === userIdStr) {
+    // Check if user is owner (an owner must transfer ownership or delete)
+    if (idEquals(team.ownerId, userIdStr)) {
       return res.status(400).json({
-        error: "Team leaders cannot leave their own workspace. Use Delete Team if you want to remove this workspace.",
+        error: "Team owners cannot leave their own workspace. Transfer ownership or delete the team.",
       });
     }
 
-    // Check if user is a member
-    const memberIndex = (team.members || []).findIndex((m) => {
-      const mIdStr = (m.userId?._id || m.userId)?.toString() || "";
-      const mName = (m.name || "").toLowerCase().trim();
-      return (
-        (mIdStr && mIdStr === userIdStr) ||
-        (mName && userEmail && mName === userEmail) ||
-        (mName && userName && mName === userName)
-      );
-    });
-
-    if (memberIndex === -1) {
+    // Membership by immutable id only
+    const leavingMember = (team.members || []).find((m) => idEquals(m.userId, userIdStr));
+    if (!leavingMember) {
       return res.status(403).json({ error: "You are not a member of this team." });
     }
-
-    const leavingMember = team.members[memberIndex];
-    const memberUserId = leavingMember.userId || authUser?._id;
+    const memberUserId = leavingMember.userId;
 
     // Capture remaining members BEFORE removing the leaving member
-    const remainingMembers = team.members.filter(
-      (m) => (m.userId?.toString?.() || m.userId?.toString?.()) !== (memberUserId || authUser?._id)?.toString?.()
-    );
+    const remainingMembers = team.members.filter((m) => !idEquals(m.userId, memberUserId) && !m.placeholder);
 
-    // Remove member from team
-    team.members.splice(memberIndex, 1);
-    team.markModified("members");
-    await team.save();
+    // Remove member from team (atomic)
+    await Team.updateOne({ _id: team._id }, { $pull: { members: { userId: memberUserId } } });
+    await revokeTeamRoomAccess(req.app.get("io"), teamId, userIdStr);
 
     // Unassign tasks assigned to this user in this team
     if (memberUserId) {
@@ -2038,6 +2091,71 @@ router.post("/teams/:teamId/leave", requireAuth, async (req, res) => {
   }
 });
 
+// ── POST /api/teams/:teamId/initialize-project ────────────────────────────────
+// Phase 1 (D-10): the ONLY place a missing workspace project is created for a
+// legacy team. Authenticated + authorized member, explicit POST, idempotent and
+// race-safe (see initializeWorkspaceProject). Methodology is taken from the
+// team record, never from the caller.
+router.post("/teams/:teamId/initialize-project", requireAuth, async (req, res) => {
+  try {
+    const { team, userId } = req.teamAccess;
+    if (!hasPermission(team, userId, "methodology:initialize")) {
+      return res.status(403).json({ error: "Forbidden", code: "INSUFFICIENT_ROLE" });
+    }
+    const methodology = normalizeMethodologyId(team.methodology) || undefined;
+    const { project, created } = await initializeWorkspaceProject(team, { methodology });
+    res.status(created ? 201 : 200).json({ success: true, created, projectId: project?._id, project });
+  } catch (e) {
+    res.status(500).json({ error: "Failed to initialize workspace project." });
+  }
+});
+
+// ── POST /api/teams/:teamId/transfer-ownership ────────────────────────────────
+// Phase 1: the ONLY way ownership changes. Owner-only; the new owner must be an
+// existing, real (non-placeholder) member account. Atomic compare-and-set on
+// ownerId so a workspace can never become ownerless or double-transferred.
+router.post("/teams/:teamId/transfer-ownership", requireAuth, async (req, res) => {
+  try {
+    const { teamId } = req.params;
+    const { team, userId: callerId } = req.teamAccess;
+    if (!hasPermission(team, callerId, "ownership:transfer")) {
+      return res.status(403).json({ error: "Forbidden: Only the workspace owner can transfer ownership.", code: "INSUFFICIENT_ROLE" });
+    }
+    const newOwnerId = String(req.body?.newOwnerId || "");
+    if (!isValidId(newOwnerId) || idEquals(newOwnerId, callerId)) {
+      return res.status(400).json({ error: "A different existing member must be selected as the new owner." });
+    }
+    const target = (team.members || []).find((m) => idEquals(m.userId, newOwnerId));
+    if (!target || target.placeholder || !(await User.exists({ _id: newOwnerId }))) {
+      return res.status(400).json({ error: "The new owner must be a registered member of this workspace." });
+    }
+    const swapped = await Team.updateOne(
+      { _id: teamId, ownerId: callerId, "members.userId": newOwnerId },
+      { $set: { ownerId: newOwnerId } }
+    );
+    if (!swapped.modifiedCount) return res.status(409).json({ error: "Ownership changed concurrently; reload and retry." });
+
+    // Previous owner stays a member with leader access; new owner's label → leader.
+    await Team.updateOne(
+      { _id: teamId, "members.userId": { $ne: callerId } },
+      { $push: { members: { userId: callerId, name: req.user?.name || "Owner", role: "leader" } } }
+    );
+    await Team.updateOne(
+      { _id: teamId },
+      { $set: { "members.$[prev].role": "leader", "members.$[next].role": "leader" } },
+      { arrayFilters: [{ "prev.userId": new mongoose.Types.ObjectId(callerId) }, { "next.userId": new mongoose.Types.ObjectId(newOwnerId) }] }
+    );
+    logger.warn("security:ownership_transferred", { teamId, fromUserId: callerId, toUserId: newOwnerId });
+
+    const fresh = await Team.findById(teamId).lean();
+    const io = req.app.get("io");
+    if (io) io.to(`team:${teamId}`).emit("member:updated", { teamId, userId: newOwnerId, team: fresh });
+    res.json({ success: true, team: fresh });
+  } catch (e) {
+    res.status(500).json({ error: "Failed to transfer ownership." });
+  }
+});
+
 // ── DELETE /api/teams/:teamId ─────────────────────────────────────────────────
 // Remove a team and all of its owned data. STRICT: Only the team owner can delete.
 //
@@ -2072,10 +2190,20 @@ router.delete("/teams/:teamId", requireAuth, async (req, res) => {
       return res.status(401).json({ error: "Unauthorized: Could not resolve your account." });
     }
     const userIdStr = authUser._id.toString();
-    const isOwner = team.ownerId && team.ownerId.toString() === userIdStr;
-    if (!isOwner) {
-      return res.status(403).json({ error: "Forbidden: Only the team leader can delete this team." });
+    if (!hasPermission(team, userIdStr, "team:delete")) {
+      return res.status(403).json({ error: "Forbidden: Only the workspace owner can delete this team.", code: "INSUFFICIENT_ROLE" });
     }
+
+    // Phase 1 (D-9): deliberate confirmation — the exact workspace name must be
+    // supplied, so a stray/replayed request cannot wipe a workspace.
+    const confirmName = String(req.body?.confirmName ?? "").trim();
+    if (!confirmName || confirmName !== String(team.name || "").trim()) {
+      return res.status(400).json({
+        error: "Confirmation required: type the exact workspace name to delete it.",
+        code: "CONFIRMATION_REQUIRED",
+      });
+    }
+    logger.warn("security:team_deleted", { teamId, actorId: userIdStr });
 
     // Dynamic imports avoid circular dependency issues between models and routes.
     const [
@@ -2125,6 +2253,7 @@ router.delete("/teams/:teamId", requireAuth, async (req, res) => {
     const io = req.app.get("io");
     if (io) {
       io.to(`team:${teamId}`).emit("team:deleted", { teamId });
+      io.in(`team:${teamId}`).socketsLeave([`team:${teamId}`, `chat:team:${teamId}`]);
     }
 
     res.json({ ok: true, message: "Team deleted successfully." });
@@ -2167,7 +2296,7 @@ router.post("/teams/:teamId/tasks", requireAuth, async (req, res) => {
       deadline,
       dueDate,
       priorityLabel,
-      createdBy: req.user?._id || null,
+      createdBy: getAuthUserId(req.user),
       stateVersion: 1,       // first state version
       greedyVersion: 1,      // greedy result valid for state v1
       planningVersion: 1,    // planning result valid for state v1
@@ -2333,7 +2462,8 @@ router.post("/teams/:teamId/tasks/:taskId/dependencies", requireAuth, async (req
     if (hasCycle(adj, tasks.map((t) => t._id.toString())))
       return res.status(422).json({ error: "cycle_detected", message: "Adding this dependency would create a circular chain." });
 
-    await Task.updateOne({ _id: taskId }, { $addToSet: { dependencies: dependsOn } });
+    // Both ends were verified above to belong to this team (no cross-workspace edges).
+    await Task.updateOne({ _id: taskId, teamId }, { $addToSet: { dependencies: dependsOn } });
 
     const updated = await Task.find({ teamId }).lean();
     const order   = topologicalSort(updated);
@@ -2353,7 +2483,9 @@ router.post("/teams/:teamId/tasks/:taskId/dependencies", requireAuth, async (req
 router.delete("/teams/:teamId/tasks/:taskId/dependencies/:depId", requireAuth, async (req, res) => {
   try {
     const { teamId, taskId, depId } = req.params;
-    await Task.updateOne({ _id: taskId }, { $pull: { dependencies: depId } });
+    if (!isValidId(taskId) || !isValidId(depId)) return res.status(400).json({ error: "Invalid task ID." });
+    const upd = await Task.updateOne({ _id: taskId, teamId }, { $pull: { dependencies: depId } });
+    if (!upd.matchedCount) return res.status(404).json({ error: "task_not_found" });
     const tasks = await Task.find({ teamId }).lean();
     const order = topologicalSort(tasks);
     const bulk  = order.map((id, idx) => ({
@@ -2504,8 +2636,13 @@ router.patch("/teams/:teamId/tasks/:taskId", requireAuth, async (req, res) => {
     if (update.status === "done") update.completedAt = new Date();
     else if (update.status !== undefined) update.completedAt = null;
 
-    const existing = await Task.findById(req.params.taskId).lean();
+    if (!isValidId(req.params.taskId)) return res.status(400).json({ error: "Invalid task ID." });
+    // Phase 1 (D-3): the task must belong to the authorized team.
+    const existing = await Task.findOne({ _id: req.params.taskId, teamId: req.params.teamId }).lean();
     if (!existing) return res.status(404).json({ error: "Task not found." });
+    if (update.assignedTo !== undefined && !isAssignableMember(req.teamAccess.team, update.assignedTo)) {
+      return res.status(400).json({ error: "Assignee must be a member of this workspace.", code: "INVALID_ASSIGNEE" });
+    }
 
     // Server-side enforcement of Waterfall Phase Gates
     if (update.status && (update.status === "in_progress" || update.status === "done")) {
@@ -2673,6 +2810,11 @@ router.post("/teams/:teamId/restore-backlog", requireAuth, async (req, res) => {
     const { teamId } = req.params;
     const team = await Team.findById(teamId).lean();
     if (!team) return res.status(404).json({ error: "team_not_found" });
+    // Phase 1 (D-9): wipes and rebuilds the whole task list → leaders only.
+    if (!hasPermission(team, req.teamAccess.userId, "backlog:restore")) {
+      return res.status(403).json({ error: "Forbidden: Only workspace leaders can restore the AI backlog.", code: "INSUFFICIENT_ROLE" });
+    }
+    logger.warn("security:backlog_restored", { teamId, actorId: req.teamAccess.userId });
     const seeds = team.aiGeneratedTasks ?? [];
     if (!seeds.length) return res.status(409).json({ error: "No AI backlog snapshot to restore." });
 
@@ -2706,14 +2848,20 @@ router.get("/teams/:teamId/health", requireAuth, async (req, res) => {
 // increments state version so clients can detect stale derived state.
 router.patch("/tasks/:taskId/priority", requireAuth, async (req, res) => {
   try {
+    // Phase 1 (D-3): this route has no team in its path, so authorize via the
+    // task's own team (before any validation) and bind the update to that team.
+    const access = await authorizeTaskAccess(req.params.taskId, req.user);
+    if (access.error) return res.status(access.status).json({ error: access.error, code: access.code });
+
     const { urgency, impact } = req.body ?? {};
     if (urgency === undefined && impact === undefined)
       return res.status(400).json({ error: "Provide urgency and/or impact." });
 
-    const existing = await Task.findById(req.params.taskId).select("stateVersion greedyVersion planningVersion").lean();
+    const existing = await Task.findOne({ _id: req.params.taskId, teamId: access.task.teamId })
+      .select("urgency impact dependencyCount stateVersion greedyVersion planningVersion").lean();
     if (!existing) return res.status(404).json({ error: "Task not found." });
 
-    const task = await Task.findByIdAndUpdate(req.params.taskId, {
+    const task = await Task.findOneAndUpdate({ _id: req.params.taskId, teamId: access.task.teamId }, {
       urgency        : urgency ?? existing.urgency,
       impact         : impact  ?? existing.impact,
       dependencyCount: existing.dependencyCount,
@@ -2742,36 +2890,17 @@ router.patch("/teams/:teamId/members/:userId/skills", requireAuth, async (req, r
     const team = await Team.findById(teamId);
     if (!team) return res.status(404).json({ error: "Team not found." });
 
-    const authUser = await resolveAuthUser(req.user);
-    const authUserIdStr = (authUser?._id || req.user?._id || req.user?.id)?.toString() || "";
-    const userEmail = (authUser?.email || req.user?.email || "").toLowerCase().trim();
-    const userName = (authUser?.name || req.user?.name || "").toLowerCase().trim();
+    const authUserIdStr = getAuthUserId(req.user) || "";
 
-    // Find target member in team.members
-    let member = (team.members || []).find((m) => {
-      const mId = (m.userId?._id || m.userId)?.toString();
-      const subId = m._id?.toString();
-      return (mId && mId === userId) || (subId && subId === userId);
-    });
-
-    if (!member && !mongoose.isValidObjectId(userId)) {
-      member = (team.members || []).find((m) => m.name && m.name.toLowerCase() === userId.toLowerCase());
-    }
+    // Find target member in team.members (immutable id only — no name lookup)
+    const member = (team.members || []).find((m) => idEquals(m.userId, userId));
 
     if (!member) {
       return res.status(404).json({ error: "Team member not found in this workspace." });
     }
 
-    const targetMemberUserIdStr = (member.userId?._id || member.userId)?.toString() || "";
-    const targetMemberName = (member.name || "").toLowerCase().trim();
-
     // STRICT OWNERSHIP (Fix 3): Only the member themselves can edit their skills
-    const isSelf = Boolean(
-      (targetMemberUserIdStr && authUserIdStr && targetMemberUserIdStr === authUserIdStr) ||
-      (userId && authUserIdStr && userId === authUserIdStr) ||
-      (!targetMemberUserIdStr && targetMemberName && userEmail && targetMemberName === userEmail) ||
-      (!targetMemberUserIdStr && targetMemberName && userName && targetMemberName === userName)
-    );
+    const isSelf = idEquals(member.userId, authUserIdStr);
 
     if (!isSelf) {
       return res.status(403).json({ error: "Forbidden: You can only edit your own skill ratings. Teammate skills are read-only." });
@@ -2829,17 +2958,13 @@ router.patch("/teams/:teamId/members/:userId/skills", requireAuth, async (req, r
     await team.save();
 
     const refreshedTeam = await Team.findById(teamId).lean();
-    const refreshedMember = (refreshedTeam.members || []).find((m) => {
-      const mId = (m.userId?._id || m.userId)?.toString();
-      const subId = m._id?.toString();
-      return (mId && mId === userId) || (subId && subId === userId) || (m.name === member.name);
-    });
+    const refreshedMember = (refreshedTeam.members || []).find((m) => idEquals(m.userId, userId));
 
     const io = req.app.get("io");
     if (io) {
       io.to(`team:${teamId}`).emit("member:skills_updated", {
         teamId,
-        userId: targetMemberUserIdStr || userId,
+        userId,
         skills: member.skills,
         member: refreshedMember,
         team: refreshedTeam,
@@ -2929,7 +3054,7 @@ router.post("/teams/:teamId/assign", requireAuth, async (req, res) => {
       const memberMap = Object.fromEntries(members.map((m) => [m.userId.toString(), m]));
       await Task.bulkWrite(assignments.map(({ taskId, memberId, cost }) => ({
         updateOne: {
-          filter: { _id: taskId },
+          filter: { _id: taskId, teamId },
           update: {
             $set: {
               assignedTo: memberId,
@@ -3190,7 +3315,8 @@ router.post("/teams/:teamId/tasks/:taskId/recalculate", requireAuth, async (req,
     const { taskId } = req.params;
     const { cachedGreedyVersion, cachedPlanningVersion } = req.body ?? {};
 
-    const task = await Task.findById(taskId);
+    if (!isValidId(taskId)) return res.status(400).json({ error: "Invalid task ID." });
+    const task = await Task.findOne({ _id: taskId, teamId: req.params.teamId });
     if (!task) return res.status(404).json({ error: "Task not found." });
 
     // Build context for the centralized priority engine.

@@ -5,6 +5,10 @@ import { computeRecommendation, boyerMooreSearch } from "../algorithms/taskOptim
 import { decomposeProject } from "../algorithms/projectDecomposer.js";
 import { recomputeAndBroadcast } from "./taskHandlers.js";
 import { verifyTeamAccess } from "../routes/teams.js";
+import { assertTasksInTeam } from "../services/accessControlService.js";
+
+// Phase 1 (D-4): upper bound for Boyer–Moore search patterns.
+const MAX_SEARCH_QUERY_LENGTH = 200;
 
 // Map existing schema fields → the {value, effort, priority} shape the
 // recommendation engine expects.
@@ -139,8 +143,9 @@ export function toActionableTitle(raw) {
 }
 
 export function registerAiOrchestrator(io, socket) {
-  socket.on("chat:message", async ({ teamId, text }) => {
-    if (!teamId) return;
+  socket.on("chat:message", async (payload) => {
+    const { teamId, text } = payload && typeof payload === "object" ? payload : {};
+    if (!teamId || typeof text !== "string" || !text.trim() || text.length > 4000) return;
     const auth = await verifyTeamAccess(teamId, socket.data.user);
     if (auth.error) return;
 
@@ -180,11 +185,15 @@ export function registerAiOrchestrator(io, socket) {
   });
 
   // Manual assignment trigger from client.
-  socket.on("tasks:assign", async ({ teamId, taskIds }) => {
+  socket.on("tasks:assign", async (payload) => {
+    const { teamId, taskIds } = payload && typeof payload === "object" ? payload : {};
     if (!teamId) return;
     const auth = await verifyTeamAccess(teamId, socket.data.user);
     if (auth.error) return;
-    await runAutoAssignment(io, teamId, taskIds ?? []);
+    const ids = Array.isArray(taskIds) ? taskIds.map(String) : [];
+    // All-or-nothing: every id must belong to this team.
+    if (ids.length && !(await assertTasksInTeam(ids, auth.team._id))) return;
+    await runAutoAssignment(io, String(auth.team._id), ids);
   });
 
   // ── DAA Recommendation Engine (BFS → Greedy → Knapsack → MergeSort → Topo) ──
@@ -246,9 +255,16 @@ export function registerAiOrchestrator(io, socket) {
   });
 
   // ── Boyer-Moore-Horspool task title search ──────────────────────────────────
-  socket.on("task:search", async ({ teamId, query }, ack) => {
+  socket.on("task:search", async (payload, ack) => {
     try {
-      const allTasks = await Task.find({ teamId }).lean();
+      // Phase 1 (D-4): validate payload, require membership, bound the query.
+      const { teamId, query } = payload && typeof payload === "object" ? payload : {};
+      if (typeof query !== "string" || query.length > MAX_SEARCH_QUERY_LENGTH) {
+        return ack?.({ ok: false, error: `query must be a string of at most ${MAX_SEARCH_QUERY_LENGTH} characters.`, code: "INVALID_QUERY" });
+      }
+      const auth = await verifyTeamAccess(teamId, socket.data.user);
+      if (auth.error) return ack?.({ ok: false, error: "Forbidden", code: auth.code || "FORBIDDEN" });
+      const allTasks = await Task.find({ teamId: auth.team._id }).lean();
       const matched  = boyerMooreSearch(allTasks, query);
       socket.emit("task:searchResult", {
         tasks       : matched,
@@ -378,7 +394,7 @@ async function runAutoAssignment(io, teamId, taskIds) {
     if (!assignments.length) return;
 
     await Task.bulkWrite(assignments.map(({ taskId, memberId, cost }) => ({
-      updateOne: { filter: { _id: taskId }, update: { $set: { assignedTo: memberId, assignmentCost: cost } } },
+      updateOne: { filter: { _id: taskId, teamId }, update: { $set: { assignedTo: memberId, assignmentCost: cost } } },
     })));
 
     for (const { taskId, memberId, cost } of assignments) {

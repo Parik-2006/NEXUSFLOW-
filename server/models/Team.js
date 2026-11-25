@@ -21,6 +21,10 @@ const TeamMemberSchema = new mongoose.Schema(
     skills:       { type: SkillProfileSchema, default: () => ({}) },
     capacity:     { type: Number, default: 40, min: 1 },
     assignedLoad: { type: Number, default: 0, min: 0 },
+    // Phase 1: name-only planning placeholder. Its userId is a random id that
+    // belongs to no account, so it can be assigned work but can never
+    // authenticate or be auto-linked to a real user by name.
+    placeholder:  { type: Boolean, default: false },
   },
   { _id: false }
 );
@@ -135,5 +139,8 @@ const TeamSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// Membership lookups (GET /teams, invitations, access checks) filter on this.
+TeamSchema.index({ "members.userId": 1 });
 
 export default mongoose.model("Team", TeamSchema);

@@ -4,7 +4,9 @@ import Task from "../models/Task.js";
 import { computePriorityScore } from "../algorithms/greedyScheduler.js";
 import { buildGraph, topologicalSort as topoSortGraph } from "../algorithms/graphTraversal.js";
 
-import { verifyTeamAccess } from "../routes/teams.js";
+import { verifyTeamAccess, isAssignableMember } from "../routes/teams.js";
+import { assertTasksInTeam } from "../services/accessControlService.js";
+import { isValidId } from "../utils/identity.js";
 import { assertWaterfallTaskExecutable, getWaterfallPhaseStates } from "../services/phaseGateService.js";
 import { scanProjectRisks } from "../services/riskEngine.js";
 
@@ -54,8 +56,9 @@ async function notifyHealthAndRiskChange(io, teamId) {
 }
 
 export function registerTaskHandlers(io, socket) {
-  socket.on("room:join", async ({ teamId }, ack) => {
+  socket.on("room:join", async (payload, ack) => {
     try {
+      const { teamId } = payload && typeof payload === "object" ? payload : {};
       if (!teamId) {
         ack?.({ ok: false, error: "Team ID is required." });
         return;
@@ -72,8 +75,9 @@ export function registerTaskHandlers(io, socket) {
     }
   });
 
-  socket.on("room:leave", ({ teamId }) => {
-    if (teamId) socket.leave(`team:${teamId}`);
+  socket.on("room:leave", (payload) => {
+    const teamId = payload?.teamId;
+    if (isValidId(teamId)) socket.leave(`team:${teamId}`);
   });
 
   // ── task:create ────────────────────────────────────────────────────────────
@@ -88,6 +92,13 @@ export function registerTaskHandlers(io, socket) {
       if (!teamId) return ack?.({ ok: false, error: "teamId is required." });
       const auth = await verifyTeamAccess(teamId, socket.data.user);
       if (auth.error) return ack?.({ ok: false, error: auth.error });
+      if (typeof title !== "string" || !title.trim()) return ack?.({ ok: false, error: "title is required." });
+      if (!Array.isArray(dependencies) || !(await assertTasksInTeam(dependencies, auth.team._id))) {
+        return ack?.({ ok: false, error: "Dependencies must reference tasks in this workspace." });
+      }
+      if (assignedTo !== undefined && !isAssignableMember(auth.team, assignedTo)) {
+        return ack?.({ ok: false, error: "Assignee must be a member of this workspace." });
+      }
 
       const task = await Task.create({
         teamId,
@@ -161,6 +172,10 @@ export function registerTaskHandlers(io, socket) {
       if (!teamId || !taskId) return ack?.({ ok: false, error: "teamId and taskId are required." });
       const auth = await verifyTeamAccess(teamId, socket.data.user);
       if (auth.error) return ack?.({ ok: false, error: auth.error });
+      if (!isValidId(taskId)) return ack?.({ ok: false, error: "invalid_task_id" });
+      // Phase 1 (D-3): the task must belong to the authorized team.
+      const scope = { _id: taskId, teamId: auth.team._id };
+      if (!(await Task.exists(scope))) return ack?.({ ok: false, error: "not_found" });
 
       let updatePayload = {};
       if (status !== undefined) updatePayload.status = status;
@@ -176,7 +191,7 @@ export function registerTaskHandlers(io, socket) {
 
       const priorityChanging = urgency !== undefined || impact !== undefined;
       if (priorityChanging) {
-        const existing = await Task.findById(taskId).select("stateVersion greedyVersion planningVersion").lean();
+        const existing = await Task.findOne(scope).select("urgency impact dependencyCount stateVersion greedyVersion planningVersion").lean();
         if (!existing) return ack?.({ ok: false, error: "not_found" });
         updatePayload.urgency         = urgency ?? existing.urgency;
         updatePayload.impact          = impact  ?? existing.impact;
@@ -190,13 +205,13 @@ export function registerTaskHandlers(io, socket) {
       const newStatus = updatePayload.status;
       let effPrev = prevStatus;
       if (newStatus !== undefined && effPrev === undefined) {
-        const cur = await Task.findById(taskId).select("status").lean();
+        const cur = await Task.findOne(scope).select("status").lean();
         effPrev = cur?.status;
       }
 
       // Waterfall Phase Gate Server-side Enforcement
       if (newStatus && (newStatus === "in_progress" || newStatus === "done")) {
-        const existingTask = await Task.findById(taskId).lean();
+        const existingTask = await Task.findOne(scope).lean();
         if (!existingTask) return ack?.({ ok: false, error: "not_found" });
         try {
           await assertWaterfallTaskExecutable(existingTask, newStatus);
@@ -211,7 +226,10 @@ export function registerTaskHandlers(io, socket) {
         else if (newStatus !== "done" && effPrev === "done") updatePayload.completedAt = null;
       }
 
-      const task = await Task.findByIdAndUpdate(taskId, updatePayload, {
+      if (updatePayload.assignedTo !== undefined && !isAssignableMember(auth.team, updatePayload.assignedTo)) {
+        return ack?.({ ok: false, error: "Assignee must be a member of this workspace." });
+      }
+      const task = await Task.findOneAndUpdate(scope, updatePayload, {
         new: true, runValidators: true, context: "query",
       }).lean();
       if (!task) return ack?.({ ok: false, error: "not_found" });

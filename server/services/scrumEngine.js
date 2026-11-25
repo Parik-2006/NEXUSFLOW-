@@ -494,6 +494,20 @@ export async function getSprintBacklog(sprintId) {
 /**
  * Add a task to a Sprint with capacity checking.
  */
+/**
+ * Phase 1 (D-3) defense in depth: a sprint may only ever hold tasks of its own
+ * workspace (teamId) and, when the task is project-bound, its own project.
+ */
+function assertTaskBelongsToSprintScope(task, sprint) {
+  const sameTeam = !sprint.teamId || (task.teamId && task.teamId.toString() === sprint.teamId.toString());
+  const sameProject = !task.projectId || task.projectId.toString() === sprint.projectId.toString();
+  if (!sameTeam || !sameProject) {
+    const err = new Error("Task does not belong to this sprint's workspace/project");
+    err.statusCode = 403;
+    throw err;
+  }
+}
+
 export async function addToSprint({ sprintId, taskId, actorId = null, actorName = "System" }) {
   const sprint = await Sprint.findById(sprintId);
   if (!sprint) throw new Error("Sprint not found");
@@ -503,6 +517,7 @@ export async function addToSprint({ sprintId, taskId, actorId = null, actorName 
 
   const task = await Task.findById(taskId);
   if (!task) throw new Error("Task not found");
+  assertTaskBelongsToSprintScope(task, sprint);
 
   const taskHours = task.estimatedHours || 0;
   const newAllocated = sprint.allocatedHours + taskHours;
@@ -547,6 +562,10 @@ export async function removeFromSprint({ sprintId, taskId, actorId = null, actor
 
   const task = await Task.findById(taskId);
   if (!task) throw new Error("Task not found");
+  assertTaskBelongsToSprintScope(task, sprint);
+  if (!task.sprintId || task.sprintId.toString() !== sprint._id.toString()) {
+    throw new Error("Task is not in this sprint");
+  }
 
   // Protect DONE work
   if (task.scrumStatus === "DONE" || task.status === "done") {

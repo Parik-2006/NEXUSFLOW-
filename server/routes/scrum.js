@@ -67,95 +67,69 @@ import {
 import { logger } from "../utils/logger.js";
 import { getScrumSprintAnalytics } from "../services/scrumAnalyticsService.js";
 
+import {
+  authorizeProjectAccess,
+  authorizeSprintAccess,
+  initializeWorkspaceProject,
+  getMembership,
+  hasPermission,
+  roleRank,
+  findScopedTask,
+  assertTasksInTeam,
+} from "../services/accessControlService.js";
+import { getAuthUserId, idEquals, isValidId } from "../utils/identity.js";
+
 const router = express.Router();
 
 // ── Helper: verify project / team access (Accepts Project ID OR Team ID) ───────
-async function verifyProjectAccess(req, res, targetId) {
+// Phase 1: delegates to the central, id-only, fail-closed access service.
+// Resolution is read-only; a missing Scrum project is initialized ONLY on a
+// non-GET request AFTER authorization (idempotent, race-safe). GET requests on
+// an uninitialized workspace receive 409 PROJECT_NOT_INITIALIZED.
+async function verifyProjectAccess(req, res, targetId, { permission = "team:read" } = {}) {
   const id = targetId || req.params.id || req.params.projectId || req.params.teamId || req.body?.projectId || req.body?.teamId;
   if (!id) {
     res.status(400).json({ error: "Target ID (Project or Team) is required" });
     return null;
   }
 
-  if (!mongoose.isValidObjectId(id)) {
-    res.status(400).json({ error: "Invalid Project or Team ID" });
+  const access = await authorizeProjectAccess(String(id), req.user, { permission, allowTeamId: true, lean: false });
+  if (access.error) {
+    const status = access.status === 404 ? 404 : access.status;
+    res.status(status).json({ error: status === 404 ? "Workspace or Project not found" : access.error, code: access.code });
     return null;
   }
 
-  let project = null;
-  let team = null;
-
-  // Try finding as Project first
-  project = await Project.findById(id);
-  if (project) {
-    team = await Team.findById(project.teamId);
-  } else {
-    // Try finding as Team
-    team = await Team.findById(id);
-    if (team) {
-      if (team.activeProjectId && mongoose.isValidObjectId(team.activeProjectId)) {
-        project = await Project.findById(team.activeProjectId);
-      }
-      if (!project) {
-        project = await Project.findOne({ teamId: team._id }).sort({ updatedAt: -1 });
-      }
-    }
-  }
-
-  if (!team) {
-    res.status(404).json({ error: "Workspace or Project not found" });
-    return null;
-  }
-
-  // STRICT AUTHORIZATION CHECK FIRST BEFORE ANY DATA MODIFICATION
-  const userId = req.user?._id?.toString() || req.user?.id?.toString();
-  const userEmail = req.user?.email?.toLowerCase()?.trim();
-  const userName = req.user?.name?.trim();
-  const isOwner = team.ownerId && team.ownerId.toString() === userId;
-  const isMember = Array.isArray(team.members) && team.members.some((m) => {
-    const mIdStr = (m.userId?._id || m.userId)?.toString() || "";
-    const mName = (m.name || "").toLowerCase().trim();
-    return (
-      (mIdStr && mIdStr === userId) ||
-      (mName && userEmail && mName === userEmail) ||
-      (mName && userName && mName === userName)
-    );
-  });
-
-  if (!isOwner && !isMember && team.ownerId && team.members?.length > 0 && req.user?.role !== "admin") {
-    res.status(403).json({ error: "Forbidden: You are not a member of this project's team" });
-    return null;
-  }
+  let { project, team } = access;
 
   // If no project exists for this team yet:
   if (!project) {
     const isSetup = req.path === "/setup" || req.url === "/setup";
     if (isSetup) {
-      return { project: null, team };
+      return { project: null, team, membership: access.membership, userId: access.userId };
     }
-    // Only auto-initialize project if the workspace is actually a Scrum workspace
-    if (team.methodology === "SCRUM" || team.methodology === "Scrum") {
-      project = await Project.create({
-        teamId: team._id,
-        title: team.projectTitle || team.name,
-        description: team.projectDescription || "",
-        methodology: "SCRUM",
+    if (team.methodology !== "SCRUM" && team.methodology !== "Scrum") {
+      res.status(400).json({ error: `Workspace methodology is ${team.methodology || "unspecified"}, not Scrum.` });
+      return null;
+    }
+    if (req.method === "GET") {
+      res.status(409).json({ error: "Scrum workspace is not initialized yet.", code: "PROJECT_NOT_INITIALIZED" });
+      return null;
+    }
+    ({ project } = await initializeWorkspaceProject(team, {
+      methodology: "SCRUM",
+      extra: {
         scrumConfig: {
           sprintDuration: 14,
           defaultCapacityPerMember: 30,
           estimationUnit: "both",
           definitionOfDone: ["Code complete", "Tests passing", "Code reviewed", "Documentation updated"],
         },
-      });
-      team.activeProjectId = project._id;
-      await team.save();
-    } else {
-      res.status(400).json({ error: `Workspace methodology is ${team.methodology || "unspecified"}, not Scrum.` });
-      return null;
-    }
+      },
+    }));
   }
 
-  return { project, team };
+  return { project, team, membership: access.membership, userId: access.userId };
 }
 
 // ── Helper: Authoritative Scrum Task Query ───────────────────────────────────
@@ -529,20 +503,9 @@ const handleGetSprints = async (req, res) => {
     const access = await verifyProjectAccess(req, res, req.params.id || req.params.projectId);
     if (!access) return;
 
-    const userId = req.user?._id?.toString() || req.user?.id?.toString();
-    const isOwner = access.team.ownerId && access.team.ownerId.toString() === userId;
-    const memberMeta = Array.isArray(access.team.members) && access.team.members.find((m) => {
-      const mId = (m.userId?._id || m.userId)?.toString();
-      return mId === userId;
-    });
-    const isLeader = isOwner ||
-      memberMeta?.role === "leader" ||
-      memberMeta?.role === "lead" ||
-      memberMeta?.role === "manager" ||
-      memberMeta?.role === "scrum_master" ||
-      req.user?.role === "leader" ||
-      req.user?.role === "lead" ||
-      req.user?.role === "admin";
+    const userId = getAuthUserId(req.user);
+    // UI flag: can this user manage sprints/planning (manager rank or above)?
+    const isLeader = roleRank(getMembership(access.team, userId).accessRole) >= roleRank("manager");
 
     const sprints = await getProjectSprints(access.project._id.toString());
     res.json({
@@ -674,17 +637,12 @@ const handleCompleteSprint = async (req, res) => {
     if (!access) return;
 
     const { project, team } = access;
-    const userId = req.user?._id?.toString() || req.user?.id?.toString();
+    const userId = getAuthUserId(req.user);
 
-    // Verify authorized team leader permissions
-    const isOwner = team.leaderId?.toString() === userId || project.ownerId?.toString() === userId;
-    const memberMeta = team.members?.find((m) => (m.userId?._id || m.userId)?.toString() === userId);
-    const isLeader = isOwner ||
-      memberMeta?.role === "leader" ||
-      memberMeta?.role === "lead" ||
-      memberMeta?.role === "Scrum Master" ||
-      req.user?.role === "leader" ||
-      req.user?.role === "admin";
+    // Phase 1 (D-15): central leader check (owner via team.ownerId, or a
+    // leader-class role). Replaces checks on nonexistent team.leaderId /
+    // project.ownerId fields and on untrusted token "role" claims.
+    const isLeader = hasPermission(team, userId, "sprint:complete");
 
     if (!isLeader) {
       return res.status(403).json({
@@ -803,20 +761,8 @@ const handleDeleteSprint = async (req, res) => {
 
     const userId = req.user?._id?.toString() || req.user?.id?.toString();
 
-    // Verify authorized team leader permissions
-    const isOwner = team.ownerId && team.ownerId.toString() === userId;
-    const memberMeta = Array.isArray(team.members) && team.members.find((m) => {
-      const mId = (m.userId?._id || m.userId)?.toString();
-      return mId === userId;
-    });
-    const isLeader = isOwner ||
-      memberMeta?.role === "leader" ||
-      memberMeta?.role === "lead" ||
-      memberMeta?.role === "manager" ||
-      memberMeta?.role === "scrum_master" ||
-      req.user?.role === "leader" ||
-      req.user?.role === "lead" ||
-      req.user?.role === "admin";
+    // Verify authorized permissions (central matrix; manager rank or above)
+    const isLeader = hasPermission(team, userId, "sprint:delete");
 
     if (!isLeader) {
       return res.status(403).json({
@@ -1050,6 +996,13 @@ const handleCreateBacklogItem = async (req, res) => {
     const { project, team } = access;
     const userId = req.user?._id?.toString() || req.user?.id?.toString();
 
+    // Phase 1 (D-3): dependency edges may only point inside this workspace.
+    if (req.body.dependencies !== undefined) {
+      if (!Array.isArray(req.body.dependencies) || !(await assertTasksInTeam(req.body.dependencies, team._id))) {
+        return res.status(400).json({ error: "Dependencies must reference tasks in this workspace." });
+      }
+    }
+
     const task = await Task.create({
       teamId: team._id,
       projectId: project._id,
@@ -1106,6 +1059,9 @@ const handleUpdateBacklogItem = async (req, res) => {
 
     const access = await verifyProjectAccess(req, res, (task.projectId || task.teamId).toString());
     if (!access) return;
+    if (!idEquals(task.teamId, access.team._id)) {
+      return res.status(403).json({ error: "Forbidden: task does not belong to this workspace.", code: "SCOPE_MISMATCH" });
+    }
 
     if (task.scrumStatus === "DONE") {
       return res.status(400).json({ error: "Cannot modify completed items — historical truth" });
@@ -1117,6 +1073,13 @@ const handleUpdateBacklogItem = async (req, res) => {
       "requiredSkills", "teacherImportance", "milestoneImportance",
       "technicalUncertainty", "expectedValue", "priorityLabel", "dependencies",
     ];
+
+    // Phase 1 (D-3): dependency edges may only point inside this workspace.
+    if (req.body.dependencies !== undefined) {
+      if (!Array.isArray(req.body.dependencies) || !(await assertTasksInTeam(req.body.dependencies, access.team._id))) {
+        return res.status(400).json({ error: "Dependencies must reference tasks in this workspace." });
+      }
+    }
 
     const previousValues = {};
     for (const field of allowedFields) {
@@ -1166,6 +1129,9 @@ const handleDeleteBacklogItem = async (req, res) => {
 
     const access = await verifyProjectAccess(req, res, (task.projectId || task.teamId).toString());
     if (!access) return;
+    if (!idEquals(task.teamId, access.team._id)) {
+      return res.status(403).json({ error: "Forbidden: task does not belong to this workspace.", code: "SCOPE_MISMATCH" });
+    }
 
     if (task.scrumStatus === "DONE") {
       return res.status(400).json({ error: "Cannot delete completed items" });
@@ -1354,11 +1320,35 @@ router.post("/planning/commit/:id", handleCommitPlanning);
 router.post("/:projectId/planning/commit", handleCommitPlanning);
 
 /**
+ * Phase 1 (D-3): authorize a sprint (via its own project) and verify that the
+ * task belongs to the same workspace and project before any mutation.
+ */
+async function authorizeSprintTaskOperation(req, res, sprintId, taskId) {
+  const access = await authorizeSprintAccess(sprintId, req.user, { permission: "sprint:manage" });
+  if (access.error) {
+    res.status(access.status).json({ error: access.error, code: access.code });
+    return null;
+  }
+  if (req.params.projectId && !idEquals(req.params.projectId, access.sprint.projectId) && !idEquals(req.params.projectId, access.team._id)) {
+    res.status(403).json({ error: "Forbidden: Sprint does not belong to specified project", code: "SCOPE_MISMATCH" });
+    return null;
+  }
+  const task = await findScopedTask(taskId, { teamId: access.team._id, projectId: access.sprint.projectId });
+  if (!task) {
+    res.status(404).json({ error: "Task not found in this workspace.", code: "NOT_FOUND" });
+    return null;
+  }
+  return { ...access, task };
+}
+
+/**
  * POST /api/scrum/:projectId/sprints/:sprintId/items
  */
 const handleAddItemToSprint = async (req, res) => {
   try {
-    const userId = req.user?._id?.toString() || req.user?.id?.toString();
+    const scoped = await authorizeSprintTaskOperation(req, res, req.params.sprintId, req.body?.taskId);
+    if (!scoped) return;
+    const userId = scoped.userId;
     const result = await addToSprint({
       sprintId: req.params.sprintId,
       taskId: req.body.taskId,
@@ -1379,7 +1369,9 @@ router.post("/:projectId/sprints/:sprintId/items", handleAddItemToSprint);
  */
 const handleRemoveItemFromSprint = async (req, res) => {
   try {
-    const userId = req.user?._id?.toString() || req.user?.id?.toString();
+    const scoped = await authorizeSprintTaskOperation(req, res, req.params.sprintId, req.params.taskId);
+    if (!scoped) return;
+    const userId = scoped.userId;
     const result = await removeFromSprint({
       sprintId: req.params.sprintId,
       taskId: req.params.taskId,
@@ -1410,6 +1402,9 @@ const handleUpdateTaskStatus = async (req, res) => {
 
     const access = await verifyProjectAccess(req, res, (task.projectId || task.teamId).toString());
     if (!access) return;
+    if (!idEquals(task.teamId, access.team._id)) {
+      return res.status(403).json({ error: "Forbidden: task does not belong to this workspace.", code: "SCOPE_MISMATCH" });
+    }
 
     const userId = req.user?._id?.toString() || req.user?.id?.toString();
     const updated = await updateTaskStatus({
@@ -1697,19 +1692,8 @@ const handleBulkAcceptScrumAssignments = async (req, res) => {
     const { assignments, allowCapacityOverrun } = req.body;
     const userId = req.user?._id?.toString() || req.user?.id?.toString();
 
-    // Verify leader permission
-    const isOwner = team.ownerId && team.ownerId.toString() === userId;
-    const isLeaderUser = req.user?.role === "leader" || req.user?.role === "admin";
-    const myMember = (team.members || []).find(
-      (m) => (m.userId?._id || m.userId)?.toString() === userId
-    );
-    const isLeaderRole =
-      myMember &&
-      ["owner", "leader", "team leader", "manager", "project manager", "scrum master"].includes(
-        (myMember.role || "").toLowerCase()
-      );
-
-    if (!isOwner && !isLeaderUser && !isLeaderRole) {
+    // Verify permission (central matrix; manager rank or above)
+    if (!hasPermission(team, userId, "assignment:bulk")) {
       return res.status(403).json({
         error: "FORBIDDEN",
         message: "Only authorized team leaders can execute bulk task assignments.",
@@ -2269,9 +2253,13 @@ router.get("/:projectId/insights", handleGetInsights);
  */
 const handleGetAnalytics = async (req, res) => {
   try {
-    const targetId = req.params.id || req.params.projectId;
+    const access = await verifyProjectAccess(req, res, req.params.id || req.params.projectId);
+    if (!access) return;
     const requestedSprintId = req.query.sprintId || null;
-    const analytics = await getScrumSprintAnalytics(targetId, requestedSprintId);
+    if (requestedSprintId && !(await Sprint.exists({ _id: requestedSprintId, projectId: access.project._id }))) {
+      return res.status(404).json({ error: "Sprint not found in this project." });
+    }
+    const analytics = await getScrumSprintAnalytics(access.project._id.toString(), requestedSprintId);
     res.json(analytics);
   } catch (err) {
     logger.error("[scrum.js] handleGetAnalytics error", { error: err.message });
@@ -3444,6 +3432,9 @@ const handleDecomposeStory = async (req, res) => {
 
     const access = await verifyProjectAccess(req, res, (parentStory.projectId || parentStory.teamId).toString());
     if (!access) return;
+    if (!idEquals(parentStory.teamId, access.team._id)) {
+      return res.status(403).json({ error: "Forbidden: story does not belong to this workspace.", code: "SCOPE_MISMATCH" });
+    }
 
     const subtasks = req.body.subtasks || [
       { title: `Design & Schema: ${parentStory.title}`, estimatedHours: 4 },

@@ -26,6 +26,14 @@ import {
   getKanbanOverview,
 } from "../services/kanbanEngine.js";
 import { getDefaultKanbanConfig, validateKanbanWorkflow } from "../services/kanbanMethodologyService.js";
+import {
+  authorizeProjectAccess,
+  initializeWorkspaceProject,
+  findScopedTask,
+  assertTasksInTeam,
+  isTeamMember,
+} from "../services/accessControlService.js";
+import { idEquals, isValidId } from "../utils/identity.js";
 import { calculateColumnWip, calculatePersonalWip } from "../services/kanbanWipService.js";
 import { calculateKanbanPriority, rankBacklogCandidates } from "../services/kanbanPriorityEngine.js";
 import { calculateFlowMetrics } from "../services/kanbanFlowMetricsService.js";
@@ -45,6 +53,9 @@ const router = express.Router();
  * Helper: verify project / team access (Accepts Project ID OR Team ID)
  */
 async function verifyProjectAccess(req, res, targetId) {
+  // Phase 1 (D-10): authenticate → resolve (read-only) → authorize → only then
+  // (non-GET only) initialize. Unauthorized callers can no longer create a
+  // project or flip a team's methodology.
   const id =
     targetId ||
     req.params.id ||
@@ -58,66 +69,56 @@ async function verifyProjectAccess(req, res, targetId) {
     return null;
   }
 
-  let project = null;
-  let team = null;
+  const access = await authorizeProjectAccess(String(id), req.user, { allowTeamId: true, lean: false });
+  if (access.error) {
+    const status = access.status === 404 ? 404 : access.status;
+    res.status(status).json({ error: status === 404 ? "Project or Workspace not found" : "Access denied: you are not a member of this workspace", code: access.code });
+    return null;
+  }
 
-  if (mongoose.isValidObjectId(id)) {
-    project = await Project.findById(id);
-    if (project) {
-      team = await Team.findById(project.teamId);
-    } else {
-      team = await Team.findById(id);
-      if (team) {
-        if (team.activeProjectId) {
-          project = await Project.findById(team.activeProjectId);
-        }
-        if (!project) {
-          project = await Project.findOne({ teamId: team._id }).sort({ updatedAt: -1 });
-        }
-        if (!project) {
-          // Initialize a default Kanban project if none exists for this workspace
-          project = await Project.create({
-            teamId: team._id,
-            title: team.projectTitle || team.name,
-            description: team.projectDescription || "",
-            methodology: "KANBAN",
-            kanbanConfig: getDefaultKanbanConfig(),
-          });
-          team.activeProjectId = project._id;
-          team.methodology = "KANBAN";
-          await team.save();
-        }
-      }
+  let { project, team } = access;
+  const isOwner = access.membership.isOwner;
+
+  if (!project) {
+    if (req.method === "GET") {
+      res.status(409).json({ error: "Kanban workspace is not initialized yet.", code: "PROJECT_NOT_INITIALIZED" });
+      return null;
     }
+    if (team.methodology && team.methodology !== "KANBAN") {
+      res.status(400).json({ error: `Workspace methodology is ${team.methodology}, not Kanban.` });
+      return null;
+    }
+    ({ project } = await initializeWorkspaceProject(team, {
+      methodology: "KANBAN",
+      extra: { kanbanConfig: getDefaultKanbanConfig() },
+    }));
   }
 
-  if (!team || !project) {
-    res.status(404).json({ error: "Project or Workspace not found" });
-    return null;
-  }
-
-  // Verify user authorization: must be a member or owner of the team
-  const userId = req.user?.id || req.user?._id;
-  const userEmail = (req.user?.email || "").toLowerCase().trim();
-
-  const isOwner = team.ownerId && team.ownerId.toString() === userId?.toString();
-  const isMember = (team.members || []).some((m) => {
-    const mId = (m.userId?._id || m.userId)?.toString();
-    const mEmail = (m.email || "").toLowerCase().trim();
-    return (mId && userId && mId === userId.toString()) || (mEmail && userEmail && mEmail === userEmail);
-  });
-
-  if (!isOwner && !isMember) {
-    res.status(403).json({ error: "Access denied: you are not a member of this workspace" });
-    return null;
-  }
-
-  // Ensure Kanban methodology config is hydrated
+  // Ensure Kanban methodology config is hydrated (authorized callers only)
   if (!project.kanbanConfig || !project.kanbanConfig.workflowColumns) {
     await ensureKanbanConfig(project);
   }
 
-  return { project, team, isOwner };
+  return { project, team, isOwner, userId: access.userId, membership: access.membership };
+}
+
+/** Phase 1 (D-3): load a task only inside the authorized workspace/project. */
+async function loadScopedTask(auth, taskId) {
+  return findScopedTask(taskId, { teamId: auth.team._id, projectId: auth.project._id, lean: false });
+}
+
+/** Phase 1: dependency ids and assignee must stay inside the workspace. */
+async function validateTaskRefs(auth, { dependencies, assignedTo }) {
+  if (dependencies !== undefined) {
+    if (!Array.isArray(dependencies) || !(await assertTasksInTeam(dependencies, auth.team._id))) {
+      return "Dependencies must reference tasks in this workspace.";
+    }
+  }
+  if (assignedTo !== undefined && assignedTo !== null && assignedTo !== "") {
+    const ok = isValidId(assignedTo) && (isTeamMember(auth.team, assignedTo) || (auth.team.members || []).some((m) => idEquals(m.userId, assignedTo)));
+    if (!ok) return "Assignee must be a member of this workspace.";
+  }
+  return null;
 }
 
 // ── 1. OVERVIEW ENDPOINTS ───────────────────────────────────────────────────
@@ -189,20 +190,28 @@ async function handleBacklog(req, res) {
     const auth = await verifyProjectAccess(req, res);
     if (!auth) return;
 
+    // Phase 1: the previous literal had two "$or" keys — the second silently
+    // replaced the tenant scope, returning every workspace's backlog.
     const tasks = await Task.find({
-      $or: [{ projectId: auth.project._id }, { teamId: auth.team._id }],
-      $or: [
-        { kanbanStatus: "BACKLOG" },
-        { workflowColumn: "backlog" },
-        { kanbanStatus: null, status: "todo", workflowColumn: null },
+      $and: [
+        { $or: [{ projectId: auth.project._id }, { teamId: auth.team._id }] },
+        {
+          $or: [
+            { kanbanStatus: "BACKLOG" },
+            { workflowColumn: "backlog" },
+            { kanbanStatus: null, status: "todo", workflowColumn: null },
+          ],
+        },
       ],
     }).populate("assignedTo", "name email avatar");
 
     const ranked = rankBacklogCandidates(tasks);
     const readyCol = (auth.project.kanbanConfig.workflowColumns || []).find((c) => c.id === "ready");
     const activeReadyTasks = await Task.countDocuments({
-      $or: [{ projectId: auth.project._id }, { teamId: auth.team._id }],
-      $or: [{ kanbanStatus: "READY" }, { workflowColumn: "ready" }],
+      $and: [
+        { $or: [{ projectId: auth.project._id }, { teamId: auth.team._id }] },
+        { $or: [{ kanbanStatus: "READY" }, { workflowColumn: "ready" }] },
+      ],
     });
     const readyLimit = readyCol?.wipLimit || 5;
     const availableReadySlots = Math.max(0, readyLimit - activeReadyTasks);
@@ -282,6 +291,9 @@ async function handleCreateTask(req, res) {
       return res.status(400).json({ error: "Title is required for work items." });
     }
 
+    const refError = await validateTaskRefs(auth, { dependencies, assignedTo: assignedTo || undefined });
+    if (refError) return res.status(400).json({ error: refError });
+
     const now = new Date();
     const newTask = new Task({
       teamId: auth.team._id,
@@ -340,8 +352,10 @@ async function handleUpdateTask(req, res) {
     if (!auth) return;
 
     const taskId = req.params.taskId || req.body?.taskId;
-    const task = await Task.findById(taskId);
+    const task = await loadScopedTask(auth, taskId);
     if (!task) return res.status(404).json({ error: "Task not found." });
+    const refError = await validateTaskRefs(auth, { dependencies: req.body?.dependencies, assignedTo: req.body?.assignedTo });
+    if (refError) return res.status(400).json({ error: refError });
 
     const allowed = [
       "title",
@@ -447,7 +461,7 @@ async function handleCreateBlocker(req, res) {
       return res.status(400).json({ error: "taskId and title are required to report a blocker." });
     }
 
-    const task = await Task.findById(taskId);
+    const task = await loadScopedTask(auth, taskId);
     if (!task) return res.status(404).json({ error: "Task not found." });
 
     const newBlocker = addBlockerToTask(task, { title, description, category, severity }, req.user);
@@ -487,9 +501,9 @@ async function handleUpdateBlocker(req, res) {
     // Find task containing this blocker
     let task = null;
     if (taskId) {
-      task = await Task.findById(taskId);
+      task = await loadScopedTask(auth, taskId);
     } else {
-      task = await Task.findOne({ "blockers.blockerId": blockerId });
+      task = await Task.findOne({ "blockers.blockerId": blockerId, teamId: auth.team._id, projectId: auth.project._id });
     }
 
     if (!task) return res.status(404).json({ error: "Task with specified blocker not found." });
@@ -727,8 +741,10 @@ async function handleContinuousDelivery(req, res) {
     if (!auth) return;
 
     const completed = await Task.find({
-      $or: [{ projectId: auth.project._id }, { teamId: auth.team._id }],
-      $or: [{ kanbanStatus: "DONE" }, { workflowColumn: "done" }, { status: "done" }],
+      $and: [
+        { $or: [{ projectId: auth.project._id }, { teamId: auth.team._id }] },
+        { $or: [{ kanbanStatus: "DONE" }, { workflowColumn: "done" }, { status: "done" }] },
+      ],
     }).sort({ doneAt: -1, updatedAt: -1 });
 
     res.json({

@@ -19,6 +19,12 @@ import User from "../models/User.js";
 import Team from "../models/Team.js";
 import Invitation from "../models/Invitation.js";
 import Notification from "../models/Notification.js";
+import {
+  hasPermission,
+  getMembership,
+  classifyRoleLabel,
+  roleRank,
+} from "./accessControlService.js";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -41,39 +47,20 @@ export async function checkInvitationExpiry(inv) {
 /**
  * Checks if a user is an authorized leader or manager who can send invitations.
  */
-export function isAuthorizedToInvite(team, userIdStr, userEmail = "", userName = "") {
-  if (!team) return false;
+export function isAuthorizedToInvite(team, userIdStr) {
+  // Phase 1: immutable-id membership + central permission matrix only.
+  // No owner-less "legacy" bypass and no name/email matching.
+  return hasPermission(team, userIdStr, "member:invite");
+}
 
-  // 1. Team Owner can always invite
-  if (team.ownerId && team.ownerId.toString() === userIdStr) {
-    return true;
-  }
-
-  // 2. Legacy unowned team
-  if (!team.ownerId && (!team.members || team.members.length === 0)) {
-    return true;
-  }
-
-  // 3. Member with leader, manager, or admin role
-  if (Array.isArray(team.members)) {
-    const member = team.members.find((m) => {
-      const mId = (m.userId?._id || m.userId)?.toString() || "";
-      const mName = (m.name || "").toLowerCase().trim();
-      return (
-        (mId && mId === userIdStr) ||
-        (userEmail && mName === userEmail.toLowerCase().trim()) ||
-        (userName && mName === userName.toLowerCase().trim())
-      );
-    });
-
-    if (member) {
-      const role = String(member.role || "").toLowerCase();
-      // Owners, leaders, and managers can send invitations
-      return ["owner", "leader", "manager", "admin", "team leader", "project manager"].includes(role);
-    }
-  }
-
-  return false;
+/**
+ * An inviter may not grant an access role above their own (owner > leader >
+ * manager > member). Functional labels ("Frontend Developer") are "member".
+ */
+export function canGrantRole(team, granterId, roleLabel) {
+  const { accessRole } = getMembership(team, granterId);
+  if (!accessRole) return false;
+  return roleRank(classifyRoleLabel(roleLabel)) <= roleRank(accessRole);
 }
 
 /**
@@ -109,12 +96,7 @@ export async function sendTeamInvitation({ teamId, inviter, inviterUser, email, 
   }
 
   // 1. Authorization check: only authorized leaders/managers/owners can invite
-  const canInvite = isAuthorizedToInvite(
-    team,
-    inviterIdStr,
-    activeInviter.email || "",
-    activeInviter.name || ""
-  );
+  const canInvite = isAuthorizedToInvite(team, inviterIdStr);
 
   if (!canInvite) {
     return {
@@ -174,7 +156,14 @@ export async function sendTeamInvitation({ teamId, inviter, inviterUser, email, 
 
   // 7. Create Invitation record with 7-day expiration and preserved role
   const inviterName = activeInviter.name || activeInviter.email || "Teammate";
-  const invitationRole = typeof role === "string" && role.trim() ? role.trim() : "member";
+  const invitationRole = typeof role === "string" && role.trim() ? role.trim().slice(0, 60) : "member";
+  if (!canGrantRole(team, inviterIdStr, invitationRole)) {
+    return {
+      status: 403,
+      error: "Forbidden: You cannot invite someone with a higher workspace role than your own.",
+      ok: false,
+    };
+  }
 
   const invitation = await Invitation.create({
     teamId: team._id,

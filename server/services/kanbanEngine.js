@@ -46,7 +46,8 @@ export async function getKanbanBoard(projectId) {
     $or: [{ projectId }, { teamId: project.teamId }],
   })
     .populate("assignedTo", "name email avatar role skills")
-    .populate("dependencies", "title kanbanStatus workflowColumn status")
+    // Phase 1: defense in depth — never populate tasks from another workspace.
+    .populate({ path: "dependencies", select: "title kanbanStatus workflowColumn status", match: { teamId: project.teamId } })
     .sort({ priorityScore: -1, createdAt: -1 });
 
   const columns = config.workflowColumns || [];
@@ -120,7 +121,12 @@ export async function pullWorkItem(projectId, taskId, toColumnId, user = {}, opt
   const targetCol = columns.find((c) => c.id === toColumnId);
   if (!targetCol) throw new Error(`Target column '${toColumnId}' does not exist.`);
 
-  const task = await Task.findById(taskId).populate("dependencies");
+  // Phase 1 (D-3): the task must belong to this project's workspace.
+  const task = await Task.findOne({
+    _id: taskId,
+    teamId: project.teamId,
+    $or: [{ projectId: project._id }, { projectId: null }],
+  }).populate("dependencies");
   if (!task) throw new Error("Task not found.");
 
   const fromColumnId = task.workflowColumn || (task.kanbanStatus ? task.kanbanStatus.toLowerCase() : "backlog");
