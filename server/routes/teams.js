@@ -2652,15 +2652,17 @@ router.patch("/teams/:teamId/tasks/:taskId", requireAuth, async (req, res) => {
       }
     }
 
-    // Increment state version on any field change
-    update.stateVersion = (existing.stateVersion || 0) + 1;
+    // State version is incremented atomically by the Task model ($inc), not
+    // read-modify-written here. Priority inputs not present in the body keep
+    // their persisted values; priorityScore is recomputed from the stored
+    // document after the write (Phase 3, D-20).
     update.greedyVersion  = 0;   // mark stale
     update.planningVersion = 0;  // mark stale
 
     const task = await Task.findOneAndUpdate(
       { _id: req.params.taskId, teamId: req.params.teamId },
       { $set: update },
-      { new: true, lean: true }
+      { new: true, lean: true, runValidators: true, context: "query" }
     );
     if (!task) return res.status(404).json({ error: "Task not found." });
 

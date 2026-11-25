@@ -1,32 +1,19 @@
 /**
- * Boyer-Moore String Search — Bad Character Heuristic
- * =====================================================
- * NexusFlow DAA Integration  |  client/utils/boyerMoore.ts
+ * Boyer–Moore–Horspool String Search  |  client/utils/boyerMoore.ts
+ * ==================================================================
+ * Phase 3 (D-32): the previous client copy used a 256-entry Int16Array, so any
+ * non-ASCII mismatch character was treated as "absent" and could skip real
+ * matches (Kannada, accented text, emoji). This version is the SAME variant,
+ * shift table (Map keyed by UTF-16 code unit) and normalisation
+ * (NFC → lower-case → NFC, query trimmed) as the server
+ * (server/algorithms/stringSearch.js); both are tested against
+ * server/tests/fixtures/searchCases.json.
  *
- * Problem it solves:
- *   As team task lists grow (50–500+ items), a linear indexOf scan is called
- *   on every keystroke.  Boyer-Moore's bad-character heuristic skips sections
- *   of the text using pre-computed shift tables, giving sub-linear average
- *   performance — crucial for real-time, keystroke-level search in React Native.
- *
- * Algorithm Overview:
- *   1. Pre-processing (O(σ)) — build a "bad character" table that maps every
- *      character in the pattern to its rightmost occurrence index.
- *   2. Searching — align pattern at left end, compare right-to-left.
- *      On mismatch, shift the pattern so the mismatched text character aligns
- *      with its last occurrence in the pattern (or skip past it entirely).
- *
- * Complexity:
- *   Pre-processing : O(m + σ)  — m = pattern length, σ = alphabet size (256 for ASCII)
- *   Best case      : O(n/m)    — sub-linear; skips large portions of text
- *   Worst case     : O(n·m)    — degenerate on highly repetitive patterns
- *   Average case   : O(n)      — typical English / task-title text
- *   Space          : O(σ)      — constant 256-entry bad-character table
- *
- * vs. Naïve Linear Search:
- *   Naïve : O(n·m) worst / O(n) avg (no pre-processing, no skipping)
- *   BM    : O(n/m) best  / O(n) avg (skips using bad-char table)
- *   Gain  : ~3-5× faster on natural language with m ≥ 3.
+ * Variant     : Horspool (bad-character rule on the last window character);
+ *               no good-suffix rule — not full Boyer–Moore.
+ * Matching    : UTF-16 code units of normalised strings; not grapheme-aware.
+ * Complexity  : preprocessing O(m); search O(n·m) worst, ≈ n/m typical;
+ *               space O(min(m, σ)).
  */
 
 // RUNTIME-SEPARATION NOTE (Task 5): a Boyer-Moore-Horspool search also exists
@@ -36,80 +23,51 @@
 // shared module boundary between them, and their return shapes differ
 // (client returns {task, matchedFields} for highlighting; server filters docs).
 
-const ALPHABET_SIZE = 256; // ASCII; covers all printable task-title characters
+/** Maximum supported query length (shared with the server). */
+export const MAX_QUERY_LENGTH = 512;
+
+/** NFC → lower-case → NFC, identical to server/algorithms/stringSearch.js. */
+export function normalizeForSearch(s: string): string {
+  return String(s ?? "").normalize("NFC").toLowerCase().normalize("NFC");
+}
+
+export function normalizeQuery(q: string): string {
+  return normalizeForSearch(q).trim();
+}
 
 /**
- * buildBadCharTable
- * -----------------
- * Maps each character (by char code) to the rightmost index at which it
- * appears in `pattern`.  Characters absent from the pattern map to -1,
- * meaning the entire pattern can slide past the mismatch.
- *
- * Time : O(m + σ)   Space : O(σ)
+ * buildShiftTable — Horspool bad-character table keyed by UTF-16 code unit.
+ * A Map (not a fixed 256-entry typed array) so non-ASCII characters (Kannada,
+ * accented letters, emoji surrogate halves) get their real shift and long
+ * patterns cannot overflow. Every shift is in [1, m].   Time O(m)  Space O(min(m, σ))
  */
-export function buildBadCharTable(pattern: string): Int16Array {
-  // Int16Array is more memory-efficient than a plain object for a fixed alphabet
-  const table = new Int16Array(ALPHABET_SIZE).fill(-1);
-  for (let i = 0; i < pattern.length; i++) {
-    const code = pattern.charCodeAt(i);
-    if (code < ALPHABET_SIZE) {
-      table[code] = i; // rightmost occurrence
-    }
-  }
+export function buildShiftTable(pattern: string): Map<number, number> {
+  const m = pattern.length;
+  const table = new Map<number, number>();
+  for (let i = 0; i < m - 1; i++) table.set(pattern.charCodeAt(i), m - 1 - i);
   return table;
 }
 
 /**
- * boyerMooreSearch
- * ----------------
- * Returns the index of the FIRST occurrence of `pattern` in `text`,
- * or -1 if not found.  Case sensitivity is controlled by the caller
- * (pass both args lowercased for case-insensitive search).
- *
- * @param text    - the haystack string (task title or description)
- * @param pattern - the needle string (user's search query)
- * @returns       first occurrence index, or -1
- *
- * Time  : O(n/m) best, O(n·m) worst   Space : O(σ)
+ * boyerMooreSearch — Boyer–Moore–HORSPOOL (Phase 3, same variant as the server).
+ * Returns the index of the first occurrence of `pattern` in `text` (exact
+ * code-unit comparison; normalise first for case-insensitive search), or -1.
+ * Empty pattern → 0.   Time O(n·m) worst, ≈ n/m typical.
  */
-export function boyerMooreSearch(text: string, pattern: string): number {
+export function boyerMooreSearch(text: string, pattern: string, table?: Map<number, number>): number {
   const n = text.length;
   const m = pattern.length;
-
   if (m === 0) return 0;
   if (m > n) return -1;
-
-  const badChar = buildBadCharTable(pattern);
-  let shift = 0; // how far the pattern is currently shifted along text
-
-  while (shift <= n - m) {
-    let j = m - 1; // start comparing from the rightmost character of pattern
-
-    // Move j left while characters match
-    while (j >= 0 && pattern[j] === text[shift + j]) {
-      j--;
-    }
-
-    if (j < 0) {
-      // Full match found — pattern fits at index `shift`
-      return shift;
-    }
-
-    // Bad-character shift:
-    //   The mismatched text character is text[shift + j].
-    //   Look up its rightmost occurrence in pattern (via badChar table).
-    //   Shift so that occurrence aligns with text[shift + j].
-    //   If the char doesn't appear in pattern, shift past it entirely (j + 1).
-    const mismatchedCharCode = text.charCodeAt(shift + j);
-    const lastOccurrence =
-      mismatchedCharCode < ALPHABET_SIZE ? badChar[mismatchedCharCode] : -1;
-
-    const badCharShift = j - lastOccurrence;
-    // Ensure we always advance by at least 1 to guarantee termination
-    shift += Math.max(1, badCharShift);
+  const shiftTable = table ?? buildShiftTable(pattern);
+  let i = m - 1;
+  while (i < n) {
+    let k = 0;
+    while (k < m && pattern.charCodeAt(m - 1 - k) === text.charCodeAt(i - k)) k++;
+    if (k === m) return i - m + 1;
+    i += shiftTable.get(text.charCodeAt(i)) ?? m;
   }
-
-  return -1; // pattern not found
+  return -1;
 }
 
 /**
@@ -120,9 +78,10 @@ export function boyerMooreSearch(text: string, pattern: string): number {
  *
  * This is what task search uses for each field check.
  */
-export function boyerMooreContains(text: string, pattern: string): boolean {
-  if (!pattern) return true; // empty query matches everything
-  return boyerMooreSearch(text.toLowerCase(), pattern.toLowerCase()) !== -1;
+export function boyerMooreContains(text: string, pattern: string, table?: Map<number, number>): boolean {
+  const q = normalizeQuery(pattern ?? "");
+  if (!q) return true; // empty query matches everything
+  return boyerMooreSearch(normalizeForSearch(text ?? ""), q, table) !== -1;
 }
 
 /** -----------------------------------------------------------------------
@@ -166,25 +125,24 @@ export function searchTasks<T extends { title: string; description?: string }>(
     return tasks.map((task) => ({ task, matchedFields: [] }));
   }
 
-  const normalisedQuery = query.trim().toLowerCase();
+  const normalisedQuery = normalizeQuery(query).slice(0, MAX_QUERY_LENGTH);
 
-  // Pre-compute the bad-char table ONCE for this query.
-  // This is the key BM optimisation — O(m + σ) upfront, amortised over n tasks.
-  buildBadCharTable(normalisedQuery); // table is built inside boyerMooreContains per call,
-  // but we keep this explicit call here for pedagogical clarity in code review.
+  // Build the Horspool shift table ONCE for this query and reuse it for every
+  // task field — O(m) preprocessing amortised over all n tasks.
+  const table = buildShiftTable(normalisedQuery);
 
   const results: SearchResult<T>[] = [];
 
   for (const task of tasks) {
     const matchedFields: Array<"title" | "description"> = [];
 
-    if (boyerMooreContains(task.title, normalisedQuery)) {
+    if (boyerMooreContains(task.title, normalisedQuery, table)) {
       matchedFields.push("title");
     }
 
     if (
       task.description &&
-      boyerMooreContains(task.description, normalisedQuery)
+      boyerMooreContains(task.description, normalisedQuery, table)
     ) {
       matchedFields.push("description");
     }
