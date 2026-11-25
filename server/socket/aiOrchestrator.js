@@ -2,6 +2,7 @@ import Task from "../models/Task.js";
 import Team from "../models/Team.js";
 import { assignTasksToMembers } from "../algorithms/branchAndBound.js";
 import { computeRecommendation, boyerMooreSearch } from "../algorithms/taskOptimiser.js";
+import { solveKnapsack } from "../algorithms/knapsack.js";
 import { decomposeProject } from "../algorithms/projectDecomposer.js";
 import { recomputeAndBroadcast } from "./taskHandlers.js";
 import { verifyTeamAccess } from "../routes/teams.js";
@@ -197,9 +198,15 @@ export function registerAiOrchestrator(io, socket) {
   });
 
   // ── DAA Recommendation Engine (BFS → Greedy → Knapsack → MergeSort → Topo) ──
-  socket.on("recommend:request", async ({ teamId, sprintCapacity = 20 }, ack) => {
+  socket.on("recommend:request", async (payload, ack) => {
     try {
+      const { teamId } = payload && typeof payload === "object" ? payload : {};
+      let sprintCapacity = payload?.sprintCapacity ?? 20;
       if (!teamId) return ack?.({ ok: false, error: "teamId is required." });
+      // Phase 3: bound the optimisation workload (Knapsack W = capacity × 100).
+      sprintCapacity = Number(sprintCapacity);
+      if (!Number.isFinite(sprintCapacity) || sprintCapacity <= 0) return ack?.({ ok: false, error: "sprintCapacity must be a positive number.", code: "INVALID_CAPACITY" });
+      if (sprintCapacity > MAX_SPRINT_HOURS) sprintCapacity = MAX_SPRINT_HOURS;
       const auth = await verifyTeamAccess(teamId, socket.data.user);
       if (auth.error) return ack?.({ ok: false, error: auth.error });
 
@@ -269,8 +276,8 @@ export function registerAiOrchestrator(io, socket) {
       socket.emit("task:searchResult", {
         tasks       : matched,
         query,
-        algorithm   : "Boyer-Moore-Horspool",
-        complexity  : { time: "O(n/m) average", space: "O(σ)" },
+        algorithm   : "Boyer-Moore-Horspool (Map shift table, NFC + lower-case)",
+        complexity  : { time: "O(n·m) worst, ≈ n/m typical", space: "O(min(m, σ))" },
         totalScanned: allTasks.length,
         matchCount  : matched.length,
       });
@@ -296,47 +303,33 @@ async function handleSprintOptimize(io, socket, teamId, sprintHours) {
       sprintHours = MAX_SPRINT_HOURS;
     }
 
-    const eligible = await Task.find({
+    if (!Number.isFinite(sprintHours) || sprintHours <= 0) {
+      io.to(`team:${teamId}`).emit("chat:stream", { id: `ai_sp_${Date.now()}`, text: "Sprint capacity must be a positive number of hours." });
+      return;
+    }
+    const candidates = await Task.find({
       teamId,
       status        : "todo",
       estimatedHours: { $ne: null, $gt: 0 },
       businessValue : { $ne: null, $gt: 0 },
     }).lean();
+    // Dependency readiness (Phase 3): only tasks whose prerequisites are done.
+    const statusById = new Map((await Task.find({ teamId }).select("status").lean()).map((t) => [String(t._id), t.status]));
+    const eligible = candidates.filter((t) => (t.dependencies ?? []).every((d) => String(d) === String(t._id) || !statusById.has(String(d)) || statusById.get(String(d)) === "done"));
 
     if (!eligible.length) {
       io.to(`team:${teamId}`).emit("chat:stream", {
-        id: `ai_sp_${Date.now()}`, text: "No tasks with estimatedHours and businessValue set.",
+        id: `ai_sp_${Date.now()}`, text: "No dependency-ready To-Do tasks with estimatedHours and businessValue set.",
       });
       return;
     }
 
-    const SCALE    = 10;
-    const capacity = Math.floor(sprintHours * SCALE);
-    const n        = eligible.length;
-    const weights  = eligible.map((t) => Math.round(t.estimatedHours * SCALE));
-    const values   = eligible.map((t) => t.businessValue);
-
-    const dp = Array.from({ length: n + 1 }, () => new Array(capacity + 1).fill(0));
-    for (let i = 1; i <= n; i++) {
-      const wi = weights[i - 1], vi = values[i - 1];
-      for (let w = 0; w <= capacity; w++) {
-        dp[i][w] = dp[i - 1][w];
-        if (wi <= w) {
-          const alt = dp[i - 1][w - wi] + vi;
-          if (alt > dp[i][w]) dp[i][w] = alt;
-        }
-      }
-    }
-
-    const selected = [];
-    let w = capacity;
-    for (let i = n; i >= 1; i--) {
-      if (dp[i][w] !== dp[i - 1][w]) { selected.push(i - 1); w -= weights[i - 1]; }
-    }
-
-    const selectedTasks = selected.map((idx) => eligible[idx]);
-    const totalHours    = selectedTasks.reduce((s, t) => s + t.estimatedHours, 0);
-    const totalValue    = dp[n][capacity];
+    // Canonical exact 0/1 Knapsack (0.01 h units, never exceeds capacity).
+    const knap = solveKnapsack(eligible.map((t) => ({ id: String(t._id), effort: t.estimatedHours, value: t.businessValue })), sprintHours);
+    const picked = new Set(knap.selectedIds);
+    const selectedTasks = eligible.filter((t) => picked.has(String(t._id)));
+    const totalHours    = selectedTasks.reduce((sum, t) => sum + t.estimatedHours, 0);
+    const totalValue    = knap.totalValue;
     const utilizationPct = Math.round((totalHours / sprintHours) * 100);
 
     io.to(`team:${teamId}`).emit("sprint:plan", {
@@ -345,8 +338,9 @@ async function handleSprintOptimize(io, socket, teamId, sprintHours) {
       totalHours   : Math.round(totalHours * 100) / 100,
       sprintCapacity: sprintHours,
       utilizationPct,
-      algorithm    : "0/1 Knapsack (bottom-up DP)",
-      complexity   : { time: "O(n * W)", space: "O(n * W)" },
+      algorithm    : knap.meta.algorithm,
+      exact        : knap.exact,
+      complexity   : { time: "O(n * W)", space: "O(W) + O(n * W) bits", W: knap.capacityUnits },
     });
 
     // Summary in chat stream.
@@ -390,7 +384,20 @@ async function runAutoAssignment(io, teamId, taskIds) {
     const tasks = await Task.find(taskQuery).lean();
     if (!tasks.length) return;
 
-    const { assignments, totalCost, meta } = assignTasksToMembers(team.members, tasks);
+    const batchIds = new Set(tasks.map((t) => String(t._id)));
+    const existingLoadHours = {};
+    for (const t of await Task.find({ teamId, status: { $ne: "done" }, assignedTo: { $ne: null } }).select("assignedTo estimatedHours").lean()) {
+      if (batchIds.has(String(t._id))) continue;
+      const k = String(t.assignedTo);
+      existingLoadHours[k] = (existingLoadHours[k] ?? 0) + (Number(t.estimatedHours) > 0 ? Number(t.estimatedHours) : 0);
+    }
+    const { assignments, unassigned = [], totalCost, meta } = assignTasksToMembers(team.members, tasks, { existingLoadHours });
+    if (unassigned.length) {
+      io.to(`team:${teamId}`).emit("assign:warning", {
+        message: `${unassigned.length} task(s) could not be assigned within member capacity.`,
+        unassigned,
+      });
+    }
     if (!assignments.length) return;
 
     await Task.bulkWrite(assignments.map(({ taskId, memberId, cost }) => ({
@@ -441,7 +448,7 @@ async function streamMock(io, socket, teamId, prompt) {
       teamId, title: s.title, category: s.category,
       urgency: s.urgency, impact: s.impact,
       estimatedHours: s.estimatedHours, businessValue: s.businessValue,
-      description: s.description ?? "", dependencyCount: 0, source: "ai",
+      description: s.description ?? "", source: "ai",
     });
     await Team.updateOne({ _id: teamId }, { $inc: { taskCount: 1 } });
     io.to(`team:${teamId}`).emit("task:created", task.toObject());
@@ -470,10 +477,14 @@ async function wirePhaseDependencies(teamId, seeds, taskIds) {
     const p = s.phaseIndex ?? 0;
     if (p > 0 && byPhase.has(p - 1)) {
       const prev = byPhase.get(p - 1)[0];
-      bulk.push({ updateOne: { filter: { _id: taskIds[i] }, update: { $set: { dependencies: [prev], dependencyCount: 1 } } } });
+      bulk.push({ updateOne: { filter: { _id: taskIds[i] }, update: { $set: { dependencies: [prev] } } } });
     }
   });
-  if (bulk.length) await Task.bulkWrite(bulk, { ordered: false });
+  if (bulk.length) {
+    await Task.bulkWrite(bulk, { ordered: false });
+    const { recomputeDependencyMetrics } = await import("../services/taskGraphService.js");
+    await recomputeDependencyMetrics(teamId); // bulkWrite bypasses model hooks
+  }
 }
 
 // ── OmniRoute $0 LLM generation ───────────────────────────────────────────────
@@ -509,7 +520,7 @@ async function streamFromOmniRoute(io, socket, teamId, prompt) {
   const rawTitles = omniResult.content.split("\n").map((s) => toActionableTitle(s)).filter(Boolean);
   for (const title of rawTitles) {
     const { urgency, impact } = estimatePriority(title);
-    const task = await Task.create({ teamId, title, urgency, impact, dependencyCount: 0, source: "ai" });
+    const task = await Task.create({ teamId, title, urgency, impact, source: "ai" });
     await Team.updateOne({ _id: teamId }, { $inc: { taskCount: 1 } });
     io.to(`team:${teamId}`).emit("task:created", task.toObject());
     newTaskIds.push(task._id);

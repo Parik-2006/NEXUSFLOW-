@@ -20,7 +20,9 @@
  * Boyer-Moore remain local because no server-side module exports them.
  */
 
-import { buildGraph, topologicalSort as graphTopologicalSort, bfs as graphBfs } from "./graphTraversal.js";
+import { buildGraph, topologicalSort as graphTopologicalSort, executionWaves } from "./graphTraversal.js";
+import { solveKnapsack } from "./knapsack.js";
+import { searchContains } from "./stringSearch.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. GREEDY SPRINT RANKING  (ALGORITHM IDENTITY: GreedySprintRanking)
@@ -43,11 +45,14 @@ import { buildGraph, topologicalSort as graphTopologicalSort, bfs as graphBfs } 
 //    Space: O(n)        — shallow copy of input array
 // ─────────────────────────────────────────────────────────────────────────────
 export function greedySprintRanking(tasks) {
+  const ratio = (t) => (Number(t.effort) > 0 ? Number(t.value) / Number(t.effort) : Number(t.value) > 0 ? Infinity : 0);
   return [...tasks].sort((a, b) => {
-    const ra = a.value / a.effort;
-    const rb = b.value / b.effort;
-    if (Math.abs(ra - rb) > 1e-9) return rb - ra; // higher ratio first
-    return b.priority - a.priority;               // tie-break: priority
+    const ra = ratio(a), rb = ratio(b);
+    if (ra !== rb && Math.abs(ra - rb) > 1e-9) return rb > ra ? 1 : -1; // higher ratio first
+    const pd = (Number(b.priority) || 0) - (Number(a.priority) || 0);    // tie-break: priority
+    if (pd) return pd;
+    const ia = String(a._id ?? a.title ?? ""), ib = String(b._id ?? b.title ?? "");
+    return ia < ib ? -1 : ia > ib ? 1 : 0;                                 // then id (code-unit)
   });
 }
 
@@ -65,38 +70,24 @@ export const greedySchedule = greedySprintRanking;
 //    Space: O(n × W)  — full table kept for backtrack; reducible to O(W) if
 //                       only the optimal value is needed.
 // ─────────────────────────────────────────────────────────────────────────────
-export function knapsackSprint(tasks, capacity) {
-  const n  = tasks.length;
-  // (n+1) × (capacity+1) DP table initialised to 0. // rows = tasks, cols = capacity.
-  const dp = Array.from({ length: n + 1 }, () => new Int32Array(capacity + 1));
-
-  for (let i = 1; i <= n; i++) {
-    const { effort, value } = tasks[i - 1];
-    for (let w = 0; w <= capacity; w++) {
-      dp[i][w] = dp[i - 1][w];                                    // exclude
-      if (effort <= w) {
-        const include = dp[i - 1][w - effort] + value;
-        if (include > dp[i][w]) dp[i][w] = include;               // include
-      }
-    }
-  }
-
-  // Backtrack: walk from dp[n][capacity] up to dp[0][*].
-  const selected = [];
-  let w = capacity;
-  for (let i = n; i >= 1; i--) {
-    if (dp[i][w] !== dp[i - 1][w]) {
-      selected.push(tasks[i - 1]);
-      w -= tasks[i - 1].effort;
-    }
-  }
-
-  const effortUsed = capacity - w;
+export function knapsackSprint(tasks, capacity, options = {}) {
+  // Phase 3 (D-26): delegates to the canonical exact solver (knapsack.js),
+  // which discretises effort in 0.01 units (ceil) and capacity (floor), so
+  // fractional efforts such as 2.5 h are handled exactly and the original
+  // capacity is never exceeded.
+  const items = tasks.map((t, i) => ({ id: t._id !== undefined && t._id !== null ? String(t._id) : `idx:${String(i).padStart(6, "0")}`, effort: t.effort, value: t.value, task: t }));
+  const r = solveKnapsack(items, Number(capacity), options);
+  const chosen = new Set(r.selected.map((x) => x.id));
+  const selectedTasks = items.filter((x) => chosen.has(x.id)).map((x) => x.task); // input order
   return {
-    selectedTasks : selected.reverse(),
-    totalValue    : dp[n][capacity],
-    effortUsed,
-    capacityLeft  : capacity - effortUsed,
+    selectedTasks,
+    totalValue: r.totalValue,
+    effortUsed: r.totalEffort,
+    capacityLeft: r.capacityLeft,
+    exact: r.exact,
+    status: r.status,
+    rejected: r.rejected.map((x) => ({ ...x, task: items.find((it) => it.id === x.id)?.task })),
+    meta: r.meta,
   };
 }
 
@@ -132,17 +123,14 @@ export function topologicalSort(tasks) {
 //    Space: O(V)
 // ─────────────────────────────────────────────────────────────────────────────
 export function bfsDependencyLevels(tasks) {
-  // Delegate to the canonical BFS (graphTraversal.js), then group the
-  // per-node level map into execution "waves" (levels[0] runs first, …).
-  const { adjList, inDegree } = buildGraph(tasks);
-  const { levels: levelMap }  = graphBfs(adjList, inDegree);
-
-  const waves = [];
-  for (const [id, lvl] of Object.entries(levelMap)) {
-    if (lvl < 0) continue;            // nodes inside a cycle (unreachable)
-    (waves[lvl] = waves[lvl] ?? []).push(id);
-  }
-  return waves.map((w) => w ?? []);
+  // Phase 3 (D-25): waves are LONGEST-prerequisite-depth levels computed over
+  // a topological order, not first-discovery BFS levels. For A→B, A→C, B→C
+  // first-discovery BFS puts B and C together (invalid: C waits for B);
+  // longest-path levels give [A], [B], [C]. A cyclic graph yields [] — no
+  // executable schedule is claimed.
+  const { adjList, inDegree, selfLoops } = buildGraph(tasks);
+  const result = executionWaves(adjList, inDegree, { selfLoops });
+  return result.valid ? result.waves : [];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -186,59 +174,26 @@ function _merge(L, R) {
 function _cmp(a, b) {
   const sw = (STATUS_W[a.status] ?? 0) - (STATUS_W[b.status] ?? 0);
   if (sw)  return sw;
-  const pw = b.priority - a.priority;
+  const pw = (Number(b.priority) || 0) - (Number(a.priority) || 0);
   if (pw)  return pw;
-  const ew = a.effort - b.effort;
+  const ew = (Number(a.effort) || 0) - (Number(b.effort) || 0);
   if (ew)  return ew;
-  return (a.title ?? "").localeCompare(b.title ?? "");
+  const ta = a.title ?? "", tb = b.title ?? "";
+  return ta < tb ? -1 : ta > tb ? 1 : 0; // code-unit order: identical on every ICU build
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 6. BOYER-MOORE-HORSPOOL  —  Sub-linear Pattern Search
-//    Scans task titles for `pattern` using a bad-character shift table.
-//    Window slides right by the shift amount derived from the rightmost
-//    occurrence of the mismatched character in the pattern.
-//
-//    Preprocessing: O(|pattern| + σ)   σ = alphabet size (128 ASCII chars)
-//    Search        : O(n / m) average  (sub-linear on typical text)
-//                    O(n × m) worst    (all-same characters — rare in titles)
-//    Space         : O(σ) shift table
-//
-//    RUNTIME-SEPARATION NOTE (Task 5): a Boyer-Moore search also exists on the
-//    client (client/utils/boyerMoore.ts) powering the instant chat search box.
-//    It is NOT shared with this server copy because they run in different
-//    runtimes (Node ESM vs React Native bundle); the client variant returns
-//    {task, matchedFields} for highlighting, while this one filters task docs
-//    for the socket `task:search` path. Same algorithm, different I/O contracts.
+// 6. BOYER-MOORE-HORSPOOL  —  task title search (see stringSearch.js)
+//    Variant: Horspool (bad-character rule on the last window character).
+//    Shift table: Map keyed by UTF-16 code unit — no overflow for long
+//    patterns, correct shifts for non-ASCII text. Normalisation: NFC + lower.
+//    Preprocessing O(m) · search O(n·m) worst, ≈ n/m typical · space O(min(m, σ)).
 // ─────────────────────────────────────────────────────────────────────────────
 export function boyerMooreSearch(tasks, pattern) {
-  if (!pattern || pattern.length === 0) return tasks;
-
-  const pat = pattern.toLowerCase();
-  const m   = pat.length;
-
-  // Build Horspool bad-character shift table.
-  const shift = new Uint8Array(128).fill(m);
-  for (let i = 0; i < m - 1; i++) {
-    const c = pat.charCodeAt(i);
-    if (c < 128) shift[c] = m - 1 - i;
-  }
-
-  function matches(text) {
-    const t = text.toLowerCase();
-    const n = t.length;
-    let   i = m - 1;
-    while (i < n) {
-      let k = 0;
-      while (k < m && pat[m - 1 - k] === t[i - k]) k++;
-      if (k === m) return true;                     // pattern found
-      const c = t.charCodeAt(i);
-      i += (c < 128 ? shift[c] : m);
-    }
-    return false;
-  }
-
-  return tasks.filter((task) => matches(task.title ?? ""));
+  // Phase 3 (D-32): Boyer–Moore–Horspool with a Map shift table and
+  // NFC + lower-case normalisation (see stringSearch.js). Empty query → all.
+  if (pattern === null || pattern === undefined || String(pattern).trim() === "") return tasks;
+  return tasks.filter((task) => searchContains(task.title ?? "", pattern));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -264,16 +219,19 @@ export function computeRecommendation(allTasks, sprintCapacity = 20) {
   const doneIds = new Set(allTasks.filter((t) => t.status === "done").map(sid));
 
   // ── Phase 1 : BFS — isolate dependency-free (ready) tasks ─────────────────
+  // A prerequisite blocks only if it exists in the active task set and is not
+  // done; references to deleted / archived / foreign tasks are ignored.
+  const known = new Set(allTasks.map(sid));
   const ready = todo.filter((t) =>
-    (t.dependencies ?? []).every((dep) => doneIds.has(String(dep)))
+    (t.dependencies ?? []).every((dep) => !known.has(String(dep)) || doneIds.has(String(dep)))
   );
 
   // ── Phase 2 : Greedy — rank ready tasks by value/effort ratio ─────────────
   const greedyRanked = greedySprintRanking(ready);
 
   // ── Phase 3 : Knapsack — pick optimal subset within sprint capacity ────────
-  const { selectedTasks, totalValue, effortUsed, capacityLeft } =
-    knapsackSprint(greedyRanked, sprintCapacity);
+  const knap = knapsackSprint(greedyRanked, sprintCapacity);
+  const { selectedTasks, totalValue, effortUsed, capacityLeft } = knap;
 
   // ── Phase 4 : Merge Sort — stable multi-key sort for display ──────────────
   const displayed = mergeSort(selectedTasks);
@@ -300,25 +258,29 @@ export function computeRecommendation(allTasks, sprintCapacity = 20) {
   // ── Algorithm metadata (shown in viva / UI accordion) ─────────────────────
   const algorithmSummary = {
     bfs: {
-      name       : "BFS — Dependency Level Discovery",
-      description: "Identifies tasks whose upstream dependencies are all complete, forming the ready-to-start candidate pool.",
+      name       : "Dependency readiness filter",
+      description: "Keeps only To-Do tasks whose prerequisites (edges A → B: A before B) are all complete. Knapsack then optimises over this ready pool only — it is NOT a precedence-constrained knapsack.",
       inputStats : `${todo.length} todo tasks · ${doneIds.size} completed deps`,
       outputStats: `${ready.length} dependency-free tasks ready`,
       complexity : { time: "O(V + E)", space: "O(V)" },
     },
     greedy: {
       name       : "GreedySprintRanking (Value / Effort Ratio)",
-      description: "Ranks ready tasks by ROI proxy (value ÷ effort). Greedy choice property guarantees this ordering is optimal for the fractional variant and provides a strong heuristic for 0/1 selection.",
+      description: "Ranks ready tasks by ROI proxy (value ÷ effort). This ordering is optimal for the FRACTIONAL knapsack; for 0/1 selection it is only a heuristic, so the exact DP below makes the decision.",
       inputStats : `${ready.length} ready tasks`,
       outputStats: `Ranked — top ratio: ${greedyRanked[0] ? (greedyRanked[0].value / greedyRanked[0].effort).toFixed(2) : "n/a"}`,
       complexity : { time: "O(n log n)", space: "O(n)" },
     },
     knapsack: {
-      name       : "0/1 Knapsack DP — Sprint Capacity Planning",
-      description: "Bottom-up DP selects the exact subset of tasks that maximises total business value without exceeding the sprint story-point budget.",
-      inputStats : `${greedyRanked.length} candidates · capacity = ${sprintCapacity} pts`,
-      outputStats: `${selectedTasks.length} tasks selected · value ${totalValue} · effort ${effortUsed}/${sprintCapacity} pts`,
-      complexity : { time: "O(n × W)", space: "O(n × W)" },
+      name       : knap.exact ? "0/1 Knapsack DP — Sprint Capacity Planning (exact)" : "0/1 Knapsack — approximate (workload limit exceeded)",
+      description: knap.exact
+        ? "Bottom-up DP over effort discretised to 0.01 units (task effort rounded up, capacity rounded down) selects the value-maximising subset that never exceeds capacity."
+        : "The exact DP table would exceed the safe workload limit; a deterministic greedy + best-single-item approximation (≥ 50% of optimum) was used instead.",
+      inputStats : `${greedyRanked.length} candidates · capacity = ${sprintCapacity}`,
+      outputStats: `${selectedTasks.length} tasks selected · value ${totalValue} · effort ${effortUsed}/${sprintCapacity}`,
+      complexity : { time: "O(n × W)", space: "O(W) + O(n × W) bits" },
+      exact      : knap.exact,
+      dpCells    : knap.meta?.cells ?? 0,
     },
     mergeSort: {
       name       : "Merge Sort — Stable Multi-Key Display Sort",
@@ -328,13 +290,13 @@ export function computeRecommendation(allTasks, sprintCapacity = 20) {
       complexity : { time: "O(n log n)", space: "O(n)" },
     },
     topological: {
-      name       : "Topological Sort (post-order DFS)",
+      name       : "Topological Sort (Kahn's algorithm + min-heap)",
       description: "Computes a dependency-safe global execution sequence. Labels each recommended task with its execution slot so engineers know which to tackle first.",
       inputStats : `${active.length} active tasks with dependency graph`,
       outputStats: hasCycle
         ? "⚠ Circular dependency detected — execution labels unavailable"
         : `Execution order computed for ${topoSorted?.length ?? 0} tasks`,
-      complexity : { time: "O(V + E)", space: "O(V)" },
+      complexity : { time: "O(E + V log V)", space: "O(V + E)" },
     },
   };
 
@@ -345,7 +307,8 @@ export function computeRecommendation(allTasks, sprintCapacity = 20) {
       effortUsed,
       capacityLeft,
       totalValue,
-      utilizationPct  : Math.round((effortUsed / sprintCapacity) * 100),
+      utilizationPct  : sprintCapacity > 0 ? Math.round((effortUsed / sprintCapacity) * 100) : 0,
+      exact           : knap.exact,
       taskCount       : selectedTasks.length,
       candidateCount  : ready.length,
     },

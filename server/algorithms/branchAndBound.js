@@ -1,33 +1,40 @@
 /**
- * Branch and Bound – Optimal Task-Member Assignment Engine
- * =========================================================
+ * Branch and Bound — capacity-constrained task → member assignment (Phase 3, D-33)
+ * ============================================================================
  * NexusFlow | server/algorithms/branchAndBound.js
  *
- * Problem modelled as the Assignment Problem (Hungarian / B&B variant):
- *   Given n tasks and m members, find a minimum-cost bijective mapping
- *   task -> member such that total skill-gap cost is minimised.
+ * COST (unchanged, genuinely implemented factor)
+ *   cost(i, j) = Σ_k max(0, demand_j[k] − supply_i[k])   over 6 skill keys
+ *   demand = task.skillWeights when set, else derived from category / text /
+ *   urgency / impact (deriveSkillDemand); supply = member.skills (missing → 5).
  *
- * Cost function for assigning task j to member i:
- *   cost(i, j) = Sum_k  max(0, task[j].skillWeights[k] - member[i].skills[k])
+ * HARD CONSTRAINTS
+ *   • only registered members (with a userId) are assignable; members whose
+ *     hour capacity is ≤ 0 (capacity − existing load) are unavailable
+ *   • hour capacity: Σ estimatedHours of tasks given to member i ≤
+ *     member.capacity (default 40) − existingLoadHours[i]. Tasks without an
+ *     estimate consume 0 h (documented limitation).
+ *   • balance cap: at most ⌈nTasks / nAvailableMembers⌉ tasks per member
+ *     (generalises the former 1:1 square problem + greedy overflow).
  *
- * That is: we pay for each skill dimension where the member falls short of
- * the task demand. A perfect fit costs 0. Over-qualification costs 0 on that
- * dimension (no penalty).
+ * OBJECTIVE (lexicographic)  1) maximise the number of assigned tasks,
+ *   2) minimise total skill-gap cost. Implemented as  cost + BIG·unassigned
+ *   with BIG > any achievable total cost.
  *
- * When tasks > members, some members handle multiple tasks (best-fit greedy
- * fallback after B&B saturates the square sub-problem).
- * When members > tasks, not all members are assigned (standard surplus).
+ * EXACT SEARCH  depth-first Branch and Bound over ALL tasks (no input-order
+ *   subset), canonical ordering:
+ *     members by userId; tasks by decreasing regret (2nd-best − best cost),
+ *     then id; branches tried cheapest member first, "leave unassigned" last.
+ *   Incumbent initialised with the greedy solution. Lower bound for a node:
+ *     costSoFar + Σ_remaining min_{currently feasible m} cost(m, t)  (BIG if none)
+ *   — admissible because feasibility only shrinks as the search deepens, so a
+ *   pruned branch (bound ≥ incumbent) can never contain a better solution.
+ *   Worst case O(mⁿ); pruning does NOT make it polynomial.
  *
- * Algorithm outline (B&B on a state-space tree):
- *   Node state  : partial assignment (taskIdx -> memberIdx) for tasks 0..depth-1
- *   Lower bound : costSoFar + sum of row-minimum costs for unassigned tasks
- *                 (admissible: never overestimates the remaining optimum)
- *   Branch      : try each free member for the next unassigned task
- *   Prune       : discard node when lower bound >= current best solution cost
- *
- * Complexity:
- *   Time  – O(n! / pruning) worst-case; O(n^2) to O(n^3) in practice for n<=20.
- *   Space – O(n^2) for the cost matrix + O(n) per stack frame.
+ * SAFEGUARDS  exact search only when nTasks ≤ maxExactTasks (16) and it
+ *   finishes within maxNodes (200 000) nodes. Otherwise the best solution
+ *   found (greedy + local improvement, or the B&B incumbent) is returned with
+ *   exact:false, the termination reason and an admissible lower bound.
  */
 
 const SKILL_KEYS = ["frontend", "backend", "devops", "design", "ml", "testing"];
@@ -142,183 +149,258 @@ export function buildCostMatrix(members, tasks) {
   );
 }
 
-/**
- * Admissible lower bound at a B&B node.
- *
- * For each task not yet assigned (index >= depth), take the minimum cost
- * across all members still available. This sum added to costSoFar can never
- * exceed the true optimal remaining cost, making it admissible.
- */
-function computeLowerBound(costMatrix, usedMembers, depth, nTasks, costSoFar) {
-  const nMembers = costMatrix.length;
-  let bound = costSoFar;
+// ── Solver ────────────────────────────────────────────────────────────────────
 
-  for (let t = depth; t < nTasks; t++) {
-    let minCost = Infinity;
-    for (let m = 0; m < nMembers; m++) {
-      if (!usedMembers[m] && costMatrix[m][t] < minCost) {
-        minCost = costMatrix[m][t];
-      }
-    }
-    // Fallback when all members are used (surplus tasks): use global column min.
-    if (minCost === Infinity) {
-      for (let m = 0; m < nMembers; m++) {
-        if (costMatrix[m][t] < minCost) minCost = costMatrix[m][t];
-      }
-    }
-    bound += minCost;
-  }
-  return bound;
+export const ASSIGNMENT_LIMITS = Object.freeze({ maxExactTasks: 16, maxNodes: 200_000, maxTasks: 2000 });
+const cmpStr = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+const num = (v, d) => (v !== null && v !== "" && v !== undefined && Number.isFinite(Number(v)) ? Number(v) : d);
+
+function taskHours(t) {
+  const h = Number(t?.estimatedHours);
+  return Number.isFinite(h) && h > 0 ? h : 0;
 }
 
-/**
- * Core solver: iterative DFS with explicit stack to avoid call-stack overflow.
- */
-function solveBnB(costMatrix, nTasks) {
-  const nMembers   = costMatrix.length;
-  const n          = Math.min(nMembers, nTasks);
-
-  let bestCost       = Infinity;
-  let bestAssignment = new Array(n).fill(-1);
-  let nodesExplored  = 0;
-  let nodesPruned    = 0;
-
-  // Each stack entry holds the full state needed to resume a branch.
-  const stack = [{
-    depth:       0,
-    assignment:  new Array(n).fill(-1),
-    usedMembers: new Array(nMembers).fill(false),
-    costSoFar:   0,
-  }];
-
-  while (stack.length > 0) {
-    const { depth, assignment, usedMembers, costSoFar } = stack.pop();
-    nodesExplored++;
-
-    if (depth === n) {
-      // Leaf node: complete assignment found.
-      if (costSoFar < bestCost) {
-        bestCost       = costSoFar;
-        bestAssignment = [...assignment];
-      }
-      continue;
-    }
-
-    // Try assigning each available member to the current task (index = depth).
-    for (let m = 0; m < nMembers; m++) {
-      if (usedMembers[m]) continue;
-
-      const edgeCost  = costMatrix[m][depth];
-      const newCost   = costSoFar + edgeCost;
-
-      // Build next state.
-      const newUsed   = [...usedMembers];
-      newUsed[m]      = true;
-
-      const lb = computeLowerBound(costMatrix, newUsed, depth + 1, n, newCost);
-
-      if (lb >= bestCost) {
-        // Prune: this branch cannot improve the current best.
-        nodesPruned++;
-        continue;
-      }
-
-      const newAssign  = [...assignment];
-      newAssign[depth] = m;
-
-      stack.push({
-        depth:       depth + 1,
-        assignment:  newAssign,
-        usedMembers: newUsed,
-        costSoFar:   newCost,
-      });
-    }
-  }
-
-  return { assignment: bestAssignment, cost: bestCost, nodesExplored, nodesPruned };
+/** Shared problem preparation (used by the solver and the exhaustive reference). */
+export function prepareAssignmentProblem(members, tasks, options = {}) {
+  const load = options.existingLoadHours ?? {};
+  const unavailable = [];
+  const avail = [];
+  members.forEach((m, inputIndex) => {
+    const userId = m?.userId ? String(m.userId?._id ?? m.userId) : null;
+    if (!userId || m?.placeholder === true) { unavailable.push({ name: m?.name ?? "Member", reason: "placeholder member (not a registered user)" }); return; }
+    const hourCap = num(m.capacity, 40) - num(load[userId], 0);
+    if (!(hourCap > 0)) { unavailable.push({ memberId: userId, name: m.name, reason: "no remaining hour capacity" }); return; }
+    avail.push({ m, inputIndex, userId, hourCap });
+  });
+  avail.sort((a, b) => cmpStr(a.userId, b.userId));
+  const taskList = tasks.map((t, inputIndex) => ({ t, inputIndex, id: String(t._id), hours: taskHours(t) }));
+  const fullMatrix = buildCostMatrix(members, tasks); // input order, for display
+  const cost = avail.map((a) => taskList.map((tk) => fullMatrix[a.inputIndex][tk.inputIndex]));
+  const balanceCap = avail.length ? Math.max(1, Math.ceil(taskList.length / avail.length)) : 0;
+  const capOverride = options.maxTasksPerMember;
+  return {
+    avail, unavailable, taskList, cost, fullMatrix,
+    maxPerMember: Number.isInteger(capOverride) && capOverride > 0 ? capOverride : balanceCap,
+  };
 }
 
-/**
- * Public API: optimal task-to-member assignment using Branch and Bound.
- *
- * Handles rectangular inputs:
- *   tasks <= members : solve full B&B; optimal assignment for all tasks.
- *   tasks >  members : solve B&B for first `nMembers` tasks (square sub-problem),
- *                      greedy best-fit for overflow tasks.
- *
- * @param {Array}  members  - TeamMember sub-documents (must have .userId, .skills).
- * @param {Array}  tasks    - Task documents (must have ._id, .skillWeights).
- * @returns {{
- *   assignments  : Array<{ taskId, memberId, cost }>,
- *   totalCost    : number,
- *   costMatrix   : number[][],
- *   meta         : object
- * }}
- */
-export function assignTasksToMembers(members, tasks) {
-  if (!members.length || !tasks.length) {
-    return { assignments: [], totalCost: 0, costMatrix: [], meta: {} };
+/** BIG exceeds any achievable total cost, making the objective lexicographic. */
+function bigFor(cost, nT) {
+  let mx = 0;
+  for (const row of cost) for (const c of row) if (c > mx) mx = c;
+  return (mx + 1) * Math.max(1, nT) + 1;
+}
+
+export function solveAssignment(members, tasks, options = {}) {
+  const t0 = performance.now();
+  const limits = { ...ASSIGNMENT_LIMITS, ...(options.limits ?? {}) };
+  const P = prepareAssignmentProblem(members, tasks, options);
+  const { avail, taskList, cost, maxPerMember } = P;
+  const nM = avail.length, nT = taskList.length;
+  const BIG = bigFor(cost, nT);
+
+  // Canonical task search order: regret desc, then id (input order irrelevant).
+  const regret = taskList.map((_, j) => {
+    const col = cost.map((r) => r[j]).sort((x, y) => x - y);
+    return col.length > 1 ? col[1] - col[0] : 0;
+  });
+  const order = taskList.map((_, j) => j).sort((a, b) => regret[b] - regret[a] || cmpStr(taskList[a].id, taskList[b].id));
+  const memberOrderFor = order.map((j) => avail.map((_, i) => i).sort((x, y) => cost[x][j] - cost[y][j] || x - y));
+
+  const count = new Array(nM).fill(0);
+  const hours = new Array(nM).fill(0);
+  const feasible = (i, j) => count[i] < maxPerMember && hours[i] + taskList[j].hours <= avail[i].hourCap + 1e-9;
+  const reset = () => { count.fill(0); hours.fill(0); };
+
+  // Greedy incumbent (also the start point of the large-instance heuristic).
+  reset();
+  let best = { asg: new Array(nT).fill(-1), obj: 0 };
+  for (let k = 0; k < nT; k++) {
+    const j = order[k];
+    const i = memberOrderFor[k].find((x) => feasible(x, j));
+    if (i === undefined) { best.obj += BIG; continue; }
+    best.asg[j] = i; count[i]++; hours[i] += taskList[j].hours; best.obj += cost[i][j];
   }
 
-  const costMatrix = buildCostMatrix(members, tasks);
-  const nMembers   = members.length;
-  const nTasks     = tasks.length;
+  let nodesExplored = 0, nodesPruned = 0, terminationReason = "search_complete", exact = false;
+
+  const lowerBound = (k, soFar) => {
+    let lb = soFar;
+    for (let q = k; q < nT; q++) {
+      const j = order[q];
+      let mn = BIG;
+      for (let i = 0; i < nM; i++) if (cost[i][j] < mn && feasible(i, j)) mn = cost[i][j];
+      lb += mn;
+    }
+    return lb;
+  };
+
+  if (nT === 0 || nM === 0) {
+    exact = true;
+  } else if (nT <= limits.maxExactTasks) {
+    reset();
+    const cur = new Array(nT).fill(-1);
+    let aborted = false;
+    const dfs = (k, soFar) => {
+      nodesExplored++;
+      if (nodesExplored > limits.maxNodes) { aborted = true; return; }
+      if (k === nT) {
+        if (soFar < best.obj) best = { asg: [...cur], obj: soFar };
+        return;
+      }
+      const j = order[k];
+      for (const i of memberOrderFor[k]) {
+        if (!feasible(i, j)) continue;
+        count[i]++; hours[i] += taskList[j].hours; cur[j] = i;
+        const next = soFar + cost[i][j];
+        if (lowerBound(k + 1, next) >= best.obj) nodesPruned++;
+        else dfs(k + 1, next);
+        count[i]--; hours[i] -= taskList[j].hours; cur[j] = -1;
+        if (aborted) return;
+      }
+      // Branch: leave this task unassigned (explored last).
+      const next = soFar + BIG;
+      if (lowerBound(k + 1, next) >= best.obj) nodesPruned++;
+      else dfs(k + 1, next);
+    };
+    dfs(0, 0);
+    exact = !aborted;
+    if (aborted) terminationReason = "node_budget_exhausted";
+  } else {
+    terminationReason = `task_count_exceeds_exact_limit (${nT} > ${limits.maxExactTasks})`;
+    // Deterministic local improvement: single-task moves that lower the
+    // objective, repeated until a full pass makes no change (bounded rounds).
+    reset();
+    best.asg.forEach((i, j) => { if (i >= 0) { count[i]++; hours[i] += taskList[j].hours; } });
+    let improved = true, rounds = 0;
+    while (improved && rounds++ < 50) {
+      improved = false;
+      for (const j of order) {
+        const curI = best.asg[j];
+        const curC = curI >= 0 ? cost[curI][j] : BIG;
+        if (curI >= 0) { count[curI]--; hours[curI] -= taskList[j].hours; }
+        let bi = curI, bc = curC;
+        for (let i = 0; i < nM; i++) if (cost[i][j] < bc && feasible(i, j)) { bi = i; bc = cost[i][j]; }
+        if (bi >= 0) { count[bi]++; hours[bi] += taskList[j].hours; }
+        if (bi !== curI) { best.asg[j] = bi; best.obj += bc - curC; improved = true; }
+      }
+    }
+  }
+
+  // Admissible global lower bound (capacity-relaxed column minima) for reporting.
+  reset();
+  const globalLB = nM ? lowerBound(0, 0) : nT * BIG;
+
+  const memberHours = new Array(nM).fill(0);
+  const memberTasks = new Array(nM).fill(0);
+  best.asg.forEach((i, j) => { if (i >= 0) { memberHours[i] += taskList[j].hours; memberTasks[i]++; } });
 
   const assignments = [];
-  let   totalCost   = 0;
-
-  // --- B&B on the square (or under-determined) sub-problem ---
-  const bSquareTasks = Math.min(nTasks, nMembers);
-  const squareCost   = costMatrix.map((row) => row.slice(0, bSquareTasks));
-  const result       = solveBnB(squareCost, bSquareTasks);
-
-  const memberLoad = new Array(nMembers).fill(0);
-
-  for (let t = 0; t < bSquareTasks; t++) {
-    const mIdx = result.assignment[t];
-    if (mIdx === -1) continue;
-    assignments.push({
-      taskId:   tasks[t]._id.toString(),
-      memberId: members[mIdx].userId.toString(),
-      cost:     costMatrix[mIdx][t],
-    });
-    totalCost += costMatrix[mIdx][t];
-    memberLoad[mIdx]++;
-  }
-
-  // --- Greedy best-fit for overflow tasks (when tasks > members) ---
-  for (let t = nMembers; t < nTasks; t++) {
-    let bestM    = 0;
-    let bestCost = Infinity;
-    for (let m = 0; m < nMembers; m++) {
-      // Penalise already-loaded members slightly to balance workload.
-      const effective = costMatrix[m][t] + memberLoad[m] * 0.5;
-      if (effective < bestCost) { bestCost = effective; bestM = m; }
+  const unassigned = [];
+  let totalCost = 0;
+  taskList.forEach((tk, j) => {
+    const i = best.asg[j];
+    if (i < 0) {
+      const anyHours = avail.some((a) => tk.hours <= a.hourCap + 1e-9);
+      unassigned.push({
+        taskId: tk.id,
+        reason: nM === 0 ? "no available registered members"
+          : !anyHours ? `needs ${tk.hours} h but no member has that much remaining capacity`
+          : "every member able to take it reached the per-member task limit or hour capacity",
+      });
+      return;
     }
+    totalCost += cost[i][j];
+    const a = avail[i];
+    const demand = effectiveDemand(tk.t);
+    const supply = (k) => a.m.skills?.[k] ?? 5;
+    const gaps = SKILL_KEYS.filter((k) => (demand?.[k] ?? 0) > supply(k)).map((k) => ({ skill: k, required: demand[k], has: supply(k) }));
+    const matched = SKILL_KEYS.filter((k) => (demand?.[k] ?? 0) > 0 && demand[k] <= supply(k));
     assignments.push({
-      taskId:   tasks[t]._id.toString(),
-      memberId: members[bestM].userId.toString(),
-      cost:     costMatrix[bestM][t],
+      taskId: tk.id,
+      memberId: a.userId,
+      cost: cost[i][j],
+      explanation: {
+        matchedSkills: matched,
+        skillGaps: gaps,
+        memberHoursAfter: Math.round(memberHours[i] * 100) / 100,
+        memberHourCapacity: a.hourCap,
+        memberTaskCount: memberTasks[i],
+        reason: gaps.length === 0
+          ? `${a.m.name ?? "Member"} meets every derived skill requirement (cost 0).`
+          : `Lowest-cost feasible choice in the ${exact ? "optimal" : "best found"} plan; skill gaps: ${gaps.map((g) => `${g.skill} ${g.has}/${g.required}`).join(", ")}.`,
+      },
     });
-    totalCost += costMatrix[bestM][t];
-    memberLoad[bestM]++;
-  }
+  });
+  // Keep output in the caller's task order.
+  const pos = new Map(taskList.map((tk) => [tk.id, tk.inputIndex]));
+  assignments.sort((x, y) => pos.get(x.taskId) - pos.get(y.taskId));
 
+  const totalHourCap = avail.reduce((s, a) => s + a.hourCap, 0);
+  const usedHours = memberHours.reduce((s, h) => s + h, 0);
   return {
     assignments,
+    unassigned,
     totalCost,
-    costMatrix,
+    costMatrix: P.fullMatrix,
     meta: {
-      nodesExplored : result.nodesExplored,
-      nodesPruned   : result.nodesPruned,
-      pruningRatio  : result.nodesExplored > 0
-        ? ((result.nodesPruned / result.nodesExplored) * 100).toFixed(1) + "%"
-        : "N/A",
-      algorithm : "Branch and Bound – Assignment Problem",
+      algorithm: exact ? "Branch and Bound (exact, capacity-constrained assignment)" : "Branch and Bound incumbent / greedy + local improvement (approximate)",
+      exact,
+      objective: { assigned: assignments.length, unassigned: unassigned.length, totalCost },
+      lowerBound: { unassigned: Math.floor(globalLB / BIG), cost: globalLB % BIG },
+      nodesExplored,
+      nodesPruned,
+      pruningRatio: nodesExplored + nodesPruned > 0 ? ((nodesPruned / (nodesExplored + nodesPruned)) * 100).toFixed(1) + "%" : "N/A",
+      terminationReason,
+      limits,
+      maxTasksPerMember: maxPerMember,
+      availableMembers: nM,
+      unavailableMembers: P.unavailable,
+      capacityUtilizationPct: totalHourCap > 0 ? Math.round((usedHours / totalHourCap) * 1000) / 10 : 0,
+      durationMs: Math.round((performance.now() - t0) * 1000) / 1000,
       complexity: {
-        time : "O(n! / pruning)  practical O(n^2 to n^3)  n=members",
-        space: "O(n^2) cost matrix + O(n) stack depth",
+        time: "O(m^n) worst case (exponential; pruning reduces work, not the bound)",
+        space: "O(m·n) cost matrix + O(n) recursion depth",
       },
     },
   };
+}
+
+/**
+ * assignTasksToMembers(members, tasks, options) — backwards-compatible entry
+ * point. Every task is handled by the same solver (no input-order subset).
+ */
+export function assignTasksToMembers(members, tasks, options = {}) {
+  if (!members?.length || !tasks?.length) {
+    return { assignments: [], unassigned: [], totalCost: 0, costMatrix: [], meta: { exact: true, terminationReason: "empty_input", nodesExplored: 0, nodesPruned: 0 } };
+  }
+  if (tasks.length > ASSIGNMENT_LIMITS.maxTasks) {
+    throw Object.assign(new Error(`Too many tasks for assignment (max ${ASSIGNMENT_LIMITS.maxTasks}).`), { statusCode: 413 });
+  }
+  return solveAssignment(members, tasks, options);
+}
+
+/** Exhaustive reference for tests: (m+1)^n enumeration → { assigned, cost }. */
+export function exhaustiveAssignment(members, tasks, options = {}) {
+  const P = prepareAssignmentProblem(members, tasks, options);
+  const { avail, taskList, cost, maxPerMember } = P;
+  const nM = avail.length, nT = taskList.length;
+  let best = { assigned: -1, cost: Infinity };
+  const count = new Array(nM).fill(0), hours = new Array(nM).fill(0);
+  const rec = (j, assigned, c) => {
+    if (j === nT) {
+      if (assigned > best.assigned || (assigned === best.assigned && c < best.cost)) best = { assigned, cost: c };
+      return;
+    }
+    rec(j + 1, assigned, c);
+    for (let i = 0; i < nM; i++) {
+      if (count[i] < maxPerMember && hours[i] + taskList[j].hours <= avail[i].hourCap + 1e-9) {
+        count[i]++; hours[i] += taskList[j].hours;
+        rec(j + 1, assigned + 1, c + cost[i][j]);
+        count[i]--; hours[i] -= taskList[j].hours;
+      }
+    }
+  };
+  rec(0, 0, 0);
+  return best;
 }

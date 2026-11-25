@@ -10,8 +10,10 @@ import TeamDeparture from "../models/TeamDeparture.js";
 import SkillVerification from "../models/SkillVerification.js";
 import { requireAuth } from "../auth.js";
 import { greedySortTasks, computePriorityScore } from "../algorithms/greedyScheduler.js";
+import { recomputeDependencyMetrics } from "../services/taskGraphService.js";
 import { assignTasksToMembers } from "../algorithms/branchAndBound.js";
-import { buildGraph, dfs, bfs, topologicalSort as topoSortGraph } from "../algorithms/graphTraversal.js";
+import { buildGraph, dfs, bfs, topologicalSort as topoSortGraph, executionWaves } from "../algorithms/graphTraversal.js";
+import { solveKnapsack } from "../algorithms/knapsack.js";
 import { compareSortAlgorithms, mergeSortTasks, quickSortTasks } from "../utils/sortAlgorithms.js";
 import { decomposeProject, extractFeatures, mapCategoryOrTitleToWaterfallPhase } from "../algorithms/projectDecomposer.js";
 import { assertWaterfallTaskExecutable, getWaterfallPhaseStates } from "../services/phaseGateService.js";
@@ -887,8 +889,9 @@ const tierFromScore = (s) => (s >= 80 ? "critical" : s >= 55 ? "high" : s >= 30 
 
 // Build an autofill task payload with Greedy priorityScore + derived dates.
 // AI proposes values; Greedy computePriorityScore computes the final score.
-function buildTaskPayload(seed, depCount = 0) {
-  const greedy = computePriorityScore({ urgency: seed.urgency, impact: seed.impact, dependencyCount: depCount });
+function buildTaskPayload(seed, dependentCount = 0) {
+  // A task being created has no dependents yet (dependents are derived later).
+  const greedy = computePriorityScore({ urgency: seed.urgency, impact: seed.impact, dependentCount });
   const dueInDays = Math.max(2, Math.round((seed.estimatedHours || 4) / 2));
   const start    = new Date();
   const due      = new Date(Date.now() + dueInDays * 86_400_000);
@@ -1279,7 +1282,7 @@ Return a JSON object:
         const pool   = fresh.length ? fresh : seeds;
         const ranked = mergeSort(pool.map((s) => ({
           ...s, status: "todo", effort: s.estimatedHours,
-          priority: computePriorityScore({ urgency: s.urgency, impact: s.impact, dependencyCount: 0 }),
+          priority: computePriorityScore({ urgency: s.urgency, impact: s.impact, dependentCount: 0 }),
         })));
         const pick = ranked[0];
         chosen = buildTaskPayload(pick, 0);
@@ -2399,10 +2402,12 @@ router.get("/teams/:teamId/dependency-graph", requireAuth, async (req, res) => {
     ]);
     const memberName = Object.fromEntries((team?.members ?? []).map((m) => [m.userId.toString(), m.name]));
 
-    const { adjList, inDegree, nodeMap } = buildGraph(tasks);
+    const { adjList, inDegree, selfLoops, missingRefs } = buildGraph(tasks);
     const dfsResult  = dfs(adjList);
-    const bfsResult  = bfs(adjList, inDegree);
-    const topoResult = topoSortGraph(adjList, inDegree);
+    const bfsResult  = bfs(adjList, inDegree);        // reachability / shortest-hop levels
+    const topoResult = topoSortGraph(adjList, inDegree, { selfLoops });
+    // Phase 3 (D-25): dependency-safe execution waves (longest prerequisite depth).
+    const wavesResult = executionWaves(adjList, inDegree, { selfLoops });
 
     const nodes = tasks.map((t) => ({
       id            : t._id.toString(),
@@ -2417,7 +2422,12 @@ router.get("/teams/:teamId/dependency-graph", requireAuth, async (req, res) => {
     }));
     const edges = buildEdgeList(tasks);
 
-    res.json({ nodes, edges, dfsResult, bfsResult, topoResult });
+    res.json({
+      nodes, edges, dfsResult, bfsResult, topoResult,
+      wavesResult: { valid: wavesResult.valid, waves: wavesResult.waves, levels: wavesResult.levels, cycles: wavesResult.cycles ?? [] },
+      graphConvention: "A → B means task A must finish before task B can execute.",
+      graphDiagnostics: { selfLoops, missingRefs: missingRefs.length },
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -2498,7 +2508,7 @@ router.delete("/teams/:teamId/tasks/:taskId/dependencies/:depId", requireAuth, a
 router.post("/teams/:teamId/sprint-optimize", requireAuth, async (req, res) => {
   try {
     let { sprintHours } = req.body;
-    if (!sprintHours || typeof sprintHours !== "number" || sprintHours <= 0)
+    if (!sprintHours || typeof sprintHours !== "number" || !Number.isFinite(sprintHours) || sprintHours <= 0)
       return res.status(400).json({ error: "sprintHours must be a positive number." });
 
     let capacityWarning = null;
@@ -2510,8 +2520,9 @@ router.post("/teams/:teamId/sprint-optimize", requireAuth, async (req, res) => {
     // Fetch ALL backlog tasks (every status) so we can explain — per task — why it
     // is or isn't a Knapsack candidate, instead of silently filtering in the query.
     const allTasks = await Task.find({ teamId: req.params.teamId })
-      .select("title status estimatedHours businessValue")
+      .select("title status estimatedHours businessValue dependencies")
       .lean();
+    const statusById = new Map(allTasks.map((t) => [String(t._id), t.status]));
 
     // ── Eligibility classification (with human-readable reasons) ──────────────
     // A task is a Knapsack candidate iff: status==="todo" AND estimatedHours>0
@@ -2524,6 +2535,11 @@ router.post("/teams/:teamId/sprint-optimize", requireAuth, async (req, res) => {
       else if (t.status === "in_progress") reasons.push("In progress (only backlog/To-Do tasks are planned)");
       if (!(t.estimatedHours > 0))    reasons.push("Missing estimated hours (weight)");
       if (!(t.businessValue > 0))     reasons.push("Missing business value");
+      // Phase 3: dependency readiness — knapsack optimises only over tasks whose
+      // prerequisites are complete (this is NOT a precedence-constrained knapsack).
+      const openPrereqs = [...new Set((t.dependencies ?? []).map(String))]
+        .filter((d) => d !== String(t._id) && statusById.has(d) && statusById.get(d) !== "done");
+      if (t.status === "todo" && openPrereqs.length) reasons.push(`Waiting on ${openPrereqs.length} unfinished prerequisite task${openPrereqs.length !== 1 ? "s" : ""}`);
 
       if (reasons.length === 0) eligible.push(t);
       else ineligible.push({
@@ -2544,42 +2560,28 @@ router.post("/teams/:teamId/sprint-optimize", requireAuth, async (req, res) => {
           : "No eligible tasks. Each task below needs status To-Do plus estimated hours and business value.",
       });
 
-    // ── 0/1 Knapsack DP (weights scaled ×10 so fractional hours stay integral) ─
-    const SCALE    = 10;
-    const capacity = Math.floor(sprintHours * SCALE);
-    const n        = eligible.length;
-    const weights  = eligible.map((t) => Math.round(t.estimatedHours * SCALE));
-    const values   = eligible.map((t) => t.businessValue);
-
-    const dp = Array.from({ length: n + 1 }, () => new Array(capacity + 1).fill(0));
-    for (let i = 1; i <= n; i++) {
-      const wi = weights[i - 1], vi = values[i - 1];
-      for (let w = 0; w <= capacity; w++) {
-        dp[i][w] = dp[i - 1][w];
-        if (wi <= w) {
-          const withItem = dp[i - 1][w - wi] + vi;
-          if (withItem > dp[i][w]) dp[i][w] = withItem;
-        }
-      }
-    }
-
-    const selectedIdx = new Set();
-    let w = capacity;
-    for (let i = n; i >= 1; i--) {
-      if (dp[i][w] !== dp[i - 1][w]) { selectedIdx.add(i - 1); w -= weights[i - 1]; }
-    }
+    // ── 0/1 Knapsack (canonical exact solver, Phase 3 D-26) ─────────────────
+    // Effort is discretised to 0.01 h: task hours rounded UP, capacity rounded
+    // DOWN, so the selected total never exceeds the requested capacity.
+    const knap = solveKnapsack(
+      eligible.map((t) => ({ id: String(t._id), effort: t.estimatedHours, value: t.businessValue })),
+      sprintHours
+    );
+    const selectedIds = new Set(knap.selectedIds);
+    const capacityUnits = knap.capacityUnits;
+    const unitsById = new Map(knap.candidates.map((c) => [c.id, c.units]));
 
     const selectedTasks = [];
-    const eligibleReport = eligible.map((t, idx) => {
-      const picked = selectedIdx.has(idx);
+    const eligibleReport = eligible.map((t) => {
+      const picked = selectedIds.has(String(t._id));
       const ratio  = +(t.businessValue / t.estimatedHours).toFixed(2);
       const row = {
         _id: String(t._id), title: t.title, status: t.status,
         estimatedHours: t.estimatedHours, businessValue: t.businessValue,
         ratio, selected: picked,
         reason: picked
-          ? `Selected — value ${t.businessValue} for ${t.estimatedHours}h (ratio ${ratio}) fits the optimal subset`
-          : (weights[idx] > capacity
+          ? `Selected — value ${t.businessValue} for ${t.estimatedHours}h (ratio ${ratio}) is part of the ${knap.exact ? "optimal" : "approximate"} subset`
+          : ((unitsById.get(String(t._id)) ?? 0) > capacityUnits
               ? `Not selected — ${t.estimatedHours}h alone exceeds the ${sprintHours}h capacity`
               : `Not selected — a higher-value combination used the remaining capacity`),
       };
@@ -2593,13 +2595,17 @@ router.post("/teams/:teamId/sprint-optimize", requireAuth, async (req, res) => {
       selectedTasks,
       eligible      : eligibleReport,
       ineligible,
-      totalValue    : dp[n][capacity],
+      totalValue    : knap.totalValue,
       totalHours    : Math.round(totalHours * 100) / 100,
+      exact         : knap.exact,
+      optimality    : knap.exact ? "exact optimum (0/1 Knapsack DP)" : "approximate — workload limit exceeded (≥ 50% of optimum guaranteed)",
+      effortUnit    : "0.01 h (task effort rounded up, capacity rounded down)",
+      dpCells       : knap.meta.cells,
       totalEligible : eligible.length,
       sprintCapacity: sprintHours,
       utilizationPct: Math.round((totalHours / sprintHours) * 100),
-      algorithm     : "0/1 Knapsack (bottom-up DP)",
-      complexity    : { time: "O(n * W)", space: "O(n * W)" },
+      algorithm     : knap.meta.algorithm,
+      complexity    : { time: "O(n * W)", space: "O(W) + O(n * W) bits", W: knap.capacityUnits },
       warning       : capacityWarning,
     });
   } catch (e) {
@@ -2780,8 +2786,7 @@ router.post("/teams/:teamId/tasks/:taskId/duplicate", requireAuth, async (req, r
       reminderAt: src.reminderAt,
       skillWeights: src.skillWeights,
       source: src.source,
-      dependencies: cloneDependencies ? (src.dependencies ?? []) : [],
-      dependencyCount: cloneDependencies ? (src.dependencies?.length ?? 0) : 0,
+      dependencies: cloneDependencies ? (src.dependencies ?? []) : [], // counts derived by taskGraphService
       ...(mongoose.isValidObjectId(req.user?.id) ? { createdBy: req.user.id } : {}),
     });
     await Team.updateOne({ _id: teamId }, { $inc: { taskCount: 1 } });
@@ -2846,18 +2851,13 @@ router.patch("/tasks/:taskId/priority", requireAuth, async (req, res) => {
     if (urgency === undefined && impact === undefined)
       return res.status(400).json({ error: "Provide urgency and/or impact." });
 
-    const existing = await Task.findOne({ _id: req.params.taskId, teamId: access.task.teamId })
-      .select("urgency impact dependencyCount stateVersion greedyVersion planningVersion").lean();
-    if (!existing) return res.status(404).json({ error: "Task not found." });
-
-    const task = await Task.findOneAndUpdate({ _id: req.params.taskId, teamId: access.task.teamId }, {
-      urgency        : urgency ?? existing.urgency,
-      impact         : impact  ?? existing.impact,
-      dependencyCount: existing.dependencyCount,
-      stateVersion   : existing.stateVersion + 1,
-      greedyVersion  : 0,        // mark greedy result stale
-      planningVersion: 0,        // mark planning result stale
-    }, { new: true, runValidators: true, context: "query" }).lean();
+    // Phase 3 (D-20): only the supplied factors are written; priorityScore is
+    // recomputed atomically from the persisted document by the Task model.
+    const $set = { greedyVersion: 0, planningVersion: 0 }; // mark derived results stale
+    if (urgency !== undefined) $set.urgency = urgency;
+    if (impact !== undefined) $set.impact = impact;
+    const task = await Task.findOneAndUpdate({ _id: req.params.taskId, teamId: access.task.teamId }, { $set },
+      { new: true, runValidators: true, context: "query" }).lean();
 
     if (!task) return res.status(404).json({ error: "Task not found." });
     res.json({ ok: true, task });
@@ -3037,7 +3037,16 @@ router.post("/teams/:teamId/assign", requireAuth, async (req, res) => {
       }
     }
 
-    const { assignments, totalCost, costMatrix, meta } = assignTasksToMembers(members, tasks);
+    // Phase 3 (D-33): existing workload of tasks OUTSIDE this batch reduces each
+    // member's remaining hour capacity (hard constraint in the solver).
+    const batchIds = new Set(tasks.map((t) => String(t._id)));
+    const existingLoadHours = {};
+    for (const t of await Task.find({ teamId, status: { $ne: "done" }, assignedTo: { $ne: null } }).select("assignedTo estimatedHours").lean()) {
+      if (batchIds.has(String(t._id))) continue;
+      const k = String(t.assignedTo);
+      existingLoadHours[k] = (existingLoadHours[k] ?? 0) + (Number(t.estimatedHours) > 0 ? Number(t.estimatedHours) : 0);
+    }
+    const { assignments, unassigned = [], totalCost, costMatrix, meta } = assignTasksToMembers(members, tasks, { existingLoadHours });
 
     if (persist && assignments.length) {
       const memberMap = Object.fromEntries(members.map((m) => [m.userId.toString(), m]));
@@ -3064,15 +3073,16 @@ router.post("/teams/:teamId/assign", requireAuth, async (req, res) => {
       }
     }
 
-    const memberMap = Object.fromEntries(members.map((m) => [m.userId.toString(), m]));
+    const memberMap = Object.fromEntries(members.filter((m) => m.userId).map((m) => [m.userId.toString(), m]));
     const taskMap   = Object.fromEntries(tasks.map((t)  => [t._id.toString(), t]));
-    const enriched  = assignments.map(({ taskId, memberId, cost }) => ({
+    const enriched  = assignments.map(({ taskId, memberId, cost, explanation }) => ({
       taskId, taskTitle: taskMap[taskId]?.title ?? taskId,
-      memberId, memberName: memberMap[memberId]?.name ?? memberId, cost,
+      memberId, memberName: memberMap[memberId]?.name ?? memberId, cost, explanation,
     }));
+    const unassignedOut = unassigned.map((u) => ({ ...u, taskTitle: taskMap[u.taskId]?.title ?? u.taskId }));
 
-    res.json({ assignments: enriched, totalCost, costMatrix,
-      memberLabels: members.map((m) => m.name ?? m.userId.toString()),
+    res.json({ assignments: enriched, unassigned: unassignedOut, totalCost, costMatrix,
+      memberLabels: members.map((m) => m.name ?? (m.userId ? m.userId.toString() : "Member")),
       taskLabels  : tasks.map((t) => t.title), meta });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -3176,10 +3186,13 @@ async function createSeededTasks(teamId, seeds, projectId = null) {
   for (const c of created) {
     if (c.phaseIndex > 0 && byPhase.has(c.phaseIndex - 1)) {
       const prev = byPhase.get(c.phaseIndex - 1)[0];
-      depBulk.push({ updateOne: { filter: { _id: c.id }, update: { $set: { dependencies: [prev], dependencyCount: 1 } } } });
+      depBulk.push({ updateOne: { filter: { _id: c.id }, update: { $set: { dependencies: [prev] } } } });
     }
   }
-  if (depBulk.length) await Task.bulkWrite(depBulk, { ordered: false });
+  if (depBulk.length) {
+    await Task.bulkWrite(depBulk, { ordered: false });
+    await recomputeDependencyMetrics(teamId); // bulkWrite bypasses model hooks
+  }
 
   const all = await Task.find({ teamId }).lean();
   const order = topologicalSort(all);
