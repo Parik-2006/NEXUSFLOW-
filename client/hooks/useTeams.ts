@@ -238,8 +238,13 @@ export function useTeams() {
   // Subscribe to live task transitions to keep progress bars accurate.
   useEffect(() => {
     const socket = getSocket(token);
-    const onTaskUpdated = (p: { teamId: string; prevStatus: string; status: string }) =>
-      recomputeProgress(p.teamId, p.prevStatus, p.status);
+    // Phase 2: counts are authoritative server values — refetch (coalesced)
+    // instead of adjusting local counters, which drifted.
+    let pending: ReturnType<typeof setTimeout> | null = null;
+    const onTaskUpdated = () => {
+      if (pending) clearTimeout(pending);
+      pending = setTimeout(() => { hydrate(); }, 400);
+    };
 
     // Mirror server-side deletion in any other open tab/device.
     const onTeamDeleted = (p: { teamId: string }) => {
@@ -248,16 +253,27 @@ export function useTeams() {
     };
 
     socket.on("task:updated", onTaskUpdated);
+    socket.on("task:created", onTaskUpdated);
+    socket.on("task:deleted", onTaskUpdated);
+    socket.on("team:restored", onTaskUpdated);
+    socket.on("project:archived", onTaskUpdated);
+    socket.on("project:restored", onTaskUpdated);
     socket.on("team:deleted", onTeamDeleted);
     // Reconnection replay: when the socket comes back, refetch to catch missed deltas.
     socket.on("reconnect", hydrate);
 
     return () => {
+      if (pending) clearTimeout(pending);
       socket.off("task:updated", onTaskUpdated);
+      socket.off("task:created", onTaskUpdated);
+      socket.off("task:deleted", onTaskUpdated);
+      socket.off("team:restored", onTaskUpdated);
+      socket.off("project:archived", onTaskUpdated);
+      socket.off("project:restored", onTaskUpdated);
       socket.off("team:deleted", onTeamDeleted);
       socket.off("reconnect", hydrate);
     };
-  }, [token, recomputeProgress, hydrate]);
+  }, [token, hydrate]);
 
   return { teams, loading, error, refetch: hydrate, recomputeProgress, createTeam, deleteTeam, joinTeam, updateTeam, generateTasks, addMember, removeMember, updateMember };
 }

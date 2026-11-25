@@ -42,6 +42,15 @@ import {
 import { requireTeamAccess } from "../middleware/authorization.js";
 import { getAuthUserId, idEquals, isValidId } from "../utils/identity.js";
 import { logger } from "../utils/logger.js";
+import { archiveWorkspace } from "../services/lifecycleService.js";
+import { computeTeamTaskStats, buildDashboardSummary } from "../services/taskStatsService.js";
+
+/** Remove every live socket from a workspace's project rooms (archive/purge). */
+async function revokeAllProjectRooms(io, teamId) {
+  const projects = await Project.find({ teamId }).setOptions({ includeArchived: true }).select("_id").lean();
+  for (const p of projects) io.in(`project:${p._id}`).socketsLeave(`project:${p._id}`);
+  io.in(`project:${teamId}`).socketsLeave(`project:${teamId}`);
+}
 
 const router = Router();
 
@@ -99,23 +108,38 @@ router.get("/teams", requireAuth, async (req, res) => {
     const filter = userId
       ? { $or: [{ ownerId: userId }, { "members.userId": userId }] }
       : { _id: null };
-    const teams = await Team.find(filter).sort({ updatedAt: -1 }).lean();
+    const teams = await Team.find(filter).sort({ updatedAt: -1 }).lean(); // archived hidden
+    // Phase 2 (D-18/D-35): authoritative counts from ONE scoped aggregation
+    // (replaces stored counters and the per-team N+1 queries; the old Scrum
+    // done-count query also lost its workspace scope via a duplicate $or).
+    const stats = await computeTeamTaskStats(teams);
     for (const t of teams) {
       if (!t.methodology) {
         t.methodology = t.discoverySettings?.methodology || "WATERFALL";
       }
-      if (t.methodology === "SCRUM" || t.methodology === "Scrum") {
-        const scrumQuery = getScrumTaskQuery(t.activeProjectId, t._id);
-        t.taskCount = await Task.countDocuments(scrumQuery);
-        t.doneCount = await Task.countDocuments({
-          ...scrumQuery,
-          $or: [{ status: "done" }, { status: "DONE" }, { scrumStatus: "DONE" }],
-        });
-      }
+      const s = stats.get(String(t._id));
+      t.taskCount = s.total;
+      t.doneCount = s.done;
+      t.taskStats = s;
     }
     res.json(teams);
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /api/dashboard/summary ───────────────────────────────────────────────
+// Phase 2 (D-19): authoritative dashboard metrics for the caller's ACCESSIBLE,
+// ACTIVE workspaces only (archived workspaces/projects/tasks excluded).
+router.get("/dashboard/summary", requireAuth, async (req, res) => {
+  try {
+    const userId = getAuthUserId(req.user);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const teams = await Team.find({ $or: [{ ownerId: userId }, { "members.userId": userId }] }).lean();
+    res.json(await buildDashboardSummary(teams));
+  } catch (e) {
+    logger.error("dashboard:summary_failed", { reason: e.message });
+    res.status(500).json({ error: "Failed to load dashboard summary." });
   }
 });
 
@@ -153,13 +177,14 @@ router.get("/teams/:teamId", requireAuth, async (req, res) => {
       team.methodology = "WATERFALL";
     }
 
+    {
+      const s = (await computeTeamTaskStats([team])).get(String(team._id));
+      team.taskCount = s.total;
+      team.doneCount = s.done;
+      team.taskStats = s;
+    }
     if (team.methodology === "SCRUM" || team.methodology === "Scrum") {
       const scrumQuery = getScrumTaskQuery(resolvedProjectId, team._id);
-      team.taskCount = await Task.countDocuments(scrumQuery);
-      team.doneCount = await Task.countDocuments({
-        ...scrumQuery,
-        $or: [{ status: "done" }, { status: "DONE" }, { scrumStatus: "DONE" }],
-      });
       team.backlogCount = await Task.countDocuments({
         ...scrumQuery,
         sprintId: null,
@@ -2203,60 +2228,24 @@ router.delete("/teams/:teamId", requireAuth, async (req, res) => {
         code: "CONFIRMATION_REQUIRED",
       });
     }
-    logger.warn("security:team_deleted", { teamId, actorId: userIdStr });
-
-    // Dynamic imports avoid circular dependency issues between models and routes.
-    const [
-      { default: ChatMessage },
-      { default: TeamHealth },
-      { default: Risk },
-      { default: Retrospective },
-      { default: LearningInsight },
-      { default: Opinion },
-      { default: DecisionFeedback },
-      { default: GitHubIntegration },
-    ] = await Promise.all([
-      import("../models/ChatMessage.js"),
-      import("../models/TeamHealth.js"),
-      import("../models/Risk.js"),
-      import("../models/Retrospective.js"),
-      import("../models/LearningInsight.js"),
-      import("../models/Opinion.js"),
-      import("../models/DecisionFeedback.js"),
-      import("../models/GitHubIntegration.js"),
-    ]);
-
-    // Hard-delete team-scoped data. Run in parallel.
-    await Promise.all([
-      Team.findByIdAndDelete(teamId),
-      Task.deleteMany({ teamId }),
-      Project.deleteMany({ teamId }),
-      Invitation.deleteMany({ teamId }),
-      ChatMessage.deleteMany({ teamId }),
-      TeamHealth.deleteMany({ teamId }),
-      Risk.deleteMany({ teamId }),
-      Retrospective.deleteMany({ teamId }),
-      LearningInsight.deleteMany({ teamId }),
-      Opinion.deleteMany({ teamId }),
-      DecisionFeedback.deleteMany({ teamId }),
-      TeamDeparture.deleteMany({ teamId }),
-      GitHubIntegration.deleteMany({ teamId }),
-    ]);
-
-    // Soft-disassociate: clear teamId on notifications that reference this team
-    // (keeps users' inbox / audit trail intact without dangling pointers).
-    await Notification.updateMany(
-      { teamId },
-      { $unset: { teamId: "" } }
-    );
+    // Phase 2 (Tasks 6/7): DELETE now ARCHIVES the workspace (recoverable for
+    // LIFECYCLE_RECOVERY_DAYS). Permanent, transactional deletion happens only
+    // via DELETE /api/trash/workspaces/:id or the opt-in expiry job.
+    const result = await archiveWorkspace({ teamId, actorId: userIdStr });
 
     const io = req.app.get("io");
-    if (io) {
-      io.to(`team:${teamId}`).emit("team:deleted", { teamId });
+    if (io && !result.alreadyArchived) {
+      io.to(`team:${teamId}`).emit("team:deleted", { teamId, archived: true, purgeAfter: result.purgeAfter });
       io.in(`team:${teamId}`).socketsLeave([`team:${teamId}`, `chat:team:${teamId}`]);
+      await revokeAllProjectRooms(io, teamId);
     }
 
-    res.json({ ok: true, message: "Team deleted successfully." });
+    res.json({
+      ok: true,
+      archived: true,
+      purgeAfter: result.purgeAfter ?? null,
+      message: "Workspace moved to Trash. It can be restored until the recovery window ends.",
+    });
   } catch (e) {
     console.error("[DELETE /teams/:teamId] error:", e.message);
     res.status(500).json({ error: e.message });

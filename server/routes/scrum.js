@@ -617,6 +617,12 @@ const handleStartSprint = async (req, res) => {
       actorName: req.user?.name || "User",
     });
 
+    // Phase 2: notify authorized rooms after the state change (dashboard refresh).
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`team:${sprint.teamId}`).emit("sprint:started", { sprintId: String(sprint._id) });
+      io.to(`project:${sprint.projectId}`).emit("sprint:started", { sprintId: String(sprint._id) });
+    }
     res.json({ sprint: updated });
   } catch (err) {
     res.status(400).json({ error: err.message });

@@ -17,6 +17,7 @@ import DiscoverTeamsModal from "@/components/discovery/DiscoverTeamsModal";
 import TeamMenu from "@/components/TeamMenu";
 import FloatingBackground from "@/components/FloatingBackground";
 import NotificationCenter from "@/components/NotificationCenter";
+import { useDashboardSummary } from "@/hooks/useDashboardSummary";
 import { getItem } from "@/utils/storage";
 import { colors, radius, spacing, font, layout } from "@/theme";
 
@@ -54,18 +55,16 @@ export default function Dashboard() {
   // hook instance. No duplicate invitation documents are created.
   const { invitations, pendingCount, acceptInvitation, rejectInvitation, refresh: refreshInvitations } = useInvitations();
 
-  const stats = useMemo(() => {
-    const totalTasks = teams.reduce((s, t) => s + (t.taskCount ?? 0), 0);
-    const totalDone = teams.reduce((s, t) => s + (t.doneCount ?? 0), 0);
-    const members = teams.reduce((s, t) => s + (t.members?.length ?? 0), 0);
-    const openTasks = totalTasks - totalDone;
-    const completion = totalTasks ? Math.round((totalDone / totalTasks) * 100) : 0;
-    return { totalTasks, totalDone, members, openTasks, completion };
-  }, [teams]);
+  // Phase 2 (D-19): authoritative, server-computed metrics (never summed or
+  // inferred on the client). Unavailable values render as "—", never as 0.
+  const teamIds = useMemo(() => teams.map((t) => t._id), [teams]);
+  const { summary, loading: summaryLoading, error: summaryError, refresh: refreshSummary } = useDashboardSummary(teamIds);
+  const metric = (v: number | undefined | null, fmt: (n: number) => string = String) =>
+    summary && typeof v === "number" ? fmt(v) : summaryLoading ? "…" : "—";
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await Promise.all([refetch(), refreshInvitations()]);
+    await Promise.all([refetch(), refreshInvitations(), refreshSummary()]);
     setRefreshing(false);
   };
 
@@ -83,14 +82,14 @@ export default function Dashboard() {
   const onDelete = async (id: string, name: string) => {
     const ok = await confirm({
       title: `Delete "${name}"?`,
-      message: "This permanently removes the workspace and all of its tasks. This action cannot be undone.",
+      message: "The workspace moves to Trash (Profile → Recently deleted) and can be restored during the recovery window.",
       confirmLabel: "Delete Workspace",
       destructive: true,
       requireTypedText: name,
     });
     if (!ok) return;
     const { error } = await deleteTeam(id, name);
-    toast(error ?? "Workspace deleted", error ? "error" : "success");
+    toast(error ?? "Workspace moved to Trash", error ? "error" : "success");
   };
 
   const greeting = (() => {
@@ -159,15 +158,29 @@ export default function Dashboard() {
           </View>
 
           {/* Command-center stats */}
+          {summaryError && !summaryLoading ? (
+            <View style={s.statsError} accessibilityRole="alert">
+              <Ionicons name="cloud-offline-outline" size={16} color={colors.danger} />
+              <Text style={s.statsErrorTxt}>Statistics are unavailable right now.</Text>
+              <Pressable onPress={refreshSummary} hitSlop={8} accessibilityRole="button" accessibilityLabel="Retry loading statistics">
+                <Text style={s.statsRetry}>Retry</Text>
+              </Pressable>
+            </View>
+          ) : null}
           <View style={s.statsGrid}>
-            <StatCard icon="people" label="Teams" value={teams.length} color={colors.primary} />
-            <StatCard icon="list" label="Open tasks" value={stats.openTasks} color={colors.greedy} />
-            <StatCard icon="person" label="Members" value={stats.members} color={colors.branch} />
+            <StatCard icon="people" label="Workspaces" value={metric(summary?.workspaceCount)} color={colors.primary} sub={summary ? "active" : undefined} />
+            <StatCard icon="list" label="Open tasks" value={metric(summary?.openTasks)} color={colors.greedy}
+              sub={summary ? `${summary.inProgressTasks} in progress · ${summary.blockedTasks} blocked` : undefined} />
+            <StatCard icon="person" label="Members" value={metric(summary?.uniqueMemberCount)} color={colors.branch}
+              sub={summary ? (summary.placeholderMemberCount ? `unique · +${summary.placeholderMemberCount} placeholder${summary.placeholderMemberCount === 1 ? "" : "s"}` : "unique people") : undefined} />
           </View>
           <View style={s.statsGrid}>
-            <StatCard icon="checkmark-done" label="Completion" value={`${stats.completion}%`} color={colors.success} sub={`${stats.totalDone}/${stats.totalTasks} done`} />
-            <StatCard icon="rocket" label="Sprint" value={stats.openTasks > 0 ? "Active" : "Idle"} color={colors.knapsack} />
-            <StatCard icon="sparkles" label="AI plans" value={teams.length} color={colors.accent} sub="ready" />
+            <StatCard icon="checkmark-done" label="Completion" value={metric(summary?.completionPercentage, (n) => `${n}%`)} color={colors.success}
+              sub={summary ? (summary.totalTasks ? `${summary.completedTasks}/${summary.totalTasks} done` : "no tasks yet") : undefined} />
+            <StatCard icon="rocket" label="Active sprints" value={metric(summary?.activeSprintCount)} color={colors.knapsack}
+              sub={summary ? (summary.activeSprintCount ? "running now" : "none running") : undefined} />
+            <StatCard icon="sparkles" label="Plans ready" value={metric(summary?.aiPlansReady)} color={colors.accent}
+              sub={summary ? "finalized AI-assisted plans" : undefined} />
           </View>
 
           {/* Actions */}
@@ -224,8 +237,8 @@ export default function Dashboard() {
           ) : (
             <View style={{ gap: spacing.md }}>
               {teams.map((team) => {
-                const ratio = team.taskCount ? team.doneCount / team.taskCount : 0;
-                const names = (team.members ?? []).map((m) => m.name || "Member");
+                const ratio = team.taskCount ? Math.min(1, team.doneCount / team.taskCount) : 0;
+                const names = (team.members ?? []).filter((m: any) => !m.placeholder).map((m) => m.name || "Member");
                 const memberImages = (team.members ?? []).map((m) => m.avatar || null);
                 return (
                   <Card key={team._id} style={{ gap: spacing.md }}>
@@ -303,6 +316,9 @@ const s = StyleSheet.create({
   scroll: { paddingHorizontal: spacing.lg, alignItems: "center" },
   container: { width: "100%", maxWidth: layout.maxWidth, gap: spacing.lg },
   header: { flexDirection: "row", alignItems: "center", gap: spacing.md },
+  statsError: { flexDirection: "row", alignItems: "center", gap: 8, padding: spacing.sm, borderRadius: radius.md, backgroundColor: colors.dangerSoft, borderWidth: 1, borderColor: colors.danger + "33" },
+  statsErrorTxt: { flex: 1, fontSize: 12.5, color: colors.danger, fontWeight: "600" },
+  statsRetry: { fontSize: 12.5, fontWeight: "800", color: colors.primary },
   greetBlock: { marginTop: -spacing.xs },
   greeting: { fontSize: 14, color: colors.textMuted, fontWeight: "600" },
   statsGrid: { flexDirection: "row", gap: spacing.sm },

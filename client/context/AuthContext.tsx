@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useState, useCallback } fr
 import { Platform } from "react-native";
 import { getItem, setItem, deleteItem } from "../utils/storage";
 import { API_BASE_URL } from "../utils/api";
+import { disconnectSocket } from "../services/socket";
 
 const API = API_BASE_URL;
 const TOKEN_KEY = "nf_jwt";
@@ -117,6 +118,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signOut = useCallback(async () => {
+    disconnectSocket(); // never let the next user reuse this session's socket
     await deleteItem(TOKEN_KEY);
     setToken(null);
     setUser(null);

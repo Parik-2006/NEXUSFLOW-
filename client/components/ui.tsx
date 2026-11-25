@@ -116,7 +116,7 @@ export function StatCard({ icon, label, value, color, sub }: {
   icon: keyof typeof Ionicons.glyphMap; label: string; value: string | number; color: string; sub?: string;
 }) {
   return (
-    <View style={[s.card, s.stat]}>
+    <View style={[s.card, s.stat]} accessible accessibilityLabel={`${label}: ${value}${sub ? `, ${sub}` : ""}`}>
       <View style={[s.statIcon, { backgroundColor: color + "1a" }]}>
         <Ionicons name={icon} size={18} color={color} />
       </View>
