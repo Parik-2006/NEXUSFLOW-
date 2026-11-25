@@ -72,6 +72,13 @@ import {
   hasPermission,
 } from "../services/accessControlService.js";
 import { requireProjectAccess } from "../middleware/authorization.js";
+import {
+  validateDependencyRefs,
+  validateTaskRefs,
+  sanitizeExtractedDependencies,
+  stripDependencyRefs,
+  RequirementReferenceError,
+} from "../services/requirementReferenceService.js";
 import { getAuthUserId } from "../utils/identity.js";
 import { logger } from "../utils/logger.js";
 
@@ -193,6 +200,11 @@ async function findProject(projectId, res, user = null, { lean = true } = {}) {
     return null;
   }
   return result.project;
+}
+
+/** True when a requirement with this reqId/_id already exists in the project. */
+function requirementRefSetHas(project, id) {
+  return (project.requirements || []).some((r) => r.reqId === id || String(r._id) === id);
 }
 
 // ── Helper: get real Mongoose document with .save() and subdocument methods ──
@@ -1074,7 +1086,9 @@ router.post("/projects/:projectId/plan/extract", requireAuth, async (req, res) =
 
     // If project has no requirements, initialize with extracted items
     if (!project.requirements || project.requirements.length === 0) {
-      project.requirements = extracted.requirements || [];
+      // Phase 2: AI/document-extracted dependencies may only name requirements
+      // in the same extracted batch (no foreign or invented references).
+      project.requirements = sanitizeExtractedDependencies(extracted.requirements || []);
     }
 
     project.markModified("waterfallPlanLifecycle");
@@ -1466,6 +1480,16 @@ router.post("/projects/:projectId/requirements", requireAuth, async (req, res) =
     });
 
     const nextId = reqId || `REQ-${String((project.requirements?.length || 0) + 1).padStart(3, "0")}`;
+    if (requirementRefSetHas(project, nextId)) {
+      return res.status(409).json({ error: `Requirement id "${nextId}" already exists in this project.` });
+    }
+    let safeDependencies;
+    try {
+      safeDependencies = validateDependencyRefs(project, req.body?.dependencies === undefined ? [] : req.body.dependencies, { self: { reqId: nextId } });
+    } catch (e) {
+      if (e instanceof RequirementReferenceError) return res.status(400).json({ error: e.message, code: e.code });
+      throw e;
+    }
 
     const newReq = {
       reqId: nextId,
@@ -1478,9 +1502,9 @@ router.post("/projects/:projectId/requirements", requireAuth, async (req, res) =
       teacherImportance: Number(teacherImportance),
       estimatedHours: Number(estimatedHours),
       requiredSkills: Array.isArray(requiredSkills) ? requiredSkills : [],
-      dependencies: Array.isArray(dependencies) ? dependencies : [],
+      dependencies: safeDependencies,
       acceptanceCriteria: Array.isArray(acceptanceCriteria) ? acceptanceCriteria : [],
-      status,
+      status: ["draft", "approved", "in_progress", "verified", "rejected"].includes(status) ? status : "draft",
       priorityScore: scored.priorityScore,
       scoreExplanation: scored.scoreExplanation,
       createdAt: new Date(),
@@ -1609,9 +1633,29 @@ router.patch("/projects/:projectId/requirements/:reqId", requireAuth, async (req
       req.body.requiredSkills !== undefined ||
       req.body.dependencies !== undefined;
 
+    // Phase 2: explicit allowlist — no mass assignment of reqId/_id/approval
+    // metadata — and every reference validated before mutation.
+    const EDITABLE = [
+      "title", "description", "phase", "businessValue", "academicValue", "criticality",
+      "teacherImportance", "estimatedHours", "requiredSkills", "acceptanceCriteria", "status", "coverageState",
+    ];
+    const patch = {};
+    for (const k of EDITABLE) if (req.body[k] !== undefined) patch[k] = req.body[k];
+    if (patch.status !== undefined && !["draft", "approved", "in_progress", "verified", "rejected"].includes(patch.status)) {
+      return res.status(400).json({ error: "Invalid requirement status." });
+    }
+    try {
+      const deps = validateDependencyRefs(project, req.body.dependencies, { self: current });
+      if (deps !== undefined) patch.dependencies = deps;
+      const taskIds = await validateTaskRefs(project, req.body.taskIds);
+      if (taskIds !== undefined) patch.taskIds = taskIds;
+    } catch (e) {
+      if (e instanceof RequirementReferenceError) return res.status(400).json({ error: e.message, code: e.code });
+      throw e;
+    }
     const merged = {
       ...(current.toObject ? current.toObject() : current),
-      ...req.body,
+      ...patch,
     };
 
     if (isExplicitApproval) {
@@ -1665,8 +1709,13 @@ router.delete("/projects/:projectId/requirements/:reqId", requireAuth, async (re
     const project = await findProjectDoc(req.params.projectId, res, req.user);
     if (!project) return;
 
-    project.requirements = (project.requirements || []).filter(
-      (r) => r.reqId !== req.params.reqId && r._id?.toString() !== req.params.reqId
+    const removed = (project.requirements || []).find(
+      (r) => r.reqId === req.params.reqId || r._id?.toString() === req.params.reqId
+    );
+    if (!removed) return res.status(404).json({ error: "Requirement not found" });
+    project.requirements = stripDependencyRefs(
+      (project.requirements || []).filter((r) => r !== removed),
+      removed
     );
 
     project.markModified("requirements");
