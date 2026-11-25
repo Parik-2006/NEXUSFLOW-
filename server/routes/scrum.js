@@ -81,6 +81,11 @@ import { getAuthUserId, idEquals, isValidId } from "../utils/identity.js";
 
 const router = express.Router();
 
+// Phase 2 (Task 10): every :id / :projectId / :sprintId / :taskId route
+// parameter is constrained to a 24-hex ObjectId, so static segments such as
+// "check-cycle" can never be captured by a parameterized route
+// (POST /dependencies/check-cycle was previously shadowed by /dependencies/:id).
+
 // ── Helper: verify project / team access (Accepts Project ID OR Team ID) ───────
 // Phase 1: delegates to the central, id-only, fail-closed access service.
 // Resolution is read-only; a missing Scrum project is initialized ONLY on a
@@ -324,8 +329,8 @@ const handleGetConfig = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.get("/config/:id", handleGetConfig);
-router.get("/:projectId/config", handleGetConfig);
+router.get("/config/:id([0-9a-fA-F]{24})", handleGetConfig);
+router.get("/:projectId([0-9a-fA-F]{24})/config", handleGetConfig);
 
 /**
  * PUT /api/scrum/config/:id or /api/scrum/:projectId/config
@@ -345,8 +350,8 @@ const handlePutConfig = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.put("/config/:id", handlePutConfig);
-router.put("/:projectId/config", handlePutConfig);
+router.put("/config/:id([0-9a-fA-F]{24})", handlePutConfig);
+router.put("/:projectId([0-9a-fA-F]{24})/config", handlePutConfig);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // OVERVIEW (COMMAND CENTER)
@@ -488,8 +493,8 @@ const handleGetOverview = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.get("/overview/:id", handleGetOverview);
-router.get("/:projectId/overview", handleGetOverview);
+router.get("/overview/:id([0-9a-fA-F]{24})", handleGetOverview);
+router.get("/:projectId([0-9a-fA-F]{24})/overview", handleGetOverview);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // SPRINTS (LIFECYCLE)
@@ -522,8 +527,8 @@ const handleGetSprints = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.get("/sprints/:id", handleGetSprints);
-router.get("/:projectId/sprints", handleGetSprints);
+router.get("/sprints/:id([0-9a-fA-F]{24})", handleGetSprints);
+router.get("/:projectId([0-9a-fA-F]{24})/sprints", handleGetSprints);
 
 /**
  * POST /api/scrum/sprints/:id or /api/scrum/:projectId/sprints
@@ -551,8 +556,8 @@ const handleCreateSprint = async (req, res) => {
     res.status(400).json({ error: err.message });
   }
 };
-router.post("/sprints/:id", handleCreateSprint);
-router.post("/:projectId/sprints", handleCreateSprint);
+router.post("/sprints/:id([0-9a-fA-F]{24})", handleCreateSprint);
+router.post("/:projectId([0-9a-fA-F]{24})/sprints", handleCreateSprint);
 
 /**
  * PUT /api/scrum/sprints/:sprintId
@@ -596,8 +601,8 @@ const handleUpdateSprint = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.put("/sprints/:sprintId", handleUpdateSprint);
-router.put("/:projectId/sprints/:sprintId", handleUpdateSprint);
+router.put("/sprints/:sprintId([0-9a-fA-F]{24})", handleUpdateSprint);
+router.put("/:projectId([0-9a-fA-F]{24})/sprints/:sprintId([0-9a-fA-F]{24})", handleUpdateSprint);
 
 /**
  * POST /api/scrum/sprints/:sprintId/start
@@ -628,8 +633,8 @@ const handleStartSprint = async (req, res) => {
     res.status(400).json({ error: err.message });
   }
 };
-router.post("/sprints/:sprintId/start", handleStartSprint);
-router.post("/:projectId/sprints/:sprintId/start", handleStartSprint);
+router.post("/sprints/:sprintId([0-9a-fA-F]{24})/start", handleStartSprint);
+router.post("/:projectId([0-9a-fA-F]{24})/sprints/:sprintId([0-9a-fA-F]{24})/start", handleStartSprint);
 
 /**
  * POST /api/scrum/sprints/:sprintId/complete
@@ -706,8 +711,8 @@ const handleCompleteSprint = async (req, res) => {
     res.status(err.statusCode || 400).json({ error: err.message, code: err.code });
   }
 };
-router.post("/sprints/:sprintId/complete", handleCompleteSprint);
-router.post("/:projectId/sprints/:sprintId/complete", handleCompleteSprint);
+router.post("/sprints/:sprintId([0-9a-fA-F]{24})/complete", handleCompleteSprint);
+router.post("/:projectId([0-9a-fA-F]{24})/sprints/:sprintId([0-9a-fA-F]{24})/complete", handleCompleteSprint);
 
 /**
  * POST /api/scrum/sprints/:sprintId/cancel
@@ -733,8 +738,8 @@ const handleCancelSprint = async (req, res) => {
     res.status(400).json({ error: err.message });
   }
 };
-router.post("/sprints/:sprintId/cancel", handleCancelSprint);
-router.post("/:projectId/sprints/:sprintId/cancel", handleCancelSprint);
+router.post("/sprints/:sprintId([0-9a-fA-F]{24})/cancel", handleCancelSprint);
+router.post("/:projectId([0-9a-fA-F]{24})/sprints/:sprintId([0-9a-fA-F]{24})/cancel", handleCancelSprint);
 
 /**
  * DELETE /api/scrum/sprints/:sprintId or /api/scrum/:projectId/sprints/:sprintId
@@ -858,8 +863,8 @@ const handleDeleteSprint = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.delete("/sprints/:sprintId", handleDeleteSprint);
-router.delete("/:projectId/sprints/:sprintId", handleDeleteSprint);
+router.delete("/sprints/:sprintId([0-9a-fA-F]{24})", handleDeleteSprint);
+router.delete("/:projectId([0-9a-fA-F]{24})/sprints/:sprintId([0-9a-fA-F]{24})", handleDeleteSprint);
 
 /**
  * GET & POST /api/scrum/sprints/:sprintId/review
@@ -913,8 +918,8 @@ const handleGetReview = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.get("/sprints/:sprintId/review", handleGetReview);
-router.get("/:projectId/sprints/:sprintId/review", handleGetReview);
+router.get("/sprints/:sprintId([0-9a-fA-F]{24})/review", handleGetReview);
+router.get("/:projectId([0-9a-fA-F]{24})/sprints/:sprintId([0-9a-fA-F]{24})/review", handleGetReview);
 
 const handlePostReview = async (req, res) => {
   try {
@@ -950,8 +955,8 @@ const handlePostReview = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.post("/sprints/:sprintId/review", handlePostReview);
-router.post("/:projectId/sprints/:sprintId/review", handlePostReview);
+router.post("/sprints/:sprintId([0-9a-fA-F]{24})/review", handlePostReview);
+router.post("/:projectId([0-9a-fA-F]{24})/sprints/:sprintId([0-9a-fA-F]{24})/review", handlePostReview);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // PRODUCT BACKLOG
@@ -988,8 +993,8 @@ const handleGetBacklog = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.get("/backlog/:id", handleGetBacklog);
-router.get("/:projectId/backlog", handleGetBacklog);
+router.get("/backlog/:id([0-9a-fA-F]{24})", handleGetBacklog);
+router.get("/:projectId([0-9a-fA-F]{24})/backlog", handleGetBacklog);
 
 /**
  * POST /api/scrum/backlog/:id or /api/scrum/:projectId/backlog
@@ -1051,8 +1056,8 @@ const handleCreateBacklogItem = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.post("/backlog/:id", handleCreateBacklogItem);
-router.post("/:projectId/backlog", handleCreateBacklogItem);
+router.post("/backlog/:id([0-9a-fA-F]{24})", handleCreateBacklogItem);
+router.post("/:projectId([0-9a-fA-F]{24})/backlog", handleCreateBacklogItem);
 
 /**
  * PUT /api/scrum/backlog/task/:taskId or /api/scrum/:projectId/backlog/:itemId
@@ -1121,8 +1126,8 @@ const handleUpdateBacklogItem = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.put("/backlog/task/:taskId", handleUpdateBacklogItem);
-router.put("/:projectId/backlog/:itemId", handleUpdateBacklogItem);
+router.put("/backlog/task/:taskId([0-9a-fA-F]{24})", handleUpdateBacklogItem);
+router.put("/:projectId([0-9a-fA-F]{24})/backlog/:itemId", handleUpdateBacklogItem);
 
 /**
  * DELETE /api/scrum/backlog/task/:taskId or /api/scrum/:projectId/backlog/:itemId
@@ -1149,8 +1154,8 @@ const handleDeleteBacklogItem = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.delete("/backlog/task/:taskId", handleDeleteBacklogItem);
-router.delete("/:projectId/backlog/:itemId", handleDeleteBacklogItem);
+router.delete("/backlog/task/:taskId([0-9a-fA-F]{24})", handleDeleteBacklogItem);
+router.delete("/:projectId([0-9a-fA-F]{24})/backlog/:itemId", handleDeleteBacklogItem);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // SPRINT PLANNING (DAA DETERMINISTIC ENGINE)
@@ -1206,9 +1211,9 @@ const handlePlanningCandidates = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.post("/planning/candidates/:id", handlePlanningCandidates);
-router.post("/:projectId/planning/candidates", handlePlanningCandidates);
-router.post("/:projectId/sprints/:sprintId/plan", handlePlanningCandidates);
+router.post("/planning/candidates/:id([0-9a-fA-F]{24})", handlePlanningCandidates);
+router.post("/:projectId([0-9a-fA-F]{24})/planning/candidates", handlePlanningCandidates);
+router.post("/:projectId([0-9a-fA-F]{24})/sprints/:sprintId([0-9a-fA-F]{24})/plan", handlePlanningCandidates);
 
 /**
  * POST /api/scrum/planning/commit/:id
@@ -1322,8 +1327,8 @@ const handleCommitPlanning = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.post("/planning/commit/:id", handleCommitPlanning);
-router.post("/:projectId/planning/commit", handleCommitPlanning);
+router.post("/planning/commit/:id([0-9a-fA-F]{24})", handleCommitPlanning);
+router.post("/:projectId([0-9a-fA-F]{24})/planning/commit", handleCommitPlanning);
 
 /**
  * Phase 1 (D-3): authorize a sprint (via its own project) and verify that the
@@ -1367,8 +1372,8 @@ const handleAddItemToSprint = async (req, res) => {
     res.status(400).json({ error: err.message });
   }
 };
-router.post("/sprints/:sprintId/items", handleAddItemToSprint);
-router.post("/:projectId/sprints/:sprintId/items", handleAddItemToSprint);
+router.post("/sprints/:sprintId([0-9a-fA-F]{24})/items", handleAddItemToSprint);
+router.post("/:projectId([0-9a-fA-F]{24})/sprints/:sprintId([0-9a-fA-F]{24})/items", handleAddItemToSprint);
 
 /**
  * DELETE /api/scrum/:projectId/sprints/:sprintId/items/:taskId
@@ -1390,8 +1395,8 @@ const handleRemoveItemFromSprint = async (req, res) => {
     res.status(400).json({ error: err.message });
   }
 };
-router.delete("/sprints/:sprintId/items/:taskId", handleRemoveItemFromSprint);
-router.delete("/:projectId/sprints/:sprintId/items/:taskId", handleRemoveItemFromSprint);
+router.delete("/sprints/:sprintId([0-9a-fA-F]{24})/items/:taskId([0-9a-fA-F]{24})", handleRemoveItemFromSprint);
+router.delete("/:projectId([0-9a-fA-F]{24})/sprints/:sprintId([0-9a-fA-F]{24})/items/:taskId([0-9a-fA-F]{24})", handleRemoveItemFromSprint);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // TASK STATUS (SCRUM EXECUTION BOARD)
@@ -1438,8 +1443,8 @@ const handleUpdateTaskStatus = async (req, res) => {
     res.status(400).json({ error: err.message });
   }
 };
-router.put("/task/:taskId/status", handleUpdateTaskStatus);
-router.put("/:projectId/tasks/:taskId/status", handleUpdateTaskStatus);
+router.put("/task/:taskId([0-9a-fA-F]{24})/status", handleUpdateTaskStatus);
+router.put("/:projectId([0-9a-fA-F]{24})/tasks/:taskId([0-9a-fA-F]{24})/status", handleUpdateTaskStatus);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // CAPACITY & TEAM
@@ -1600,11 +1605,11 @@ const handleGetCapacity = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.get("/capacity/:id", handleGetCapacity);
-router.get("/:projectId/capacity", handleGetCapacity);
-router.get("/capability/:id", handleGetCapacity);
-router.get("/:projectId/capability", handleGetCapacity);
-router.get("/:projectId/sprints/:sprintId/capacity", handleGetCapacity);
+router.get("/capacity/:id([0-9a-fA-F]{24})", handleGetCapacity);
+router.get("/:projectId([0-9a-fA-F]{24})/capacity", handleGetCapacity);
+router.get("/capability/:id([0-9a-fA-F]{24})", handleGetCapacity);
+router.get("/:projectId([0-9a-fA-F]{24})/capability", handleGetCapacity);
+router.get("/:projectId([0-9a-fA-F]{24})/sprints/:sprintId([0-9a-fA-F]{24})/capacity", handleGetCapacity);
 
 /**
  * POST /api/scrum/capability/:id/assign or /api/scrum/:projectId/capability/assign
@@ -1680,10 +1685,10 @@ const handleAcceptScrumAssignment = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.post("/capability/:id/assign", handleAcceptScrumAssignment);
-router.post("/:projectId/capability/assign", handleAcceptScrumAssignment);
+router.post("/capability/:id([0-9a-fA-F]{24})/assign", handleAcceptScrumAssignment);
+router.post("/:projectId([0-9a-fA-F]{24})/capability/assign", handleAcceptScrumAssignment);
 router.post("/assignment/accept", handleAcceptScrumAssignment);
-router.post("/:projectId/assignment/accept", handleAcceptScrumAssignment);
+router.post("/:projectId([0-9a-fA-F]{24})/assignment/accept", handleAcceptScrumAssignment);
 /**
  * POST /api/scrum/capability/:id/bulk-assign or /api/scrum/:projectId/capability/bulk-assign
  * Idempotent, partial-success capable bulk assignment accepting multiple Branch & Bound recommendations.
@@ -1867,10 +1872,10 @@ const handleBulkAcceptScrumAssignments = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.post("/capability/:id/bulk-assign", handleBulkAcceptScrumAssignments);
-router.post("/:projectId/capability/bulk-assign", handleBulkAcceptScrumAssignments);
+router.post("/capability/:id([0-9a-fA-F]{24})/bulk-assign", handleBulkAcceptScrumAssignments);
+router.post("/:projectId([0-9a-fA-F]{24})/capability/bulk-assign", handleBulkAcceptScrumAssignments);
 router.post("/assignment/bulk-accept", handleBulkAcceptScrumAssignments);
-router.post("/:projectId/assignment/bulk-accept", handleBulkAcceptScrumAssignments);
+router.post("/:projectId([0-9a-fA-F]{24})/assignment/bulk-accept", handleBulkAcceptScrumAssignments);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // DEPENDENCIES
@@ -1972,8 +1977,8 @@ const handleGetDependencies = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.get("/dependencies/:id", handleGetDependencies);
-router.get("/:projectId/dependencies", handleGetDependencies);
+router.get("/dependencies/:id([0-9a-fA-F]{24})", handleGetDependencies);
+router.get("/:projectId([0-9a-fA-F]{24})/dependencies", handleGetDependencies);
 
 /**
  * POST /api/scrum/dependencies/:id or /api/scrum/:projectId/dependencies
@@ -2078,8 +2083,8 @@ const handleAddDependency = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.post("/dependencies/:id", handleAddDependency);
-router.post("/:projectId/dependencies", handleAddDependency);
+router.post("/dependencies/:id([0-9a-fA-F]{24})", handleAddDependency);
+router.post("/:projectId([0-9a-fA-F]{24})/dependencies", handleAddDependency);
 
 /**
  * DELETE /api/scrum/dependencies/:id or /api/scrum/:projectId/dependencies
@@ -2116,8 +2121,8 @@ const handleRemoveDependency = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.delete("/dependencies/:id", handleRemoveDependency);
-router.delete("/:projectId/dependencies", handleRemoveDependency);
+router.delete("/dependencies/:id([0-9a-fA-F]{24})", handleRemoveDependency);
+router.delete("/:projectId([0-9a-fA-F]{24})/dependencies", handleRemoveDependency);
 
 /**
  * POST check cycle
@@ -2127,18 +2132,30 @@ const handleCheckCycle = async (req, res) => {
     const access = await verifyProjectAccess(req, res, req.params.id || req.params.projectId);
     if (!access) return;
 
+    const fromId = String(req.body?.fromId || req.body?.dependsOn || "");
+    const toId = String(req.body?.toId || req.body?.taskId || "");
+    if (!isValidId(fromId) || !isValidId(toId)) {
+      return res.status(400).json({ error: "fromId and toId must be valid task ids." });
+    }
+    if (fromId === toId) return res.json({ wouldCycle: true, reason: "self_dependency" });
+    // Phase 2: tasks bound to the authorized workspace (and this project or none).
     const tasks = await Task.find({
-      $or: [{ projectId: access.project._id }, { teamId: access.team._id }],
+      teamId: access.team._id,
+      $or: [{ projectId: access.project._id }, { projectId: null }],
     }).lean();
-    const wouldCycle = wouldCreateCycle(tasks, req.body.fromId, req.body.toId);
+    const ids = new Set(tasks.map((t) => String(t._id)));
+    if (!ids.has(fromId) || !ids.has(toId)) {
+      return res.status(404).json({ error: "Both tasks must belong to this project.", code: "TASK_NOT_IN_PROJECT" });
+    }
+    const wouldCycle = wouldCreateCycle(tasks, fromId, toId);
     res.json({ wouldCycle });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
 router.post("/dependencies/check-cycle", handleCheckCycle);
-router.post("/dependencies/check-cycle/:id", handleCheckCycle);
-router.post("/:projectId/dependencies/check-cycle", handleCheckCycle);
+router.post("/dependencies/check-cycle/:id([0-9a-fA-F]{24})", handleCheckCycle);
+router.post("/:projectId([0-9a-fA-F]{24})/dependencies/check-cycle", handleCheckCycle);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // INSIGHTS & HEALTH
@@ -2251,8 +2268,8 @@ const handleGetInsights = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.get("/insights/:id", handleGetInsights);
-router.get("/:projectId/insights", handleGetInsights);
+router.get("/insights/:id([0-9a-fA-F]{24})", handleGetInsights);
+router.get("/:projectId([0-9a-fA-F]{24})/insights", handleGetInsights);
 
 /**
  * GET /api/scrum/analytics/:id or /api/scrum/:projectId/analytics
@@ -2272,8 +2289,8 @@ const handleGetAnalytics = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.get("/analytics/:id", handleGetAnalytics);
-router.get("/:projectId/analytics", handleGetAnalytics);
+router.get("/analytics/:id([0-9a-fA-F]{24})", handleGetAnalytics);
+router.get("/:projectId([0-9a-fA-F]{24})/analytics", handleGetAnalytics);
 
 /**
  * GET /api/scrum/health/:id or /api/scrum/:projectId/health
@@ -2312,8 +2329,8 @@ const handleGetHealth = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.get("/health/:id", handleGetHealth);
-router.get("/:projectId/health", handleGetHealth);
+router.get("/health/:id([0-9a-fA-F]{24})", handleGetHealth);
+router.get("/:projectId([0-9a-fA-F]{24})/health", handleGetHealth);
 
 /**
  * POST /api/scrum/health/:id/refresh or /api/scrum/:projectId/health/refresh
@@ -2352,8 +2369,8 @@ const handleRefreshHealth = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.post("/health/:id/refresh", handleRefreshHealth);
-router.post("/:projectId/health/refresh", handleRefreshHealth);
+router.post("/health/:id([0-9a-fA-F]{24})/refresh", handleRefreshHealth);
+router.post("/:projectId([0-9a-fA-F]{24})/health/refresh", handleRefreshHealth);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // SCRUM RISK RADAR (WATERFALL-PARITY PERSISTENCE & ACTIONS)
@@ -2379,8 +2396,8 @@ const handleGetRisks = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.get("/risks/:id", handleGetRisks);
-router.get("/:projectId/risks", handleGetRisks);
+router.get("/risks/:id([0-9a-fA-F]{24})", handleGetRisks);
+router.get("/:projectId([0-9a-fA-F]{24})/risks", handleGetRisks);
 
 /**
  * POST /api/scrum/risks/:id/scan or /api/scrum/:projectId/risks/scan
@@ -2399,8 +2416,8 @@ const handleScanRisks = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.post("/risks/:id/scan", handleScanRisks);
-router.post("/:projectId/risks/scan", handleScanRisks);
+router.post("/risks/:id([0-9a-fA-F]{24})/scan", handleScanRisks);
+router.post("/:projectId([0-9a-fA-F]{24})/risks/scan", handleScanRisks);
 
 /**
  * PATCH /api/scrum/risks/:id/:riskId or /api/scrum/:projectId/risks/:riskId
@@ -2455,8 +2472,8 @@ const handleUpdateRisk = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.patch("/risks/:id/:riskId", handleUpdateRisk);
-router.patch("/:projectId/risks/:riskId", handleUpdateRisk);
+router.patch("/risks/:id([0-9a-fA-F]{24})/:riskId", handleUpdateRisk);
+router.patch("/:projectId([0-9a-fA-F]{24})/risks/:riskId", handleUpdateRisk);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // TIMELINE (BURNDOWN & VELOCITY)
@@ -2543,8 +2560,8 @@ const handleGetTimeline = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.get("/timeline/:id", handleGetTimeline);
-router.get("/:projectId/timeline", handleGetTimeline);
+router.get("/timeline/:id([0-9a-fA-F]{24})", handleGetTimeline);
+router.get("/:projectId([0-9a-fA-F]{24})/timeline", handleGetTimeline);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // RETROSPECTIVE (CURRENT SPRINT LIVE ANALYSIS)
@@ -2661,9 +2678,9 @@ const handleGetRetrospective = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.get("/retrospective/:id", handleGetRetrospective);
-router.get("/:projectId/retrospective", handleGetRetrospective);
-router.get("/:projectId/sprints/:sprintId/retrospective", handleGetRetrospective);
+router.get("/retrospective/:id([0-9a-fA-F]{24})", handleGetRetrospective);
+router.get("/:projectId([0-9a-fA-F]{24})/retrospective", handleGetRetrospective);
+router.get("/:projectId([0-9a-fA-F]{24})/sprints/:sprintId([0-9a-fA-F]{24})/retrospective", handleGetRetrospective);
 
 /**
  * POST /api/scrum/retrospective/:id (GENERATE FRESH ANALYSIS VIA OMNIROUTE)
@@ -2739,8 +2756,8 @@ const handlePostRetrospective = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.post("/retrospective/:id", handlePostRetrospective);
-router.post("/:projectId/retrospective", handlePostRetrospective);
+router.post("/retrospective/:id([0-9a-fA-F]{24})", handlePostRetrospective);
+router.post("/:projectId([0-9a-fA-F]{24})/retrospective", handlePostRetrospective);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // COPILOT CONTEXT
@@ -2819,8 +2836,8 @@ const handleGetCopilotContext = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.get("/copilot/context/:id", handleGetCopilotContext);
-router.get("/:projectId/copilot-context", handleGetCopilotContext);
+router.get("/copilot/context/:id([0-9a-fA-F]{24})", handleGetCopilotContext);
+router.get("/:projectId([0-9a-fA-F]{24})/copilot-context", handleGetCopilotContext);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // V4 SCRUM AI PLANNING, SUGGESTIONS & REVIEW ENGINE
@@ -2879,8 +2896,8 @@ const handleGetPlan = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.get("/plan/:id", handleGetPlan);
-router.get("/:projectId/plan", handleGetPlan);
+router.get("/plan/:id([0-9a-fA-F]{24})", handleGetPlan);
+router.get("/:projectId([0-9a-fA-F]{24})/plan", handleGetPlan);
 
 /**
  * GET /api/scrum/plan/readiness/:id or /api/scrum/:projectId/plan/readiness
@@ -2903,8 +2920,8 @@ const handleGetPlanReadiness = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.get("/plan/readiness/:id", handleGetPlanReadiness);
-router.get("/:projectId/plan/readiness", handleGetPlanReadiness);
+router.get("/plan/readiness/:id([0-9a-fA-F]{24})", handleGetPlanReadiness);
+router.get("/:projectId([0-9a-fA-F]{24})/plan/readiness", handleGetPlanReadiness);
 
 /**
  * POST /api/scrum/plan/finalize/:id or /api/scrum/:projectId/plan/finalize
@@ -2935,8 +2952,8 @@ const handleFinalizePlan = async (req, res) => {
     });
   }
 };
-router.post("/plan/finalize/:id", handleFinalizePlan);
-router.post("/:projectId/plan/finalize", handleFinalizePlan);
+router.post("/plan/finalize/:id([0-9a-fA-F]{24})", handleFinalizePlan);
+router.post("/:projectId([0-9a-fA-F]{24})/plan/finalize", handleFinalizePlan);
 
 /**
  * PATCH /api/scrum/plan/conflicts/:id/:conflictId or /api/scrum/:projectId/plan/conflicts/:conflictId
@@ -2965,8 +2982,8 @@ const handleResolveConflict = async (req, res) => {
     res.status(400).json({ error: err.message });
   }
 };
-router.patch("/plan/conflicts/:id/:conflictId", handleResolveConflict);
-router.patch("/:projectId/plan/conflicts/:conflictId", handleResolveConflict);
+router.patch("/plan/conflicts/:id([0-9a-fA-F]{24})/:conflictId", handleResolveConflict);
+router.patch("/:projectId([0-9a-fA-F]{24})/plan/conflicts/:conflictId", handleResolveConflict);
 
 /**
  * POST /api/scrum/plan/analyze/:id or /api/scrum/:projectId/plan/analyze
@@ -2989,8 +3006,8 @@ const handleAnalyzePlan = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.post("/plan/analyze/:id", handleAnalyzePlan);
-router.post("/:projectId/plan/analyze", handleAnalyzePlan);
+router.post("/plan/analyze/:id([0-9a-fA-F]{24})", handleAnalyzePlan);
+router.post("/:projectId([0-9a-fA-F]{24})/plan/analyze", handleAnalyzePlan);
 
 /**
  * POST /api/scrum/plan/generate/:id or /api/scrum/:projectId/plan/generate
@@ -3020,8 +3037,8 @@ const handleGeneratePlan = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.post("/plan/generate/:id", handleGeneratePlan);
-router.post("/:projectId/plan/generate", handleGeneratePlan);
+router.post("/plan/generate/:id([0-9a-fA-F]{24})", handleGeneratePlan);
+router.post("/:projectId([0-9a-fA-F]{24})/plan/generate", handleGeneratePlan);
 
 /**
  * POST /api/scrum/plan/suggestions/:id/approve or /api/scrum/:projectId/plan/suggestions/:suggestionId/approve
@@ -3051,8 +3068,8 @@ const handleApproveSuggestion = async (req, res) => {
     res.status(status).json({ error: err.message || "Failed to approve story suggestion" });
   }
 };
-router.post("/plan/suggestions/:id/approve", handleApproveSuggestion);
-router.post("/:projectId/plan/suggestions/:suggestionId/approve", handleApproveSuggestion);
+router.post("/plan/suggestions/:id([0-9a-fA-F]{24})/approve", handleApproveSuggestion);
+router.post("/:projectId([0-9a-fA-F]{24})/plan/suggestions/:suggestionId/approve", handleApproveSuggestion);
 
 /**
  * POST /api/scrum/plan/suggestions/:id/bulk-approve or /api/scrum/:projectId/plan/suggestions/bulk-approve
@@ -3078,8 +3095,8 @@ const handleBulkApproveSuggestions = async (req, res) => {
     res.status(status).json({ error: err.message || "Failed to bulk approve suggestions" });
   }
 };
-router.post("/plan/suggestions/:id/bulk-approve", handleBulkApproveSuggestions);
-router.post("/:projectId/plan/suggestions/bulk-approve", handleBulkApproveSuggestions);
+router.post("/plan/suggestions/:id([0-9a-fA-F]{24})/bulk-approve", handleBulkApproveSuggestions);
+router.post("/:projectId([0-9a-fA-F]{24})/plan/suggestions/bulk-approve", handleBulkApproveSuggestions);
 
 /**
  * POST /api/scrum/plan/suggestions/:id/reject or /api/scrum/:projectId/plan/suggestions/:suggestionId/reject
@@ -3106,8 +3123,8 @@ const handleRejectSuggestion = async (req, res) => {
     res.status(status).json({ error: err.message || "Failed to reject suggestion" });
   }
 };
-router.post("/plan/suggestions/:id/reject", handleRejectSuggestion);
-router.post("/:projectId/plan/suggestions/:suggestionId/reject", handleRejectSuggestion);
+router.post("/plan/suggestions/:id([0-9a-fA-F]{24})/reject", handleRejectSuggestion);
+router.post("/:projectId([0-9a-fA-F]{24})/plan/suggestions/:suggestionId/reject", handleRejectSuggestion);
 
 /**
  * PUT /api/scrum/plan/suggestions/:id or /api/scrum/:projectId/plan/suggestions/:suggestionId
@@ -3135,8 +3152,8 @@ const handleUpdateDraft = async (req, res) => {
     res.status(status).json({ error: err.message || "Failed to update draft suggestion" });
   }
 };
-router.put("/plan/suggestions/:id", handleUpdateDraft);
-router.put("/:projectId/plan/suggestions/:suggestionId", handleUpdateDraft);
+router.put("/plan/suggestions/:id([0-9a-fA-F]{24})", handleUpdateDraft);
+router.put("/:projectId([0-9a-fA-F]{24})/plan/suggestions/:suggestionId", handleUpdateDraft);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // DAILY SCRUM / STANDUP
@@ -3162,8 +3179,8 @@ const handleGetStandup = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.get("/sprints/:sprintId/standup", handleGetStandup);
-router.get("/:projectId/sprints/:sprintId/standup", handleGetStandup);
+router.get("/sprints/:sprintId([0-9a-fA-F]{24})/standup", handleGetStandup);
+router.get("/:projectId([0-9a-fA-F]{24})/sprints/:sprintId([0-9a-fA-F]{24})/standup", handleGetStandup);
 
 /**
  * POST /api/scrum/sprints/:sprintId/standup
@@ -3199,8 +3216,8 @@ const handlePostStandup = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.post("/sprints/:sprintId/standup", handlePostStandup);
-router.post("/:projectId/sprints/:sprintId/standup", handlePostStandup);
+router.post("/sprints/:sprintId([0-9a-fA-F]{24})/standup", handlePostStandup);
+router.post("/:projectId([0-9a-fA-F]{24})/sprints/:sprintId([0-9a-fA-F]{24})/standup", handlePostStandup);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // RETROSPECTIVE IMPROVEMENT ACTIONS & LEARNING LOOP
@@ -3309,8 +3326,8 @@ const handleAddRetroAction = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.post("/retrospective/:id/actions", handleAddRetroAction);
-router.post("/:projectId/retrospective/actions", handleAddRetroAction);
+router.post("/retrospective/:id([0-9a-fA-F]{24})/actions", handleAddRetroAction);
+router.post("/:projectId([0-9a-fA-F]{24})/retrospective/actions", handleAddRetroAction);
 
 /**
  * PUT /api/scrum/retrospective/:id/actions/:actionId
@@ -3355,8 +3372,8 @@ const handleUpdateRetroAction = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.put("/retrospective/:id/actions/:actionId", handleUpdateRetroAction);
-router.put("/:projectId/retrospective/actions/:actionId", handleUpdateRetroAction);
+router.put("/retrospective/:id([0-9a-fA-F]{24})/actions/:actionId", handleUpdateRetroAction);
+router.put("/:projectId([0-9a-fA-F]{24})/retrospective/actions/:actionId", handleUpdateRetroAction);
 
 /**
  * GET /api/scrum/insights/:id/learning-loop
@@ -3423,8 +3440,8 @@ const handleGetLearningLoop = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.get("/insights/:id/learning-loop", handleGetLearningLoop);
-router.get("/:projectId/insights/learning-loop", handleGetLearningLoop);
+router.get("/insights/:id([0-9a-fA-F]{24})/learning-loop", handleGetLearningLoop);
+router.get("/:projectId([0-9a-fA-F]{24})/insights/learning-loop", handleGetLearningLoop);
 
 /**
  * POST /api/scrum/backlog/task/:taskId/decompose
@@ -3473,7 +3490,7 @@ const handleDecomposeStory = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-router.post("/backlog/task/:taskId/decompose", handleDecomposeStory);
-router.post("/:projectId/backlog/:taskId/decompose", handleDecomposeStory);
+router.post("/backlog/task/:taskId([0-9a-fA-F]{24})/decompose", handleDecomposeStory);
+router.post("/:projectId([0-9a-fA-F]{24})/backlog/:taskId([0-9a-fA-F]{24})/decompose", handleDecomposeStory);
 
 export default router;

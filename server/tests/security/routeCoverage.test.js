@@ -84,6 +84,7 @@ test("every route denies an outsider access to another workspace", { timeout: 60
   const routes = await collectRoutes();
   const fill = (p) =>
     p
+      .replace(/\(\[0-9a-fA-F\]\{24\}\)/g, "") // ObjectId param constraints (Phase 2)
       .replace(/:projectId/g, W.A.projectId)
       .replace(/:teamId/g, W.A.teamId)
       .replace(/:id\b/g, W.A.projectId)
@@ -133,6 +134,7 @@ test("no route lets a member of B reach A's child resources via B's containers",
   const routes = await collectRoutes();
   const fill = (p) =>
     p
+      .replace(/\(\[0-9a-fA-F\]\{24\}\)/g, "")
       .replace(/:projectId/g, W.B.projectId)
       .replace(/:teamId/g, W.B.teamId)
       .replace(/:id\b/g, W.B.projectId)
