@@ -57,51 +57,41 @@ import {
   getProjectWarnings,
 } from "../services/projectHealth2Service.js";
 
+import {
+  authorizeProjectAccess as centralAuthorizeProjectAccess,
+  getMembership,
+  roleRank,
+  findScopedTask,
+} from "../services/accessControlService.js";
+import ProjectLesson from "../models/ProjectLesson.js";
+import DecisionRecord from "../models/DecisionRecord.js";
+import EarlyWarning from "../models/EarlyWarning.js";
+import { getAuthUserId, isValidId } from "../utils/identity.js";
+
 const router = Router();
 
 /**
  * Security Helper: Verify project existence and ensure calling user has access.
  */
 async function authorizeProjectAccess(projectId, req, res) {
-  if (!mongoose.isValidObjectId(projectId)) {
-    res.status(400).json({ error: "Invalid project ID format" });
+  // Phase 1: central, id-only, FAIL-CLOSED check (previously a missing team
+  // returned isLeader:true). Assigned faculty keep their existing access.
+  const result = await centralAuthorizeProjectAccess(projectId, req.user, { allowTeamId: false, allowFaculty: true });
+  if (result.error) {
+    const status = result.status === 400 ? 400 : result.status === 404 ? 404 : result.status;
+    res.status(status).json({ error: status === 404 ? "Project not found" : status === 400 ? "Invalid project ID format" : "Forbidden: You do not have permission to access this project.", code: result.code });
     return null;
   }
+  const { project, team, membership, userId } = result;
+  const isFaculty = Boolean(membership?.isFaculty);
+  const isLeader = isFaculty || roleRank(getMembership(team, userId).accessRole) >= roleRank("manager");
+  return { project, team, isLeader, isFaculty, userId };
+}
 
-  const project = await Project.findById(projectId).lean();
-  if (!project) {
-    res.status(404).json({ error: "Project not found" });
-    return null;
-  }
-
-  const user = req.user;
-  if (user && project.teamId) {
-    const team = await Team.findById(project.teamId).lean();
-    if (team) {
-      const userIdStr = (user._id || user.id)?.toString() || "";
-      const isOwner = team.ownerId && team.ownerId.toString() === userIdStr;
-      const isMember = Array.isArray(team.members) && team.members.some((m) => {
-        const mId = (m.userId?._id || m.userId)?.toString() || "";
-        return mId && mId === userIdStr;
-      });
-      const isFaculty = Array.isArray(project.assignedFacultyIds) && project.assignedFacultyIds.some((f) => {
-        const fId = (f?._id || f)?.toString() || "";
-        return fId && fId === userIdStr;
-      });
-
-      if (!isOwner && !isMember && !isFaculty && user.role !== "admin") {
-        res.status(403).json({ error: "Forbidden: You do not have permission to access this project." });
-        return null;
-      }
-
-      const memberMeta = team.members?.find((m) => (m.userId?._id || m.userId)?.toString() === userIdStr);
-      const isLeader = isOwner || memberMeta?.role === "leader" || memberMeta?.role === "manager" || isFaculty || user.role === "admin";
-
-      return { project, team, isLeader, isFaculty };
-    }
-  }
-
-  return { project, team: null, isLeader: true, isFaculty: false };
+/** Phase 1 (D-3): a child record must belong to the authorized project. */
+async function childInProject(Model, filter, projectId) {
+  if (!filter || Object.values(filter).some((v) => !v)) return false;
+  return Boolean(await Model.exists({ ...filter, projectId }));
 }
 
 // ============================================================================
@@ -169,6 +159,9 @@ router.patch("/projects/:projectId/lessons/:lessonId/validate", requireAuth, asy
     if (!auth.isLeader) {
       return res.status(403).json({ error: "Only team leaders, managers, or faculty can validate lessons." });
     }
+    if (!isValidId(req.params.lessonId) || !(await childInProject(ProjectLesson, { _id: req.params.lessonId }, auth.project._id))) {
+      return res.status(404).json({ error: "Lesson not found in this project." });
+    }
 
     const io = req.app.get("io");
     const lesson = await validateLesson(
@@ -189,9 +182,15 @@ router.patch("/projects/:projectId/lessons/:lessonId/apply", requireAuth, async 
     const auth = await authorizeProjectAccess(req.params.projectId, req, res);
     if (!auth) return;
 
+    if (!isValidId(req.params.lessonId) || !(await childInProject(ProjectLesson, { _id: req.params.lessonId }, auth.project._id))) {
+      return res.status(404).json({ error: "Lesson not found in this project." });
+    }
     const targetProjectId = req.body.targetProjectId || req.params.projectId;
     const targetAuth = await authorizeProjectAccess(targetProjectId, req, res);
     if (!targetAuth) return;
+    if (!targetAuth.isLeader) {
+      return res.status(403).json({ error: "Only team leaders, managers, or faculty can apply lessons." });
+    }
 
     const io = req.app.get("io");
     const lesson = await applyLesson(
@@ -216,6 +215,9 @@ router.patch("/projects/:projectId/lessons/:lessonId/archive", requireAuth, asyn
     if (!auth.isLeader) {
       return res.status(403).json({ error: "Only team leaders or faculty can archive lessons." });
     }
+    if (!isValidId(req.params.lessonId) || !(await childInProject(ProjectLesson, { _id: req.params.lessonId }, auth.project._id))) {
+      return res.status(404).json({ error: "Lesson not found in this project." });
+    }
 
     const io = req.app.get("io");
     const lesson = await archiveLesson(req.params.lessonId, req.user, req.body.reason, io);
@@ -229,7 +231,10 @@ router.patch("/projects/:projectId/lessons/:lessonId/archive", requireAuth, asyn
 router.get("/lessons/reusable", requireAuth, async (req, res) => {
   try {
     const { domain, methodology, tag } = req.query;
-    const lessons = await getReusableLessons({ domain, methodology, tag });
+    const userId = getAuthUserId(req.user);
+    const myTeams = await Team.find({ $or: [{ ownerId: userId }, { "members.userId": userId }] }).select("_id").lean();
+    const myTeamIds = new Set(myTeams.map((t) => String(t._id)));
+    const lessons = (await getReusableLessons({ domain, methodology, tag })).filter((l) => myTeamIds.has(String(l.teamId)));
     res.json({ lessons, count: lessons.length });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -316,7 +321,9 @@ router.get("/projects/:projectId/decisions/explain/:decisionId", requireAuth, as
     if (!auth) return;
 
     const decision = await getDecisionExplanation(req.params.decisionId);
-    if (!decision) return res.status(404).json({ error: "Decision explanation not found." });
+    if (!decision || String(decision.projectId) !== String(auth.project._id)) {
+      return res.status(404).json({ error: "Decision explanation not found." });
+    }
 
     res.json(decision);
   } catch (err) {
@@ -343,6 +350,9 @@ router.post("/projects/:projectId/decisions/explain/task-priority/:taskId", requ
     const auth = await authorizeProjectAccess(req.params.projectId, req, res);
     if (!auth) return;
 
+    if (!(await findScopedTask(req.params.taskId, { teamId: auth.team._id, projectId: auth.project._id }))) {
+      return res.status(404).json({ error: "Task not found in this project." });
+    }
     const io = req.app.get("io");
     const explanation = await explainTaskPriority(req.params.taskId, io);
     res.json(explanation);
@@ -362,6 +372,9 @@ router.post("/projects/:projectId/decisions/explain/counterfactual", requireAuth
       return res.status(400).json({ error: "decisionId and parameter are required." });
     }
 
+    if (!(await childInProject(DecisionRecord, { decisionId: String(decisionId) }, auth.project._id))) {
+      return res.status(404).json({ error: "Decision explanation not found." });
+    }
     const recomputed = await recomputeCounterfactual(decisionId, { parameter, modifiedValue });
     res.json(recomputed);
   } catch (err) {
@@ -372,6 +385,10 @@ router.post("/projects/:projectId/decisions/explain/counterfactual", requireAuth
 // POST /api/decisions/:decisionId/ai-summary
 router.post("/decisions/:decisionId/ai-summary", requireAuth, async (req, res) => {
   try {
+    const record = await DecisionRecord.findOne({ decisionId: String(req.params.decisionId) }).select("projectId").lean();
+    if (!record) return res.status(404).json({ error: "Decision explanation not found." });
+    const auth = await authorizeProjectAccess(String(record.projectId), req, res);
+    if (!auth) return;
     const decision = await summarizeDecisionWithAI(req.params.decisionId);
     res.json({ success: true, decision, aiSummary: decision.aiSummary });
   } catch (err) {
@@ -417,6 +434,9 @@ router.patch("/projects/:projectId/warnings/:warningId/acknowledge", requireAuth
   try {
     const auth = await authorizeProjectAccess(req.params.projectId, req, res);
     if (!auth) return;
+    if (!isValidId(req.params.warningId) || !(await childInProject(EarlyWarning, { _id: req.params.warningId }, auth.project._id))) {
+      return res.status(404).json({ error: "Warning not found in this project." });
+    }
 
     const io = req.app.get("io");
     const warning = await acknowledgeWarning(req.params.warningId, req.user, io);
@@ -431,6 +451,9 @@ router.patch("/projects/:projectId/warnings/:warningId/resolve", requireAuth, as
   try {
     const auth = await authorizeProjectAccess(req.params.projectId, req, res);
     if (!auth) return;
+    if (!isValidId(req.params.warningId) || !(await childInProject(EarlyWarning, { _id: req.params.warningId }, auth.project._id))) {
+      return res.status(404).json({ error: "Warning not found in this project." });
+    }
 
     if (!auth.isLeader) {
       return res.status(403).json({ error: "Only team leaders or managers can resolve early warnings." });
@@ -449,6 +472,9 @@ router.patch("/projects/:projectId/warnings/:warningId/dismiss", requireAuth, as
   try {
     const auth = await authorizeProjectAccess(req.params.projectId, req, res);
     if (!auth) return;
+    if (!isValidId(req.params.warningId) || !(await childInProject(EarlyWarning, { _id: req.params.warningId }, auth.project._id))) {
+      return res.status(404).json({ error: "Warning not found in this project." });
+    }
 
     if (!auth.isLeader) {
       return res.status(403).json({ error: "Only team leaders or managers can dismiss early warnings." });

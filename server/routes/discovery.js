@@ -17,14 +17,11 @@ const router = express.Router();
  * Helper to verify if the authenticated user is workspace owner or leader/manager.
  */
 function isUserLeaderOrOwner(team, userId) {
-  if (!team || !userId) return false;
-  const uIdStr = userId.toString();
-  if (team.ownerId && team.ownerId.toString() === uIdStr) return true;
-  const member = (team.members || []).find((m) => m.userId && m.userId.toString() === uIdStr);
-  if (!member) return false;
-  const r = (member.role || "").toLowerCase();
-  return ["owner", "leader", "team leader", "manager", "project manager"].includes(r);
+  // Phase 1: central access matrix (owner / leader / manager).
+  return hasPermission(team, userId ? userId.toString() : null, "application:review");
 }
+
+import { hasPermission } from "../services/accessControlService.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. PUBLIC TEAM DISCOVERY (Privacy-Safe Search & Filter)

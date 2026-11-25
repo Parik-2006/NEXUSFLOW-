@@ -22,6 +22,7 @@ import { wouldCreateCycle } from "./scrumDependencyEngine.js";
 import { isMethodologyAllowedForNewProjects } from "../config/methodologyAvailability.js";
 import { detectScopeConflicts } from "./requirementService.js";
 import crypto from "crypto";
+import { isTeamMember } from "./accessControlService.js";
 
 /**
  * Generate stable unique suggestion ID
@@ -605,18 +606,18 @@ export async function approveScrumSuggestion({
   if (!project) {
     throw { status: 404, message: "Project not found" };
   }
-  const team = passedTeam || (await Team.findById(teamId || project.teamId));
+  // Phase 1: the authorizing team is ALWAYS the project's own team.
+  if (teamId && project.teamId && teamId.toString() !== project.teamId.toString()) {
+    throw { status: 403, message: "Forbidden: project does not belong to this workspace" };
+  }
+  const team = passedTeam && passedTeam._id?.toString() === project.teamId?.toString()
+    ? passedTeam
+    : await Team.findById(project.teamId);
   if (!team) {
     throw { status: 404, message: "Team not found" };
   }
 
-  const isOwner = team.ownerId && team.ownerId.toString() === userId;
-  const isMember = Array.isArray(team.members) && team.members.some((m) => {
-    const mId = (m.userId?._id || m.userId)?.toString();
-    return mId === userId || (m.name && user.name && m.name.toLowerCase() === user.name.toLowerCase());
-  });
-
-  if (!isOwner && !isMember && user.role !== "admin") {
+  if (!isTeamMember(team, userId)) {
     throw { status: 403, message: "Forbidden: You are not authorized to approve stories for this team" };
   }
 
@@ -855,16 +856,13 @@ export async function bulkApproveScrumSuggestions({
   const project = await Project.findById(projectId);
   if (!project) throw { status: 404, message: "Project not found" };
 
-  const team = await Team.findById(teamId || project.teamId);
+  if (teamId && project.teamId && teamId.toString() !== project.teamId.toString()) {
+    throw { status: 403, message: "Forbidden: project does not belong to this workspace" };
+  }
+  const team = await Team.findById(project.teamId);
   if (!team) throw { status: 404, message: "Team not found" };
 
-  const isOwner = team.ownerId && team.ownerId.toString() === userId;
-  const isMember = Array.isArray(team.members) && team.members.some((m) => {
-    const mId = (m.userId?._id || m.userId)?.toString();
-    return mId === userId || (m.name && user.name && m.name.toLowerCase() === user.name.toLowerCase());
-  });
-
-  if (!isOwner && !isMember && user.role !== "admin") {
+  if (!isTeamMember(team, userId)) {
     throw { status: 403, message: "Forbidden: You are not authorized to approve stories for this team" };
   }
 

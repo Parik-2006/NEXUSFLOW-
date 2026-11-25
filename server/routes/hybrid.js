@@ -26,67 +26,41 @@ import {
   HYBRID_TEMPLATES,
 } from "../services/hybridEngine.js";
 
+import {
+  authorizeProjectAccess,
+  isTeamLeader as centralIsTeamLeader,
+} from "../services/accessControlService.js";
+
 const router = express.Router();
 
 /**
  * Helper: verify project / team access (Accepts Project ID OR Team ID)
  */
 async function verifyProjectAccess(req, res, targetId) {
+  // Phase 1: central, id-only, fail-closed, read-only authorization.
   const id = targetId || req.params.id || req.params.projectId || req.params.teamId || req.body?.projectId || req.body?.teamId;
   if (!id) {
     res.status(400).json({ error: "Target ID (Project or Team) is required" });
     return null;
   }
-
-  let project = null;
-  let team = null;
-
-  if (mongoose.isValidObjectId(id)) {
-    project = await Project.findById(id);
-    if (!project) {
-      team = await Team.findById(id);
-      if (team) {
-        project = await Project.findOne({ teamId: team._id }).sort({ createdAt: -1 });
-      }
-    }
+  const access = await authorizeProjectAccess(String(id), req.user, { allowTeamId: true, lean: false });
+  if (access.error) {
+    const status = access.status;
+    res.status(status).json({ error: status === 404 ? "Project not found" : "Forbidden: You do not have access to this project.", code: access.code });
+    return null;
   }
-
-  if (!project) {
+  if (!access.project) {
     res.status(404).json({ error: "Project not found" });
     return null;
   }
-
-  if (!team) {
-    team = await Team.findById(project.teamId);
-  }
-
-  // Verify membership
-  if (team) {
-    const userId = (req.user?._id || req.user?.id)?.toString() || "";
-    const userEmail = (req.user?.email || "").toLowerCase().trim();
-    const isOwner = team.ownerId?.toString() === userId;
-    const isMember = Array.isArray(team.members) && team.members.some(m => {
-      const mId = (m.userId?._id || m.userId)?.toString() || "";
-      return mId === userId || (m.name || "").toLowerCase().trim() === userEmail;
-    });
-    if (!isOwner && !isMember) {
-      res.status(403).json({ error: "Forbidden: You do not have access to this project." });
-      return null;
-    }
-  }
-
-  return { project, team };
+  return { project: access.project, team: access.team };
 }
 
 /**
- * Helper: check if user is team leader/owner
+ * Helper: check if user is team leader/owner (central access matrix).
  */
 function isTeamLeader(team, userId) {
-  if (!team || !userId) return false;
-  const uid = userId.toString();
-  if (team.ownerId?.toString() === uid) return true;
-  const member = (team.members || []).find(m => (m.userId?._id || m.userId)?.toString() === uid);
-  return member?.role === "leader" || member?.role === "admin";
+  return centralIsTeamLeader(team, userId ? userId.toString() : null);
 }
 
 // ── GET /api/hybrid/templates ──────────────────────────────────────────────────

@@ -23,6 +23,7 @@ import ArchitectureComponent from "../models/ArchitectureComponent.js";
 import { recordProjectEvent } from "./eventService.js";
 import { mapCategoryOrTitleToWaterfallPhase } from "../algorithms/projectDecomposer.js";
 import { normalizeWaterfallPhase } from "./requirementService.js";
+import { hasPermission } from "./accessControlService.js";
 
 export const WATERFALL_PHASES = [
   "requirements",
@@ -541,11 +542,10 @@ export async function advanceProjectPhase({ projectId, teamId, userId, userName 
   if (!team) throw new Error("Team not found");
 
   // Server-side Authorization check
+  // Phase 1 (D-15): owner (team.ownerId) or leader-class role via the central
+  // access matrix; the project must belong to this team.
   const isLeader =
-    team.leaderId?.toString() === userId?.toString() ||
-    team.members?.some(
-      (m) => m.userId?.toString() === userId?.toString() && (m.role === "leader" || m.role === "owner")
-    );
+    project.teamId?.toString() === team._id.toString() && hasPermission(team, userId?.toString(), "phase:approve");
 
   if (!isLeader) {
     const err = new Error("Unauthorized: Only team leaders can approve and advance phase gates.");
@@ -646,11 +646,10 @@ export async function overrideProjectPhaseGate({
   if (!team) throw new Error("Team not found");
 
   // Server-side Authorization check
+  // Phase 1 (D-15): owner (team.ownerId) or leader-class role via the central
+  // access matrix; the project must belong to this team.
   const isLeader =
-    team.leaderId?.toString() === userId?.toString() ||
-    team.members?.some(
-      (m) => m.userId?.toString() === userId?.toString() && (m.role === "leader" || m.role === "owner")
-    );
+    project.teamId?.toString() === team._id.toString() && hasPermission(team, userId?.toString(), "phase:approve");
 
   if (!isLeader) {
     const err = new Error("Unauthorized: Only team leaders can override phase gates.");

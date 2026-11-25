@@ -55,16 +55,18 @@ export async function resolveProjectAndTeam(id) {
     team = await Team.findById(id).lean();
     if (team) {
       if (team.activeProjectId) {
-        project = await Project.findById(team.activeProjectId).lean();
+        project = await Project.findOne({ _id: team.activeProjectId, teamId: team._id }).lean();
       }
       if (!project) {
-        const newProj = await Project.create({
-          teamId: team._id,
-          title: team.projectTitle || team.name || "Default Project",
-          description: team.projectDescription || "",
-        });
-        await Team.updateOne({ _id: team._id }, { $set: { activeProjectId: newProj._id } });
-        project = newProj.toObject();
+        project = await Project.findOne({ teamId: team._id }).sort({ updatedAt: -1 }).lean();
+      }
+      if (!project) {
+        // Phase 1 (D-10): this resolver is READ-ONLY. Initialization happens via
+        // the explicit, authorized POST /api/teams/:teamId/initialize-project.
+        const err = new Error("Workspace project is not initialized.");
+        err.statusCode = 409;
+        err.code = "PROJECT_NOT_INITIALIZED";
+        throw err;
       }
     }
   }

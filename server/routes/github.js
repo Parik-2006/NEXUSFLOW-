@@ -43,6 +43,8 @@ import { indexRepositoryForProject, getRepositoryIntelligence } from "../service
 import { answerWorkspaceQuery, assembleWorkspaceContext } from "../services/workspaceContextService.js";
 import { logger } from "../utils/logger.js";
 
+import { authorizeProjectAccess } from "../services/accessControlService.js";
+
 const router = express.Router();
 
 /**
@@ -54,61 +56,20 @@ const router = express.Router();
  *   - Enforces strict membership (team.ownerId or team.members) with NO unauthenticated bypass
  */
 export async function verifyProjectAccess(projectIdOrTeamId, userId, res) {
-  if (!mongoose.isValidObjectId(projectIdOrTeamId)) {
-    res.status(400).json({ error: "Invalid project or workspace ID" });
+  // Phase 1: central, id-only, fail-closed check (a project without a team
+  // previously passed). Read-only: never creates a project.
+  const access = await authorizeProjectAccess(String(projectIdOrTeamId || ""), { id: userId?.toString() }, { allowTeamId: true });
+  if (access.error) {
+    const status = access.status;
+    const msg = status === 400 ? "Invalid project or workspace ID" : status === 404 ? "Project not found" : "Forbidden: You are not a member of this workspace";
+    res.status(status === 401 ? 403 : status).json({ error: msg, code: access.code });
     return null;
   }
-
-  const idStr = String(projectIdOrTeamId);
-  const uid = userId?.toString();
-
-  // 1. Try finding by Project ID
-  let project = await Project.findById(idStr).lean();
-  let team = null;
-
-  if (project) {
-    if (project.teamId) {
-      team = await Team.findById(project.teamId).lean();
-    }
-  } else {
-    // 2. Try resolving as Team/Workspace ID
-    team = await Team.findById(idStr).lean();
-    if (team) {
-      if (team.activeProjectId) {
-        project = await Project.findById(team.activeProjectId).lean();
-      }
-      if (!project) {
-        // Find existing project associated with this team
-        project = await Project.findOne({ teamId: team._id }).sort({ updatedAt: -1 }).lean();
-      }
-      // If team has no project, DO NOT silently create one as a side effect of status/auth check!
-      if (!project) {
-        res.status(404).json({ error: "No active project found for this workspace" });
-        return null;
-      }
-    }
-  }
-
-  if (!project) {
-    res.status(404).json({ error: "Project not found" });
+  if (!access.project) {
+    res.status(404).json({ error: "No active project found for this workspace" });
     return null;
   }
-
-  // 3. Strict membership / ownership verification
-  if (team) {
-    const isOwner = team.ownerId && team.ownerId.toString() === uid;
-    const isMember = Array.isArray(team.members) && team.members.some((m) => {
-      const mid = (m.userId?._id || m.userId)?.toString();
-      return mid === uid;
-    });
-
-    if (!isOwner && !isMember) {
-      res.status(403).json({ error: "Forbidden: You are not a member of this workspace" });
-      return null;
-    }
-  }
-
-  return { project, team };
+  return { project: access.project, team: access.team };
 }
 
 // ── 0. Safe Configuration Diagnostic Endpoint ─────────────────────────────────

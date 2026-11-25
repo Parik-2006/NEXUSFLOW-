@@ -15,6 +15,7 @@ import TeamApplication from "../models/TeamApplication.js";
 import TeamApplicationAudit from "../models/TeamApplicationAudit.js";
 import Notification from "../models/Notification.js";
 import SkillVerification from "../models/SkillVerification.js";
+import { hasPermission } from "./accessControlService.js";
 
 /**
  * Calculates candidate skill-match percentage against role requirements.
@@ -80,12 +81,9 @@ export function calculateSkillMatch({
 async function resolveUser(user) {
   if (!user) return null;
   const id = (user._id || user.id)?.toString();
+  // Phase 1 (D-5): verified token id only — no email fallback.
   if (mongoose.isValidObjectId(id)) {
     const doc = await User.findById(id);
-    if (doc) return doc;
-  }
-  if (user.email) {
-    const doc = await User.findOne({ email: user.email.toLowerCase().trim() });
     if (doc) return doc;
   }
   return null;
@@ -277,17 +275,8 @@ export async function acceptApplication({ applicationId, leaderUser }) {
     throw { status: 404, message: "Workspace not found." };
   }
 
-  // Authorization check: leader, manager, or owner
-  const isOwner = team.ownerId && team.ownerId.toString() === leader._id.toString();
-  const leaderMember = (team.members || []).find(
-    (m) => m.userId && m.userId.toString() === leader._id.toString()
-  );
-  const isLeader =
-    isOwner ||
-    (leaderMember &&
-      ["owner", "leader", "team leader", "manager", "project manager"].includes(
-        (leaderMember.role || "").toLowerCase()
-      ));
+  // Authorization check: leader, manager, or owner (central access matrix)
+  const isLeader = hasPermission(team, leader._id.toString(), "application:review");
 
   if (!isLeader) {
     throw {
@@ -302,41 +291,55 @@ export async function acceptApplication({ applicationId, leaderUser }) {
     throw { status: 404, message: "Candidate user record not found." };
   }
 
-  // Add to team members if not already present
-  const alreadyMember = (team.members || []).some(
-    (m) => m.userId && m.userId.toString() === candidate._id.toString()
+  // Phase 1: atomically claim the application so concurrent accepts cannot
+  // both add the member; then add the member only if absent.
+  const prevStatus = application.status;
+  const claimed = await TeamApplication.findOneAndUpdate(
+    { _id: application._id, status: { $in: ["SUBMITTED", "UNDER_REVIEW"] } },
+    {
+      $set: {
+        status: "ACCEPTED",
+        reviewerId: leader._id,
+        reviewerName: leader.name || "Team Leader",
+        reviewedAt: new Date(),
+      },
+    },
+    { new: true }
+  );
+  if (!claimed) {
+    throw { status: 409, message: "Application was already processed." };
+  }
+  application.status = claimed.status;
+
+  const added = await Team.updateOne(
+    { _id: team._id, "members.userId": { $ne: candidate._id } },
+    {
+      $push: {
+        members: {
+          userId: candidate._id,
+          name: candidate.name || application.applicantName,
+          avatar: candidate.avatar || "",
+          role: "member",
+          skills: { frontend: 5, backend: 5, devops: 5, design: 5, ml: 5, testing: 5 },
+          capacity: 40,
+          assignedLoad: 0,
+        },
+      },
+    }
   );
 
-  if (!alreadyMember) {
-    team.members.push({
-      userId: candidate._id,
-      name: candidate.name || application.applicantName,
-      avatar: candidate.avatar || "",
-      role: "member",
-      skills: { frontend: 5, backend: 5, devops: 5, design: 5, ml: 5, testing: 5 },
-      capacity: 40,
-      assignedLoad: 0,
-    });
-
+  if (added.modifiedCount) {
     // Update open role filledSlots
-    const role = team.openRoles?.id(application.roleId);
+    const fresh = await Team.findById(team._id);
+    const role = fresh?.openRoles?.id(application.roleId);
     if (role) {
       role.filledSlots = (role.filledSlots || 0) + 1;
       if (role.filledSlots >= (role.availableSlots || 1)) {
         role.status = "closed";
       }
+      await fresh.save();
     }
-
-    await team.save();
   }
-
-  // Update application state
-  const prevStatus = application.status;
-  application.status = "ACCEPTED";
-  application.reviewerId = leader._id;
-  application.reviewerName = leader.name || "Team Leader";
-  application.reviewedAt = new Date();
-  await application.save();
 
   // Create audit record
   await TeamApplicationAudit.create({

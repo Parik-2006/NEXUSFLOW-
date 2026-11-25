@@ -66,6 +66,14 @@
 import { Router } from "express";
 import mongoose from "mongoose";
 import { requireAuth } from "../auth.js";
+import {
+  authorizeProjectAccess,
+  authorizeTeamAccess,
+  hasPermission,
+} from "../services/accessControlService.js";
+import { requireProjectAccess } from "../middleware/authorization.js";
+import { getAuthUserId } from "../utils/identity.js";
+import { logger } from "../utils/logger.js";
 
 // Import all Phase 1 models
 import Project          from "../models/Project.js";
@@ -147,49 +155,44 @@ import {
 
 const router = Router();
 
+// ── Router-level project guard (Phase 1 / D-2) ───────────────────────────────
+// Runs for EVERY /projects/:projectId/* request entering this router — under
+// both the /api and the root dual-mount, and for later routers (github,
+// workstreams) whose paths share the prefix. It authenticates, resolves the id
+// (project id, or a team id for legacy clients) read-only, and requires
+// membership. Assigned faculty pass this guard; member-only handlers still
+// re-check via findProject().
+router.use(
+  "/projects/:projectId",
+  requireAuth,
+  requireProjectAccess({ param: "projectId", allowTeamId: true, allowFaculty: true }),
+  (req, res, next) => {
+    // Assigned faculty (non-members) are read-only except on the review /
+    // academic-evaluation endpoints that exist for them.
+    const m = req.projectAccess?.membership;
+    if (m?.isFaculty && req.method !== "GET" && !/\/(teacher-reviews|academic-evaluation)(\/|$)/.test(req.path)) {
+      return res.status(403).json({ error: "Forbidden: faculty access is read-only here.", code: "FACULTY_READ_ONLY" });
+    }
+    next();
+  }
+);
+
 // ── Helper: verify project exists, check authorization, and return it ────────
 async function findProject(projectId, res, user = null, { lean = true } = {}) {
   if (!mongoose.isValidObjectId(projectId)) {
     res.status(400).json({ error: "invalid_project_id" });
     return null;
   }
-  const query = Project.findById(projectId);
-  const project = lean ? await query.lean() : await query;
-  if (!project) {
-    res.status(404).json({ error: "project_not_found" });
+  // Phase 1 (D-2/D-5/D-6): central, id-only, fail-closed authorization. A
+  // project with no team, a missing team, or a non-member caller is rejected.
+  const effectiveUser = user || res?.req?.user;
+  const result = await authorizeProjectAccess(projectId, effectiveUser, { allowTeamId: false, lean });
+  if (result.error) {
+    if (result.status === 404) res.status(404).json({ error: "project_not_found" });
+    else res.status(result.status).json({ error: result.error, code: result.code });
     return null;
   }
-
-  // Security Check: Verify team access if user context is available (from arg or Express req)
-  const effectiveUser = user || res?.req?.user;
-  if (effectiveUser && project.teamId) {
-    const team = await Team.findById(project.teamId).lean();
-    if (team) {
-      const userIdStr = (effectiveUser._id || effectiveUser.id)?.toString() || "";
-      const userEmail = (effectiveUser.email || "").toLowerCase().trim();
-      const userName = (effectiveUser.name || "").toLowerCase().trim();
-
-      const isOwner = team.ownerId && team.ownerId.toString() === userIdStr;
-      const isMember = Array.isArray(team.members) && team.members.some((m) => {
-        const mIdStr = (m.userId?._id || m.userId)?.toString() || "";
-        const mName = (m.name || "").toLowerCase().trim();
-        return (
-          (mIdStr && mIdStr === userIdStr) ||
-          (mName && userEmail && mName === userEmail) ||
-          (mName && userName && mName === userName)
-        );
-      });
-
-      const isLegacy = !team.ownerId && (!team.members || team.members.length === 0);
-
-      if (!isOwner && !isMember && !isLegacy && effectiveUser.role !== "admin") {
-        res.status(403).json({ error: "Forbidden: You do not have access to this project." });
-        return null;
-      }
-    }
-  }
-
-  return project;
+  return result.project;
 }
 
 // ── Helper: get real Mongoose document with .save() and subdocument methods ──
@@ -223,7 +226,7 @@ router.get("/methodologies/availability", handleGetMethodologies);
 router.get("/projects", requireAuth, async (req, res) => {
   try {
     const userId = req.user?._id || req.user?.id;
-    const userEmail = req.user?.email?.toLowerCase()?.trim();
+    // (identity: user id only)
     const userName = req.user?.name?.trim();
 
     const teamConditions = [];
@@ -231,8 +234,7 @@ router.get("/projects", requireAuth, async (req, res) => {
       teamConditions.push({ ownerId: userId });
       teamConditions.push({ "members.userId": userId });
     }
-    if (userEmail) teamConditions.push({ "members.name": userEmail });
-    if (userName) teamConditions.push({ "members.name": userName });
+    // Phase 1 (D-5): no display-name / email membership matching.
 
     // Find all teams the user belongs to
     const userTeams = await Team.find(teamConditions.length > 0 ? { $or: teamConditions } : { _id: null }).select("_id").lean();
@@ -251,7 +253,7 @@ router.get("/projects", requireAuth, async (req, res) => {
     const projects = await Project.find(filter).sort({ createdAt: -1 }).lean();
     res.json(projects);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -283,29 +285,13 @@ router.post("/projects", requireAuth, async (req, res) => {
       });
     }
 
-    // Verify the team exists
-    const team = await Team.findById(teamId).lean();
-    if (!team) return res.status(404).json({ error: "team_not_found" });
-
-    // Verify team ownership / membership
-    const userIdStr = (req.user?._id || req.user?.id)?.toString() || "";
-    const userEmail = (req.user?.email || "").toLowerCase().trim();
-    const userName = (req.user?.name || "").toLowerCase().trim();
-
-    const isOwner = team.ownerId && team.ownerId.toString() === userIdStr;
-    const isMember = Array.isArray(team.members) && team.members.some((m) => {
-      const mIdStr = (m.userId?._id || m.userId)?.toString() || "";
-      const mName = (m.name || "").toLowerCase().trim();
-      return (
-        (mIdStr && mIdStr === userIdStr) ||
-        (mName && userEmail && mName === userEmail) ||
-        (mName && userName && mName === userName)
-      );
-    });
-
-    if (!isOwner && !isMember && team.ownerId && req.user?.role !== "admin") {
-      return res.status(403).json({ error: "Forbidden: You are not a member of this team." });
+    // Phase 1: membership by immutable id only (no name/email, no ownerless bypass).
+    const teamAuth = await authorizeTeamAccess(teamId, req.user, { permission: "project:manage" });
+    if (teamAuth.error) {
+      if (teamAuth.status === 404) return res.status(404).json({ error: "team_not_found" });
+      return res.status(teamAuth.status).json({ error: teamAuth.error, code: teamAuth.code });
     }
+    const team = teamAuth.team;
 
     // SAFEGUARD B: Validate methodology input (missing -> WATERFALL, unknown -> null)
     const normalizedMethodology = normalizeMethodologyId(methodology);
@@ -352,7 +338,7 @@ router.post("/projects", requireAuth, async (req, res) => {
 
     res.status(201).json(project);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -364,7 +350,7 @@ router.get("/projects/:projectId", requireAuth, async (req, res) => {
     if (!project) return;
     res.json(project);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -423,7 +409,7 @@ router.patch("/projects/:projectId", requireAuth, async (req, res) => {
 
     res.json(updated);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -462,7 +448,7 @@ router.post("/projects/:projectId/methodology-select", requireAuth, async (req, 
 
     res.json({ success: true, project: updated });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -476,6 +462,18 @@ router.delete("/projects/:projectId", requireAuth, async (req, res) => {
     const { projectId } = req.params;
     const project = await findProject(projectId, res);
     if (!project) return;
+
+    // Phase 1 (D-9): owner/leader only, and the exact project title must be
+    // typed to confirm. Unauthorized requests are rejected before any write.
+    const delAuth = await authorizeProjectAccess(projectId, req.user, { permission: "project:delete", allowTeamId: false });
+    if (delAuth.error) {
+      return res.status(delAuth.status).json({ error: "Forbidden: Only the workspace owner or a leader can delete a project.", code: delAuth.code });
+    }
+    const confirmName = String(req.body?.confirmName ?? "").trim();
+    if (!confirmName || confirmName !== String(project.title || "").trim()) {
+      return res.status(400).json({ error: "Confirmation required: type the exact project title to delete it.", code: "CONFIRMATION_REQUIRED" });
+    }
+    logger.warn("security:project_deleted", { projectId, teamId: String(project.teamId), actorId: getAuthUserId(req.user) });
 
     // Clear projectId on all tasks that referenced this project.
     // Tasks are preserved — only the project-scoping link is removed.
@@ -501,7 +499,7 @@ router.delete("/projects/:projectId", requireAuth, async (req, res) => {
     await Project.findByIdAndDelete(projectId);
     res.json({ ok: true, deletedProjectId: projectId });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -524,7 +522,7 @@ router.get("/projects/:projectId/tasks", requireAuth, async (req, res) => {
 
     res.json(tasks);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -562,7 +560,7 @@ router.patch("/projects/:projectId/context", requireAuth, async (req, res) => {
     );
     res.json(updated);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -647,7 +645,7 @@ router.get("/projects/:projectId/plan", requireAuth, async (req, res) => {
       executionUnlocked,
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -754,7 +752,7 @@ router.post("/projects/:projectId/artifacts", requireAuth, async (req, res) => {
       readiness,
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -845,7 +843,7 @@ router.patch("/projects/:projectId/artifacts/:artifactId", requireAuth, async (r
       readiness,
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -893,7 +891,7 @@ router.patch("/projects/:projectId/artifacts/:artifactId/approve", requireAuth, 
       readiness,
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -954,7 +952,7 @@ router.post("/projects/:projectId/artifacts/approve-all", requireAuth, async (re
       readiness,
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -1030,7 +1028,7 @@ router.delete("/projects/:projectId/artifacts/:artifactId", requireAuth, async (
       readiness,
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -1093,7 +1091,7 @@ router.post("/projects/:projectId/plan/extract", requireAuth, async (req, res) =
       message: "Artifacts analyzed and scope extracted successfully. Key Deliverables and Constraints populated.",
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -1130,7 +1128,7 @@ router.patch("/projects/:projectId/plan/scope", requireAuth, async (req, res) =>
       message: "Plan scope updated successfully.",
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -1223,7 +1221,7 @@ router.patch("/projects/:projectId/plan/conflicts/:conflictId", requireAuth, asy
       message: "Scope contradiction resolved successfully.",
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -1264,7 +1262,7 @@ router.post("/projects/:projectId/plan/conflicts/recalculate", requireAuth, asyn
       message: "Scope contradictions recalculated.",
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -1282,7 +1280,7 @@ router.get("/projects/:projectId/plan/readiness", requireAuth, async (req, res) 
       lifecycle: project.waterfallPlanLifecycle || {},
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -1327,7 +1325,7 @@ router.patch("/projects/:projectId/plan/readiness", requireAuth, async (req, res
       message: confirmed ? "Document readiness confirmed." : "Document readiness unconfirmed.",
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -1416,7 +1414,7 @@ router.post("/projects/:projectId/plan/finalize", requireAuth, async (req, res) 
       message: "Waterfall plan finalized successfully! Tasks generated and Requirements phase activated.",
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -1430,7 +1428,7 @@ router.get("/projects/:projectId/waterfall/state", requireAuth, async (req, res)
     const state = await getWaterfallPhaseStates(project._id, project.teamId);
     res.json({ success: true, ...state });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -1512,7 +1510,7 @@ router.post("/projects/:projectId/requirements", requireAuth, async (req, res) =
       readiness,
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -1582,7 +1580,7 @@ router.post("/projects/:projectId/requirements/approve-all", requireAuth, async 
       lifecycle: project.waterfallPlanLifecycle,
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -1656,7 +1654,7 @@ router.patch("/projects/:projectId/requirements/:reqId", requireAuth, async (req
       readiness,
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -1691,7 +1689,7 @@ router.delete("/projects/:projectId/requirements/:reqId", requireAuth, async (re
       readiness,
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -1712,7 +1710,7 @@ router.post("/projects/:projectId/requirements/bulk-convert", requireAuth, async
 
     res.status(200).json(result);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -1733,7 +1731,7 @@ router.post("/projects/:projectId/requirements/:reqId/convert-to-task", requireA
 
     res.status(result.alreadyExisted ? 200 : 201).json(result);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -1754,7 +1752,7 @@ router.get("/projects/:projectId/decisions", requireAuth, async (req, res) => {
     const decisions = await Decision.find(filter).sort({ createdAt: -1 }).lean();
     res.json(decisions);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -1786,7 +1784,7 @@ router.post("/projects/:projectId/decisions", requireAuth, async (req, res) => {
     });
     res.status(201).json(doc);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -1812,7 +1810,7 @@ router.patch("/projects/:projectId/decisions/:decisionId", requireAuth, async (r
     if (!updated) return res.status(404).json({ error: "Decision not found." });
     res.json(updated);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -1829,7 +1827,7 @@ router.delete("/projects/:projectId/decisions/:decisionId", requireAuth, async (
     if (!deleted) return res.status(404).json({ error: "Decision not found." });
     res.json({ ok: true, deletedId: req.params.decisionId });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -1850,7 +1848,7 @@ router.get("/projects/:projectId/research", requireAuth, async (req, res) => {
     const items = await ResearchItem.find(filter).sort({ relevance: -1, createdAt: -1 }).lean();
     res.json(items);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -1918,7 +1916,7 @@ router.post("/projects/:projectId/research", requireAuth, async (req, res) => {
     });
     res.status(201).json(doc);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -1943,7 +1941,7 @@ router.patch("/projects/:projectId/research/:itemId", requireAuth, async (req, r
     if (!updated) return res.status(404).json({ error: "Research item not found." });
     res.json(updated);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -1960,7 +1958,7 @@ router.delete("/projects/:projectId/research/:itemId", requireAuth, async (req, 
     if (!deleted) return res.status(404).json({ error: "Research item not found." });
     res.json({ ok: true, deletedId: req.params.itemId });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -1981,7 +1979,7 @@ router.get("/projects/:projectId/recommendations", requireAuth, async (req, res)
     const recs = await Recommendation.find(filter).sort({ createdAt: -1 }).lean();
     res.json(recs);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -2009,7 +2007,7 @@ router.post("/projects/:projectId/recommendations", requireAuth, async (req, res
     });
     res.status(201).json(doc);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -2035,7 +2033,7 @@ router.patch("/projects/:projectId/recommendations/:recId", requireAuth, async (
     if (!updated) return res.status(404).json({ error: "Recommendation not found." });
     res.json(updated);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -2052,7 +2050,7 @@ router.delete("/projects/:projectId/recommendations/:recId", requireAuth, async 
     if (!deleted) return res.status(404).json({ error: "Recommendation not found." });
     res.json({ ok: true, deletedId: req.params.recId });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -2073,7 +2071,7 @@ router.get("/projects/:projectId/architecture", requireAuth, async (req, res) =>
     const components = await ArchitectureComponent.find(filter).lean();
     res.json(components);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -2099,7 +2097,7 @@ router.post("/projects/:projectId/architecture", requireAuth, async (req, res) =
     });
     res.status(201).json(doc);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -2124,7 +2122,7 @@ router.patch("/projects/:projectId/architecture/:compId", requireAuth, async (re
     if (!updated) return res.status(404).json({ error: "Architecture component not found." });
     res.json(updated);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -2141,7 +2139,7 @@ router.delete("/projects/:projectId/architecture/:compId", requireAuth, async (r
     if (!deleted) return res.status(404).json({ error: "Architecture component not found." });
     res.json({ ok: true, deletedId: req.params.compId });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -2162,7 +2160,7 @@ router.get("/projects/:projectId/resources", requireAuth, async (req, res) => {
     const resources = await Resource.find(filter).sort({ resourceType: 1, createdAt: -1 }).lean();
     res.json(resources);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -2192,7 +2190,7 @@ router.post("/projects/:projectId/resources", requireAuth, async (req, res) => {
     });
     res.status(201).json(doc);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -2217,7 +2215,7 @@ router.patch("/projects/:projectId/resources/:resourceId", requireAuth, async (r
     if (!updated) return res.status(404).json({ error: "Resource not found." });
     res.json(updated);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -2234,7 +2232,7 @@ router.delete("/projects/:projectId/resources/:resourceId", requireAuth, async (
     if (!deleted) return res.status(404).json({ error: "Resource not found." });
     res.json({ ok: true, deletedId: req.params.resourceId });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -2254,7 +2252,7 @@ router.get("/projects/:projectId/conversations", requireAuth, async (req, res) =
     const conversations = await AIConversation.find(filter).sort({ createdAt: -1 }).lean();
     res.json(conversations);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -2275,7 +2273,7 @@ router.post("/projects/:projectId/conversations", requireAuth, async (req, res) 
     });
     res.status(201).json(conv);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -2303,7 +2301,7 @@ router.get("/projects/:projectId/conversations/:convId/messages", requireAuth, a
 
     res.json({ conversation: conv, messages });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -2349,7 +2347,7 @@ router.post("/projects/:projectId/conversations/:convId/messages", requireAuth, 
 
     res.status(201).json(message);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -2402,7 +2400,7 @@ router.get("/projects/:projectId/summary", requireAuth, async (req, res) => {
       },
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -2808,7 +2806,7 @@ router.get(["/projects/:projectId/project-health", "/projects/:projectId/health"
     const health = await computeUnifiedProjectHealth(projectId, io);
     res.json(health);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -2821,7 +2819,7 @@ router.post(["/projects/:projectId/project-health/refresh", "/projects/:projectI
     const health = await computeUnifiedProjectHealth(projectId, io);
     res.json(health);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -2833,7 +2831,7 @@ router.get("/projects/:projectId/team-health", requireAuth, async (req, res) => 
     const health = await computeTeamHealth(projectId);
     res.json({ health });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -2851,7 +2849,7 @@ router.post("/projects/:projectId/team-health/refresh", requireAuth, async (req,
     }
     res.json({ health });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -2885,7 +2883,7 @@ router.get("/projects/:projectId/risks", requireAuth, async (req, res) => {
     });
     res.json({ risks: filteredRisks, counts });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -2909,7 +2907,7 @@ router.post("/projects/:projectId/risks/scan", requireAuth, async (req, res) => 
     }
     res.json({ risks, count: risks.length });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -2953,7 +2951,7 @@ router.patch("/projects/:projectId/risks/:riskId", requireAuth, async (req, res)
     }
     res.json({ risk });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -2969,7 +2967,7 @@ router.get("/projects/:projectId/opinions", requireAuth, async (req, res) => {
     const opinions = await Opinion.find({ projectId }).sort({ createdAt: -1 }).lean();
     res.json({ opinions });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -2996,7 +2994,7 @@ router.post("/projects/:projectId/opinions", requireAuth, async (req, res) => {
     if (io) broadcastOpinionUpdate(io, projectId, { action: "create", opinion });
     res.status(201).json({ opinion });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -3028,7 +3026,7 @@ router.post("/projects/:projectId/opinions/:opinionId/respond", requireAuth, asy
     if (io) broadcastOpinionUpdate(io, projectId, { action: "response", opinionId });
     res.json({ opinion });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -3063,7 +3061,7 @@ router.post("/projects/:projectId/opinions/:opinionId/decide", requireAuth, asyn
     if (io) broadcastDecisionUpdate(io, projectId, { action: "create", decision });
     res.status(201).json({ decision, opinion });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -3087,7 +3085,7 @@ router.post("/projects/:projectId/retrospectives", requireAuth, async (req, res)
     }
     res.status(201).json({ retrospective: retro });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -3102,7 +3100,7 @@ router.get("/projects/:projectId/retrospectives", requireAuth, async (req, res) 
     }).sort({ createdAt: -1 }).lean();
     res.json({ retrospectives: retros });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -3121,7 +3119,7 @@ router.get("/projects/:projectId/retrospectives/:retroId", requireAuth, async (r
     if (!retro) return res.status(404).json({ error: "retrospective_not_found" });
     res.json({ retrospective: retro });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -3142,7 +3140,7 @@ router.patch("/projects/:projectId/retrospectives/:retroId/acknowledge", require
     if (!retro) return res.status(404).json({ error: "retrospective_not_found" });
     res.json({ retrospective: retro });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -3158,7 +3156,7 @@ router.get("/projects/:projectId/insights", requireAuth, async (req, res) => {
     const insights = await LearningInsight.find({ projectId, isStale: false }).sort({ confidence: -1 }).lean();
     res.json({ insights });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -3172,7 +3170,7 @@ router.post("/projects/:projectId/insights/generate", requireAuth, async (req, r
     const insights = await generateInsights(projectId, project.teamId);
     res.json({ insights });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -3190,7 +3188,7 @@ router.get("/projects/:projectId/brain", requireAuth, async (req, res) => {
     const serialized = serializeBrainForPrompt(brain);
     res.json({ brain, serialized });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -3207,7 +3205,7 @@ router.get("/projects/:projectId/phase-gates", requireAuth, async (req, res) => 
     const gate = await evaluateProjectPhaseGate(projectId);
     res.json({ gate });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -3276,7 +3274,7 @@ router.post("/projects/:projectId/change-impact/simulate", requireAuth, async (r
     });
     res.json({ impact });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -3295,7 +3293,7 @@ router.get("/projects/:projectId/events", requireAuth, async (req, res) => {
     });
     res.json(result);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -3321,7 +3319,7 @@ router.post("/projects/:projectId/events", requireAuth, async (req, res) => {
     });
     res.json({ event });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -3401,7 +3399,7 @@ router.get("/projects/:projectId/requirements/coverage", requireAuth, async (req
       sourceBreakdown,
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -3456,7 +3454,7 @@ router.post("/projects/:projectId/requirements/:reqId/evidence", requireAuth, as
       evidenceAdded: true,
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -3513,7 +3511,7 @@ router.patch("/projects/:projectId/requirements/:reqId/coverage-state", requireA
       requirement: updated.requirements[updated.requirements.length - 1],
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -3578,7 +3576,7 @@ router.get("/projects/:projectId/requirements/:reqId/traceability", requireAuth,
 
     res.json({ ok: true, traceability });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
   }
 });
 
@@ -3603,7 +3601,7 @@ router.get(
 
       res.json({ ok: true, context });
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -3625,7 +3623,7 @@ router.get(
 
       res.json({ ok: true, summary });
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -3647,7 +3645,7 @@ router.get(
 
       res.json({ ok: true, context });
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -3669,7 +3667,7 @@ router.get(
 
       res.json({ ok: true, context });
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -3695,7 +3693,7 @@ router.get(
 
       res.json({ ok: true, memories });
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -3734,7 +3732,7 @@ router.post(
 
       res.status(201).json({ ok: true, memory });
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -3768,7 +3766,7 @@ router.patch(
       await memory.save();
       res.json({ ok: true, memory });
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -3794,7 +3792,7 @@ router.delete(
 
       res.json({ ok: true, deletedId: memory._id });
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -3823,7 +3821,7 @@ router.post(
 
       res.json({ ok: true, memory });
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -3852,7 +3850,7 @@ router.post(
 
       res.json({ ok: true, memory });
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -3869,7 +3867,7 @@ router.get(
       const promptContext = await buildMemoryContextForPrompt(req.params.projectId);
       res.json({ ok: true, promptContext });
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -3892,7 +3890,7 @@ router.get(
       const result = generateRecommendation(project, req.query);
       res.json(result);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -3909,7 +3907,7 @@ router.post(
       const result = await recommendMethodology(req.params.projectId, req.body, userId, req.user?.name);
       res.json(result);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -3939,7 +3937,7 @@ router.post(
       const result = await selectMethodology(req.params.projectId, norm, userId, req.user?.name);
       res.json(result);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -3961,7 +3959,7 @@ router.get(
       const result = await analyzeMethodologyDrift(req.params.projectId);
       res.json(result);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -3977,7 +3975,7 @@ router.post(
       const result = await analyzeMethodologyDrift(req.params.projectId);
       res.json(result);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -3999,7 +3997,7 @@ router.get(
       const baseline = await getSimulationBaseline(req.params.projectId);
       res.json(baseline);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -4023,7 +4021,7 @@ router.post(
       const result = await runSimulation(req.params.projectId, params);
       res.json(result);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -4045,7 +4043,7 @@ router.get(
       const state = await getDigitalTwinState(req.params.projectId);
       res.json(state);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -4061,7 +4059,7 @@ router.get(
       const delta = await getDigitalTwinDelta(req.params.projectId);
       res.json(delta);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -4083,7 +4081,7 @@ router.get(
       const result = await analyzeProjectProcess(req.params.projectId, req.query);
       res.json(result);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -4105,7 +4103,7 @@ router.get(
       const result = await analyzeWorkflowConformance(req.params.projectId, req.query);
       res.json(result);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -4133,7 +4131,7 @@ router.get(
       const projects = await getFacultyAssignedProjects(userId);
       res.json({ projects });
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -4153,7 +4151,7 @@ router.get(
       const reviews = await getProjectTeacherReviews(req.params.projectId, isFaculty);
       res.json({ reviews });
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -4180,7 +4178,7 @@ router.post(
       });
       res.status(201).json(review);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -4205,7 +4203,7 @@ router.post(
       });
       res.json(updated);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -4228,7 +4226,7 @@ router.patch(
       });
       res.json(updated);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -4255,7 +4253,7 @@ router.get(
       const evaluation = await getAcademicEvaluation(req.params.projectId);
       res.json(evaluation);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -4272,7 +4270,7 @@ router.post(
       const rubric = await upsertAcademicRubric(req.params.projectId, req.body, userId, req.user?.name);
       res.json(rubric);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -4295,7 +4293,7 @@ router.patch(
       );
       res.json(crit);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -4317,7 +4315,7 @@ router.post(
       );
       res.json(result);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -4344,7 +4342,7 @@ router.get(
       const result = await calculateProjectContribution(req.params.projectId, req.query);
       res.json(result);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -4361,7 +4359,7 @@ router.get(
       const result = await getStudentContributionView(req.params.projectId, userId);
       res.json(result);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -4385,7 +4383,7 @@ router.post(
       });
       res.status(201).json(dispute);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -4407,7 +4405,7 @@ router.patch(
       );
       res.json(resolved);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -4456,7 +4454,7 @@ router.post(
       });
       res.status(201).json(attachment);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -4473,7 +4471,7 @@ router.get(
       const contexts = await getProjectTemporaryContexts(req.params.projectId, userId);
       res.json({ contexts });
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -4512,7 +4510,7 @@ router.post(
       );
       res.status(201).json(memory);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -4534,7 +4532,7 @@ router.post(
       });
       res.json(answer);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -4550,7 +4548,7 @@ router.get(
       const intelligence = await evaluateDomainIntelligence(req.params.projectId);
       res.json(intelligence);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -4566,7 +4564,7 @@ router.patch(
       const updated = await setProjectDomain(req.params.projectId, req.body);
       res.json(updated);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -4587,7 +4585,7 @@ router.get(
       });
       res.json(resolved);
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
@@ -4604,7 +4602,7 @@ router.get(
         localAiStatus: "RESEARCH_AND_INTEGRATION_FOUNDATION",
       });
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(e.statusCode || 500).json({ error: e.message, code: e.code });
     }
   }
 );
