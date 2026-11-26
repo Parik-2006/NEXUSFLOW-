@@ -570,7 +570,8 @@ export async function computeUnifiedProjectHealth(projectIdOrTeamId, io = null) 
     // Phase 3: name the actual weakest evidence-backed dimension(s) instead of
     // a generic capacity / dependency message.
     const weakest = dimensions
-      .filter((d) => d.available && d.score !== null)
+      // Only dimensions below the healthy threshold are named as needing attention.
+      .filter((d) => d.available && d.score !== null && d.score < 75)
       .sort((x, y) => x.score - y.score || String(x.key).localeCompare(String(y.key)))
       .slice(0, 2)
       .map((d) => `${d.name} (${d.score}%)`);

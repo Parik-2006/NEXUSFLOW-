@@ -239,7 +239,9 @@ export default function Workspace() {
             <Ionicons name="chevron-back" size={22} color={colors.text} />
           </Pressable>
           <Avatar name={team?.name ?? "Team"} size={36} image={team?.logo} />
-          <View style={{ minWidth: 0, flexShrink: 1 }}>
+          {/* flex: 1 bounds this column so the title/badge row wraps instead of
+              overflowing into the notification controls on narrow phones. */}
+          <View style={{ minWidth: 0, flexShrink: 1, flex: 1 }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
               <Text style={font.h3} numberOfLines={1}>{team?.name ?? "Workspace"}</Text>
               <View
@@ -285,7 +287,9 @@ export default function Workspace() {
         )}
 
         {/* Right region: Notification & Profile */}
-        <View style={[s.headerRight, !showBrand && { flex: 0, flexShrink: 0 }]}>
+        {/* Without the centre brand the right region sizes to its content. Note: flex: 0
+            maps to a 0% basis on web and collapses the region, so use an auto basis. */}
+        <View style={[s.headerRight, !showBrand && { flexGrow: 0, flexShrink: 0, flexBasis: "auto" }]}>
           {showAvatarStack && otherNames.length > 0 && <AvatarStack names={otherNames} images={otherImages} max={3} />}
           {teamId && (
             <NotificationCenter
