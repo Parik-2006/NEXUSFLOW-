@@ -128,10 +128,22 @@ async function runDaaAiBoundarySuite() {
       prompt: "Explain why a high-urgency task on critical path has high priority in 1 sentence.",
     });
 
-    assert(cascadeResult && cascadeResult.success === true, "AI query executed successfully through provider cascade");
-    const providerUsed = cascadeResult.telemetry?.successfulProvider;
-    assert(providerUsed !== undefined, `Provider selected: ${providerUsed}`);
-    assert(["gemini", "groq", "openrouter", "local"].includes(providerUsed), "Selected provider conforms to approved zero-cost whitelist");
+    // Phase 4 expectation change: this check previously "passed" without any
+    // AI key because the provider abstraction FABRICATED a response
+    // ("[Gemini Response] Advisory analysis …"). Now: with no provider
+    // configured the result is a truthful failure (no invented provider);
+    // with a provider configured (e.g. --mock-ai) it must come from an
+    // approved zero-cost route.
+    const anyKey = Boolean(process.env.GEMINI_API_KEY || process.env.GROQ_API_KEY || process.env.OPENROUTER_API_KEY);
+    if (anyKey) {
+      assert(cascadeResult && cascadeResult.success === true, "AI query executed successfully through provider cascade");
+      const providerUsed = cascadeResult.telemetry?.successfulProvider;
+      assert(providerUsed !== undefined, `Provider selected: ${providerUsed}`);
+      assert(["gemini", "groq", "openrouter"].includes(providerUsed), "Selected provider conforms to approved zero-cost whitelist");
+    } else {
+      assert(cascadeResult && cascadeResult.success === false && cascadeResult.error === "AI_UNAVAILABLE", "No AI configured: truthful AI_UNAVAILABLE (no fabricated response)");
+      assert(cascadeResult.telemetry?.successfulProvider === null, "No provider is claimed when none answered");
+    }
 
     // Test forced failure: simulate network/timeout error
     console.log("\n--- 3. System Independence from AI Outages ---");

@@ -50,7 +50,9 @@ async function runTests() {
 
   // ── Test 2: Modality Capability Checks
   console.log("\n[TEST 2] Provider modality capability checks");
-  assert(gemini.supportsModality("vision") === true, "Gemini supports vision");
+  // Phase 4 expectation change: no verified free VISION route exists in the
+  // model registry, so no provider may claim vision support.
+  assert(gemini.supportsModality("vision") === false, "No unverified vision capability is claimed");
   assert(groq.supportsModality("vision") === false, "Groq text model does NOT support vision");
   assert(groq.supportsModality("text") === true, "Groq supports text");
   assert(openrouter.supportsModality("text") === true, "OpenRouter supports text");
@@ -74,8 +76,17 @@ async function runTests() {
     prompt: "Analyze requirement modularity",
     requiredModalities: ["text"],
   });
-  assert(textExec.success === true, "Query executed successfully");
-  assert(textExec.telemetry.successfulProvider === "gemini", "Primary provider Gemini selected");
+  // Phase 4 expectation change: previously "succeeded" without any key because
+  // the abstraction FABRICATED provider text. With no key configured the result
+  // must be a truthful failure; with a key it must come from an approved route.
+  const anyKey = Boolean(process.env.GEMINI_API_KEY || process.env.GROQ_API_KEY || process.env.OPENROUTER_API_KEY);
+  if (anyKey) {
+    assert(textExec.success === true, "Query executed successfully");
+    assert(["gemini", "groq", "openrouter"].includes(textExec.telemetry.successfulProvider), "Approved zero-cost provider answered");
+  } else {
+    assert(textExec.success === false && textExec.error === "AI_UNAVAILABLE", "No AI configured: truthful AI_UNAVAILABLE");
+    assert(textExec.telemetry.successfulProvider === null, "No provider claimed when none answered");
+  }
   assert(textExec.telemetry.latencyMs >= 0, "Execution latency tracked");
 
   // ── Test 5: Vision Modality Filtering
@@ -84,8 +95,8 @@ async function runTests() {
     prompt: "Analyze architecture ER diagram",
     requiredModalities: ["text", "vision"],
   });
-  assert(visionExec.success === true, "Vision query succeeded");
-  assert(visionExec.telemetry.successfulProvider === "gemini", "Gemini selected for vision");
+  assert(visionExec.success === false && visionExec.error === "AI_MODALITY_UNSUPPORTED", "Vision request refused: no verified free vision route");
+  assert(visionExec.telemetry.successfulProvider === null, "No provider claimed for an unsupported modality");
   assert(!visionExec.telemetry.chainAttempted.includes("groq"), "Groq correctly excluded from vision attempts");
 
   // ── Test 6: Controlled Local Provider Execution (When Explicitly Configured)
@@ -103,8 +114,12 @@ async function runTests() {
     allowLocal: true,
     localProvider: enabledLocal,
   });
-  assert(localExec.success === true, "Local query executed");
-  assert(localExec.telemetry.successfulProvider === "local", "Local provider answered query");
+  // Phase 4 expectation change: the local provider never ran a model — it
+  // returned invented text. Production routing no longer accepts a local stub.
+  assert(localExec.telemetry.successfulProvider !== "local", "Local stub is never reported as having answered");
+  let localRefused = false;
+  try { await enabledLocal.generate({ prompt: "x" }); } catch { localRefused = true; }
+  assert(localRefused, "Local provider refuses instead of fabricating inference output");
 
   // ── Test 7: Observability & Zero Secret Leakage
   console.log("\n[TEST 7] Observability safety — No API keys or secrets in telemetry");
