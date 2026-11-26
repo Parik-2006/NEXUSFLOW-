@@ -42,6 +42,7 @@
 
 import mongoose from "mongoose";
 import { archivePlugin } from "../utils/archivePlugin.js";
+import { aiCacheInvalidationPlugin } from "../utils/aiCacheInvalidationPlugin.js";
 
 // ── ProjectContext (Embedded 1:1 inside Project) ─────────────────────────────
 //
@@ -784,5 +785,7 @@ ProjectSchema.pre("save", function (next) {
 
 // Phase 2: recoverable archive — archived documents are hidden from ordinary queries.
 ProjectSchema.plugin(archivePlugin);
+// Phase 4: scoped AI cache invalidation on membership / archive changes.
+ProjectSchema.plugin(aiCacheInvalidationPlugin, { modelName: "Project" });
 
 export default mongoose.model("Project", ProjectSchema);

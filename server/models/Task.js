@@ -47,7 +47,9 @@ const TaskSchema = new mongoose.Schema(
     progress:  { type: Number, default: 0, min: 0, max: 100 }, // progress comparator
 
     // ── Provenance / display metadata ────────────────────────────────────────
-    source:        { type: String, enum: ["ai", "manual"], default: "manual" }, // AI vs Manual badge
+    // Provenance: "ai" = provider-generated (validated), "deterministic" = rule-based
+    // decomposer / fallback (never presented as LLM output), "manual" = user.
+    source:        { type: String, enum: ["ai", "manual", "deterministic"], default: "manual" },
     priorityLabel: { type: String, enum: ["critical", "high", "medium", "low", "CRITICAL", "HIGH", "MEDIUM", "LOW", null], default: null }, // explicit tier (overrides derived)
     category:      { type: String, default: "General" }, // AI project-decomposition group (Planning / Backend / …)
     phase:         { type: String, default: "requirements" }, // Waterfall phase (requirements, design, implementation, testing, deployment, maintenance)

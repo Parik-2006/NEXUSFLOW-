@@ -30,6 +30,7 @@ import {
   validateZeroCostRoute,
   ZeroCostViolationError,
 } from "./omniRoute.js";
+import { untrusted, UNTRUSTED_CONTENT_RULES } from "./ai/contextGuard.js";
 
 // Re-export OmniRoute components for consumers
 export {
@@ -121,7 +122,8 @@ export async function orchestrateCopilotChat({
   let enrichedSystemPrompt = systemPrompt;
   if (userMemory.length > 0) {
     const memoryLines = userMemory.map((m) => `• ${m.key}: ${m.value}`).join("\n");
-    enrichedSystemPrompt += `\n\nCONFIRMED USER CHOICES & MEMORY:\n${memoryLines}`;
+    // Phase 4: user-authored memory is untrusted data, delimited and redacted.
+    enrichedSystemPrompt += `\n\nCONFIRMED USER CHOICES & MEMORY:\n${untrusted("project-memory", memoryLines, 4000)}\n${UNTRUSTED_CONTENT_RULES}`;
   }
 
   // Incorporate unhelpful feedback context into prompt
@@ -149,6 +151,7 @@ export async function orchestrateCopilotChat({
       provider: omniResult.provider,
       model: omniResult.model,
       tokensUsed: omniResult.tokensUsed,
+      status: "ok",
     };
   }
 
@@ -158,9 +161,10 @@ export async function orchestrateCopilotChat({
   );
 
   return {
-    replyText: "AI assistance is currently unavailable as all configured free providers (Gemini, Groq, OpenRouter) are unreachable or rate-limited. Please try again in a few moments.",
+    replyText: omniResult?.message || "AI assistance is currently unavailable. Please try again in a few moments.",
     provider: "none",
-    model: "none",
+    model: null,
+    status: omniResult?.status || "unavailable",
     available: false,
     tokensUsed: { prompt: null, completion: null, total: null },
   };

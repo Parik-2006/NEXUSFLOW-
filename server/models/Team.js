@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import { archivePlugin } from "../utils/archivePlugin.js";
+import { aiCacheInvalidationPlugin } from "../utils/aiCacheInvalidationPlugin.js";
 
 const SkillProfileSchema = new mongoose.Schema(
   {
@@ -146,5 +147,7 @@ TeamSchema.index({ "members.userId": 1 });
 
 // Phase 2: recoverable archive — archived documents are hidden from ordinary queries.
 TeamSchema.plugin(archivePlugin);
+// Phase 4: scoped AI cache invalidation on membership / archive changes.
+TeamSchema.plugin(aiCacheInvalidationPlugin, { modelName: "Team" });
 
 export default mongoose.model("Team", TeamSchema);

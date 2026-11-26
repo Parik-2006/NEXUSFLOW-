@@ -11,6 +11,7 @@ import SkillVerification from "../models/SkillVerification.js";
 import { requireAuth } from "../auth.js";
 import { greedySortTasks, computePriorityScore } from "../algorithms/greedyScheduler.js";
 import { recomputeDependencyMetrics } from "../services/taskGraphService.js";
+import { UNTRUSTED_CONTENT_RULES } from "../services/ai/contextGuard.js";
 import { assignTasksToMembers } from "../algorithms/branchAndBound.js";
 import { buildGraph, dfs, bfs, topologicalSort as topoSortGraph, executionWaves } from "../algorithms/graphTraversal.js";
 import { solveKnapsack } from "../algorithms/knapsack.js";
@@ -916,29 +917,32 @@ function buildTaskPayload(seed, dependentCount = 0) {
 }
 
 // ── OmniRoute helper: call with timeout and structured JSON response ───────────
+// Phase 4: one bounded deadline (no separate unenforced timer), scope and
+// client-disconnect cancellation come from the request context; output is
+// parsed with the strict structured-output parser (no repair by guessing).
 async function callOmniRouteStructured(systemPrompt, userMessage, timeoutMs = 20_000) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const { omniRouteGenerate } = await import("../services/omniRoute.js");
+    const { parseModelJson } = await import("../services/ai/structuredOutput.js");
     const result = await omniRouteGenerate({
-      systemPrompt,
+      systemPrompt: `${systemPrompt}
+
+${UNTRUSTED_CONTENT_RULES}`,
       prompt: userMessage,
       responseFormat: "json_object",
       temperature: 0.3,
       maxTokens: 1200,
-      timeoutMs,
+      deadlineMs: timeoutMs,
+      operation: "task_advisor",
     });
     if (!result || !result.content) return null;
     try {
-      return JSON.parse(result.content);
+      return parseModelJson(result.content);
     } catch {
       return null;
     }
   } catch {
     return null;
-  } finally {
-    clearTimeout(timer);
   }
 }
 

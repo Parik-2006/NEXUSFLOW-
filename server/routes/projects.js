@@ -2552,9 +2552,13 @@ router.post("/projects/:projectId/ai/chat", requireAuth, async (req, res) => {
     const project = await findProject(req.params.projectId, res, req.user);
     if (!project) return;
 
-    const { message, conversationId } = req.body ?? {};
+    const { message, conversationId, clientRequestId } = req.body ?? {};
     if (!message || !String(message).trim()) {
       return res.status(400).json({ error: "Message content is required" });
+    }
+    if (String(message).length > 8000) return res.status(413).json({ error: "Message is too long.", code: "MESSAGE_TOO_LONG" });
+    if (clientRequestId !== undefined && !(typeof clientRequestId === "string" && /^[A-Za-z0-9._:-]{8,64}$/.test(clientRequestId))) {
+      return res.status(400).json({ error: "Invalid clientRequestId.", code: "INVALID_REQUEST_ID" });
     }
 
     const response = await chatWithProjectAdvisor({
@@ -2562,6 +2566,7 @@ router.post("/projects/:projectId/ai/chat", requireAuth, async (req, res) => {
       conversationId,
       message,
       user: req.user,
+      clientRequestId,
     });
 
     res.json({

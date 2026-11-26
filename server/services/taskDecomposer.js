@@ -489,6 +489,10 @@ export async function decomposeTasksWithContext(options = {}) {
   }
 
   let rawTasks = [];
+  // Phase 4 provenance: "ai" only for validated provider output.
+  let provenance = "deterministic";
+  let generationStatus = "deterministic_fallback";
+  let rejectedItems = [];
 
   try {
     const systemPrompt = `You are a Principal Technical Lead and Task Decomposer in NEXUSFLOW 2.0.
@@ -548,18 +552,40 @@ CRITICAL RULES:
         responseFormat: "json_object",
         temperature: 0.2,
         maxTokens: 2500,
+        operation: "task_decomposition",
+        expensive: true,
       });
 
       if (omniResult && omniResult.content) {
-        let clean = omniResult.content.replace(/^```json\s*/i, "").replace(/\s*```$/i, "").trim();
-        const parsed = JSON.parse(clean);
-        rawTasks = validateDecomposedTasks(parsed);
+        // Strict structured validation (Phase 4): unexpected fields, roles,
+        // assignees, foreign ids, negative / non-finite effort and oversized
+        // payloads are rejected item by item; nothing is guessed.
+        const { parseModelJson, validateTaskDecomposition } = await import("./ai/structuredOutput.js");
+        const strict = validateTaskDecomposition(parseModelJson(omniResult.content));
+        rejectedItems = strict.rejected;
+        // dependsOnTitles may only reference this batch or existing workspace tasks.
+        const known = new Set([
+          ...strict.tasks.map((t) => normalizeTaskTitle(t.title)),
+          ...(context.existingTasks || []).map((t) => normalizeTaskTitle(t.title)),
+        ]);
+        for (const t of strict.tasks) t.dependsOnTitles = t.dependsOnTitles.filter((d) => known.has(normalizeTaskTitle(d)));
+        rawTasks = validateDecomposedTasks({ tasks: strict.tasks });
+        if (rawTasks.length) {
+          provenance = "ai";
+          generationStatus = "provider";
+        } else {
+          rawTasks = generateHeuristicProjectTasks(context, { mode, phase, focusedTask });
+          generationStatus = "invalid_ai_output_deterministic_fallback";
+        }
       } else {
         rawTasks = generateHeuristicProjectTasks(context, { mode, phase, focusedTask });
+        generationStatus = `ai_${omniResult?.status || "unavailable"}_deterministic_fallback`;
       }
     } catch (err) {
-      console.warn("[taskDecomposer] OmniRoute generation failed, using heuristic fallback:", err.message);
+      console.warn("[taskDecomposer] AI output rejected or unavailable; deterministic fallback:", err.code || err.name);
       rawTasks = generateHeuristicProjectTasks(context, { mode, phase, focusedTask });
+      provenance = "deterministic";
+      generationStatus = "invalid_ai_output_deterministic_fallback";
     }
 
   if (previewOnly) {
@@ -569,6 +595,9 @@ CRITICAL RULES:
       preview: true,
       taskCount: rawTasks.length,
       tasks: rawTasks,
+      source: provenance,
+      generationStatus,
+      rejectedItems: rejectedItems.length,
       contextHighlights: {
         domain: context.domain,
         acceptedDecisionsCount: context.acceptedDecisions?.length || 0,
@@ -583,6 +612,7 @@ CRITICAL RULES:
     mode,
     taskId,
     focusedTaskId: context.focusedTaskId || taskId,
+    provenance,
   });
 }
 
@@ -747,7 +777,7 @@ export async function persistGeneratedTasks(teamId, projectId, proposedTasks, op
       estimatedHours: pTask.estimatedHours,
       businessValue: pTask.businessValue,
       skillWeights: pTask.skillWeights,
-      source: "ai",
+      source: options.provenance === "ai" ? "ai" : "deterministic", // Phase 4 provenance
       status: "todo",
       dependencies: [],
       ...(options.user && mongoose.isValidObjectId(options.user.id) ? { createdBy: options.user.id } : {}),

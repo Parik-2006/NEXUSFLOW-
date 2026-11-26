@@ -144,6 +144,9 @@ export function toActionableTitle(raw) {
 }
 
 export function registerAiOrchestrator(io, socket) {
+  // Phase 4: cancel in-flight AI work for this socket when it disconnects.
+  socket.data.aiAbort = new AbortController();
+  socket.on("disconnect", () => socket.data.aiAbort?.abort(new DOMException("socket disconnected", "AbortError")));
   socket.on("chat:message", async (payload) => {
     const { teamId, text } = payload && typeof payload === "object" ? payload : {};
     if (!teamId || typeof text !== "string" || !text.trim() || text.length > 4000) return;
@@ -431,7 +434,8 @@ async function streamMock(io, socket, teamId, prompt) {
         { title: "Build automated test suite and CI pipeline", category: "Testing", urgency: 3, impact: 3, estimatedHours: 4, businessValue: 6 },
       ];
 
-  io.to(`team:${teamId}`).emit("chat:stream", { id: `ai_${Date.now()}_0`, text: `Decomposing project into ${seeds.length} tasks across ${new Set(seeds.map((s) => s.category)).size} phases…` });
+  // Provenance (Phase 4): this is the deterministic decomposer, never an LLM.
+  io.to(`team:${teamId}`).emit("chat:stream", { id: `ai_${Date.now()}_0`, source: "deterministic", text: `[Deterministic planner] Decomposing project into ${seeds.length} tasks across ${new Set(seeds.map((s) => s.category)).size} phases…` });
 
   const newTaskIds = [];
   let lastCategory = "";
@@ -448,7 +452,7 @@ async function streamMock(io, socket, teamId, prompt) {
       teamId, title: s.title, category: s.category,
       urgency: s.urgency, impact: s.impact,
       estimatedHours: s.estimatedHours, businessValue: s.businessValue,
-      description: s.description ?? "", source: "ai",
+      description: s.description ?? "", source: "deterministic",
     });
     await Team.updateOne({ _id: teamId }, { $inc: { taskCount: 1 } });
     io.to(`team:${teamId}`).emit("task:created", task.toObject());
@@ -503,22 +507,41 @@ async function streamFromOmniRoute(io, socket, teamId, prompt) {
     messages: [{ role: "user", content: prompt }],
     temperature: 0.3,
     maxTokens: 1000,
+    operation: "chat_task_decomposition",
+    scope: { userId: socket.data.user?.id, teamId: String(teamId) },
+    signal: socket.data.aiAbort?.signal,
   });
 
   if (!omniResult || !omniResult.content) {
+    const status = omniResult?.status;
+    // Truthful states (Phase 4); never fabricate an AI answer. Rate-limited,
+    // canceled and policy-rejected requests create nothing.
+    if (status === "rate_limited" || status === "canceled" || status === "policy_rejected") {
+      if (status !== "canceled") {
+        socket.emit("chat:stream", { id: `ai_status_${Date.now()}`, source: "system", status, text: omniResult.message, retryAfterMs: omniResult.retryAfterMs ?? null });
+      }
+      return [];
+    }
+    io.to(`team:${teamId}`).emit("chat:stream", { id: `ai_status_${Date.now()}`, source: "system", status: status || "unavailable", text: omniResult?.message || "AI unavailable." });
     return streamMock(io, socket, teamId, prompt);
   }
 
-  const lines = omniResult.content.split("\n");
-  for (const line of lines) {
-    if (line.trim()) {
-      io.to(`team:${teamId}`).emit("chat:stream", { id: `ai_${Date.now()}`, text: line + "\n" });
-    }
+  // Structured validation (Phase 4): bounded (25), de-duplicated, sanitised
+  // titles; nothing is persisted when the output yields no valid task.
+  const { validateTitleLines } = await import("../services/ai/structuredOutput.js");
+  let titles = [];
+  try { titles = validateTitleLines(omniResult.content).map((s) => toActionableTitle(s)).filter(Boolean); } catch { titles = []; }
+  titles = [...new Set(titles)].slice(0, 25);
+  if (!titles.length) {
+    io.to(`team:${teamId}`).emit("chat:stream", { id: `ai_status_${Date.now()}`, source: "system", status: "invalid_output", text: "The AI response could not be turned into valid tasks; nothing was created." });
+    return [];
+  }
+  for (const t of titles) {
+    io.to(`team:${teamId}`).emit("chat:stream", { id: `ai_${Date.now()}`, source: "provider", provider: omniResult.provider, model: omniResult.model, text: t + "\n" });
   }
 
   const newTaskIds = [];
-  const rawTitles = omniResult.content.split("\n").map((s) => toActionableTitle(s)).filter(Boolean);
-  for (const title of rawTitles) {
+  for (const title of titles) {
     const { urgency, impact } = estimatePriority(title);
     const task = await Task.create({ teamId, title, urgency, impact, source: "ai" });
     await Team.updateOne({ _id: teamId }, { $inc: { taskCount: 1 } });

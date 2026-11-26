@@ -1174,7 +1174,7 @@ What specific technical question would you like to explore for this project?`;
 }
 
 // ── 7. Project-Aware AI Chat Advisor Main Function ────────────────────────────
-export async function chatWithProjectAdvisor({ projectId, conversationId, message, user }) {
+export async function chatWithProjectAdvisor({ projectId, conversationId, message, user, clientRequestId = null }) {
   if (!projectId || !mongoose.isValidObjectId(projectId)) {
     throw new Error("Valid projectId is required");
   }
@@ -1211,6 +1211,20 @@ export async function chatWithProjectAdvisor({ projectId, conversationId, messag
       status: "active",
       startedBy: userId,
     });
+  }
+
+  // Phase 4 idempotency: a retried request (same clientRequestId) returns the
+  // already-persisted pair instead of duplicating the message or the provider call.
+  if (clientRequestId) {
+    const prior = await AIMessage.findOne({ conversationId: conversation._id, role: "user", clientRequestId }).lean();
+    if (prior) {
+      const reply = await AIMessage.findOne({ replyTo: prior._id }).lean();
+      return {
+        success: true, conversationId: conversation._id, deduplicated: true,
+        status: reply?.status || "in_progress", provider: reply?.provider || null,
+        userMessage: prior, assistantMessage: reply || null,
+      };
+    }
   }
 
   // 2. Fetch recent conversation history (last 12 messages for context)
@@ -1270,6 +1284,7 @@ export async function chatWithProjectAdvisor({ projectId, conversationId, messag
       intent: detectedIntent,
     },
     sentBy: userId,
+    clientRequestId: clientRequestId || null,
   });
 
   // 7. Generate Phase 6 Guidance snapshot for full grounding
@@ -1324,7 +1339,7 @@ CRITICAL RULES:
 7. Format cleanly with markdown.`;
 
   // 9. Run AI Orchestrator with 3-tier fallback (OpenAI -> Gemini -> Deterministic)
-  const { replyText, provider, tokensUsed } = await orchestrateCopilotChat({
+  const { replyText, provider, model, tokensUsed, status: aiStatus } = await orchestrateCopilotChat({
     projectContext,
     systemPrompt: advisorSystemPrompt,
     conversationHistory: chronologicalHistory,
@@ -1341,7 +1356,11 @@ CRITICAL RULES:
     projectId,
     role: "assistant",
     content: replyText,
-    provider: provider || "deterministic",
+    // Truthful provenance (Phase 4): real provider/model only when a provider answered.
+    provider: provider || "none",
+    model: provider && provider !== "none" ? model || null : null,
+    status: aiStatus || (provider && provider !== "none" ? "ok" : "unavailable"),
+    replyTo: userMsgDoc._id,
     contextSnapshot: {
       phase: projectContext.currentPhase,
       domain: projectContext.domain,
@@ -1360,7 +1379,8 @@ CRITICAL RULES:
     success: true,
     conversationId: conversation._id,
     intent: detectedIntent,
-    provider: provider || "deterministic",
+    status: assistantMsgDoc.status,
+    provider: provider || "none",
     userMessage: userMsgDoc,
     assistantMessage: assistantMsgDoc,
   };

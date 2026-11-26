@@ -807,6 +807,7 @@ async function tryGenerateAI(skill, difficulty) {
         `Return strict JSON: { "questions": [ { "question": "...", "options": ["A","B","C","D"], "correctIndex": 0-3, "explanation": "..." } ] }`,
       responseFormat: "json_object",
       maxTokens: 1500,
+      operation: "skill_quiz",
     });
     let parsed = null;
     if (typeof result?.content === "string") {
@@ -816,7 +817,11 @@ async function tryGenerateAI(skill, difficulty) {
       } catch {}
     }
     parsed = parsed || result?.data;
-    if (validateQuiz(parsed)) return parsed;
+    // Phase 4: strict schema (exact fields, distinct options, bounded text).
+    if (validateQuiz(parsed)) {
+      const { validateQuizOutput } = await import("../services/ai/structuredOutput.js");
+      try { return validateQuizOutput(parsed); } catch { return null; }
+    }
   } catch {
     // swallow — fallback below
   }

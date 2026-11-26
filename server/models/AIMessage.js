@@ -107,6 +107,16 @@ const AIMessageSchema = new mongoose.Schema(
       default: "deterministic",
     },
 
+    // ── Phase 4 provenance & integrity ────────────────────────────────────────
+    // model: the provider model that actually produced the text (null otherwise)
+    // status: outcome of the AI request for assistant messages
+    // clientRequestId: idempotency key for user messages (retries never duplicate)
+    // replyTo: the user message this assistant message answers
+    model:           { type: String, default: null, maxlength: 120 },
+    status:          { type: String, enum: ["ok", "unavailable", "rate_limited", "quota_exhausted", "deadline", "canceled", "policy_rejected", "invalid_request", "failed", null], default: null },
+    clientRequestId: { type: String, default: null, maxlength: 64 },
+    replyTo:         { type: mongoose.Schema.Types.ObjectId, ref: "AIMessage", default: null },
+
     // ── User Feedback ─────────────────────────────────────────────────────────
     // Direct feedback (helpful / unhelpful) from user to adjust context memory
     feedback: {
@@ -132,5 +142,11 @@ AIMessageSchema.index({ conversationId: 1, createdAt: 1 });
 
 // All messages in a project (for search / audit, Phase 2+)
 AIMessageSchema.index({ projectId: 1, createdAt: 1 });
+// Idempotency: one user message per (conversation, client request id).
+AIMessageSchema.index(
+  { conversationId: 1, role: 1, clientRequestId: 1 },
+  { unique: true, partialFilterExpression: { clientRequestId: { $type: "string" } } }
+);
+AIMessageSchema.index({ replyTo: 1 });
 
 export default mongoose.model("AIMessage", AIMessageSchema);
