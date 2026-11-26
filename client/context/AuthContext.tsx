@@ -3,6 +3,11 @@ import { Platform } from "react-native";
 import { getItem, setItem, deleteItem } from "../utils/storage";
 import { API_BASE_URL } from "../utils/api";
 import { disconnectSocket } from "../services/socket";
+import * as Crypto from "expo-crypto";
+import * as WebBrowser from "expo-web-browser";
+import { parseNativeCallback, base64UrlFromBytes, base64ToBase64Url, NATIVE_CALLBACK_PATH } from "../utils/googleNativeAuth";
+
+const NATIVE_SCHEME = "nexusflow"; // app.json "scheme"; must match GOOGLE_NATIVE_REDIRECT_SCHEME
 
 const API = API_BASE_URL;
 const TOKEN_KEY = "nf_jwt";
@@ -160,9 +165,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // ── Google sign-in (Phase 2): PKCE-style verifier + one-time exchange code ──
   const startGoogleSignIn = useCallback(async (redirectPath: string = "/") => {
+    if (Platform.OS !== "web") {
+      // Phase 4 native flow (iOS / Android development or production builds):
+      // CSPRNG verifier (expo-crypto) kept in SecureStore; auth session returns
+      // only to <scheme>://auth/callback; the code is redeemed with the verifier.
+      const verifier = base64UrlFromBytes(Crypto.getRandomBytes(32));
+      const challenge = base64ToBase64Url(
+        await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, verifier, { encoding: Crypto.CryptoEncoding.BASE64 })
+      );
+      await setItem(GOOGLE_VERIFIER_KEY, verifier);
+      const q = new URLSearchParams({ client_challenge: challenge, redirect: redirectPath, platform: "native" });
+      const result = await WebBrowser.openAuthSessionAsync(`${API}/api/auth/google?${q.toString()}`, `${NATIVE_SCHEME}://${NATIVE_CALLBACK_PATH}`);
+      if (result.type !== "success") {
+        await deleteItem(GOOGLE_VERIFIER_KEY);
+        throw new Error("Google sign-in was cancelled.");
+      }
+      const parsed = parseNativeCallback(result.url, NATIVE_SCHEME);
+      if (parsed.kind === "code") {
+        await completeGoogleSignIn(parsed.code);
+        return;
+      }
+      await deleteItem(GOOGLE_VERIFIER_KEY);
+      throw new Error(parsed.kind === "error" ? `Google sign-in failed (${parsed.error}).` : "Google sign-in returned an unexpected response.");
+    }
     const subtle = (globalThis as any).crypto?.subtle;
-    if (Platform.OS !== "web" || !subtle || typeof window === "undefined") {
-      throw new Error("Google sign-in is currently available in the web app.");
+    if (!subtle || typeof window === "undefined") {
+      throw new Error("Google sign-in is not supported in this browser.");
     }
     const bytes = new Uint8Array(32);
     (globalThis as any).crypto.getRandomValues(bytes);

@@ -64,7 +64,18 @@ function readCookie(req, name) {
   return "";
 }
 
-function redirectWithError(res, code) {
+// Phase 4 (native Google sign-in): the ONLY non-web destination is the app's
+// own deep link, built from a validated server-side scheme (never from the
+// request), e.g. nexusflow://auth/callback.
+export function nativeCallbackBase(env = process.env) {
+  const scheme = String(env.GOOGLE_NATIVE_REDIRECT_SCHEME || "nexusflow").trim().toLowerCase();
+  if (!/^[a-z][a-z0-9+.-]{1,31}$/.test(scheme) || ["http", "https", "javascript", "data", "file"].includes(scheme)) return null;
+  return `${scheme}://auth/callback`;
+}
+
+function redirectWithError(res, code, platform = "web") {
+  const native = platform === "native" ? nativeCallbackBase() : null;
+  if (native) return res.redirect(`${native}?auth_error=${encodeURIComponent(code)}`);
   return res.redirect(`${getFrontendUrl()}/login?auth_error=${encodeURIComponent(code)}`);
 }
 
@@ -81,6 +92,10 @@ router.get("/auth/google", authLimits.oauthIp, async (req, res) => {
       return res.status(400).json({ error: "Missing or invalid client_challenge." });
     }
 
+    const platform = req.query.platform === "native" ? "native" : "web";
+    if (platform === "native" && !nativeCallbackBase()) {
+      return res.status(503).json({ error: "Native Google sign-in is not configured on the server." });
+    }
     const state = randomToken(32);
     const nonce = randomToken(24);
     const codeVerifier = randomToken(48);
@@ -93,6 +108,7 @@ router.get("/auth/google", authLimits.oauthIp, async (req, res) => {
       nonce,
       browserBindingHash: sha256hex(binding),
       clientChallenge,
+      clientPlatform: platform,
       redirectPath: sanitizeRedirectPath(req.query.redirect),
       expiresAt: new Date(Date.now() + STATE_TTL_MS),
     });
@@ -127,11 +143,18 @@ router.get("/auth/google", authLimits.oauthIp, async (req, res) => {
 router.get("/auth/google/callback", authLimits.oauthIp, async (req, res) => {
   const bindingCookie = readCookie(req, BIND_COOKIE);
   res.clearCookie(BIND_COOKIE, { path: "/api/auth/google" });
+  let platform = "web";
   try {
-    if (req.query.error) return redirectWithError(res, req.query.error === "access_denied" ? "cancelled" : "google_error");
+    // Read (not consume) the state's platform so error redirects reach the
+    // right client; the state is still consumed atomically below.
+    if (req.query.state) {
+      const peek = await OAuthState.findOne({ state: String(req.query.state), provider: "google" }).select("clientPlatform").lean();
+      if (peek?.clientPlatform === "native") platform = "native";
+    }
+    if (req.query.error) return redirectWithError(res, req.query.error === "access_denied" ? "cancelled" : "google_error", platform);
     const code = String(req.query.code || "");
     const state = String(req.query.state || "");
-    if (!code || !state) return redirectWithError(res, "missing_code");
+    if (!code || !state) return redirectWithError(res, "missing_code", platform);
 
     // Atomic single-use state consumption (expired / replayed → null).
     const stored = await OAuthState.findOneAndUpdate(
@@ -139,9 +162,9 @@ router.get("/auth/google/callback", authLimits.oauthIp, async (req, res) => {
       { $set: { isConsumed: true, consumedAt: new Date() } },
       { new: false }
     ).select("+codeVerifier");
-    if (!stored) return redirectWithError(res, "invalid_state");
+    if (!stored) return redirectWithError(res, "invalid_state", platform);
     if (!bindingCookie || !safeEqual(sha256hex(bindingCookie), stored.browserBindingHash)) {
-      return redirectWithError(res, "state_mismatch");
+      return redirectWithError(res, "state_mismatch", platform);
     }
 
     const clientId = GOOGLE_CLIENT_ID();
@@ -156,25 +179,25 @@ router.get("/auth/google/callback", authLimits.oauthIp, async (req, res) => {
 
     const googleId = claims.sub;
     const email = String(claims.email || "").toLowerCase().trim();
-    if (!EMAIL_REGEX.test(email)) return redirectWithError(res, "invalid_google_payload");
+    if (!EMAIL_REGEX.test(email)) return redirectWithError(res, "invalid_google_payload", platform);
 
     // ── Account linking (stable subject id first) ─────────────────────────
     let user = await User.findOne({ googleId });
     if (!user) {
       const byEmail = await User.findOne({ email });
       if (byEmail) {
-        if (byEmail.googleId && byEmail.googleId !== googleId) return redirectWithError(res, "email_conflict");
+        if (byEmail.googleId && byEmail.googleId !== googleId) return redirectWithError(res, "email_conflict", platform);
         if (!googleIsAuthoritativeForEmail(claims)) {
           // Google is not this address's provider → no proof of control over
           // the existing password account. User must sign in with password.
-          return redirectWithError(res, "link_requires_password");
+          return redirectWithError(res, "link_requires_password", platform);
         }
         user = await User.findOneAndUpdate(
           { _id: byEmail._id, $or: [{ googleId: "" }, { googleId: null }, { googleId: { $exists: false } }] },
           { $set: { googleId } },
           { new: true }
         );
-        if (!user) return redirectWithError(res, "email_conflict");
+        if (!user) return redirectWithError(res, "email_conflict", platform);
         logger.info("google_oauth:account_linked", { userId: String(user._id) });
       } else {
         user = await User.create({
@@ -196,11 +219,16 @@ router.get("/auth/google/callback", authLimits.oauthIp, async (req, res) => {
       redirectPath: stored.redirectPath || "/",
       expiresAt: new Date(Date.now() + EXCHANGE_TTL_MS),
     });
+    // Delivery target chosen at /auth/google (native = app deep link only).
+    // The code is useless without the verifier held by the initiating client.
+    if (stored.clientPlatform === "native") {
+      return res.redirect(`${nativeCallbackBase()}?auth_code=${encodeURIComponent(exchangeCode)}`);
+    }
     res.redirect(`${getFrontendUrl()}/?auth_code=${encodeURIComponent(exchangeCode)}`);
   } catch (err) {
     const code = err instanceof GoogleAuthError ? err.code : "server_error";
     logger.warn("google_oauth:callback_rejected", { code });
-    redirectWithError(res, code);
+    redirectWithError(res, code, platform);
   }
 });
 

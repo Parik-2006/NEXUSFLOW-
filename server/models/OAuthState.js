@@ -37,7 +37,9 @@ const OAuthStateSchema = new mongoose.Schema(
     codeVerifier: { type: String, default: "", select: false }, // PKCE verifier (server ↔ Google)
     nonce: { type: String, default: "" },                        // OIDC nonce bound to the id_token
     browserBindingHash: { type: String, default: "" },           // SHA-256 of the HttpOnly cookie value
-    clientChallenge: { type: String, default: "" },              // client verifier challenge for /exchange
+    clientChallenge: { type: String, default: "" },
+    // Phase 4: where the one-time exchange code is delivered ("web" | "native").
+    clientPlatform: { type: String, enum: ["web", "native"], default: "web" },              // client verifier challenge for /exchange
     projectId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Project",
