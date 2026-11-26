@@ -22,7 +22,9 @@ import {
   fetchRepoTree,
   fetchFileContent,
   compareCommits,
+  GitHubApiError,
 } from "./githubService.js";
+import { classifyRepoPath, redactSecrets } from "./ai/contextGuard.js";
 import { logger } from "../utils/logger.js";
 
 const EXCLUDED_DIRS = new Set([
@@ -115,156 +117,123 @@ function categorizePath(path) {
   return "other";
 }
 
+export const INDEX_LIMITS = Object.freeze({
+  maxIndexedFiles: 250,      // files recorded in the index
+  maxTreeEntries: 20000,     // tree entries scanned at most
+  maxFileBytes: 1_000_000,   // larger blobs are not listed
+  maxPreviewFiles: 5,        // README / package.json / auth entry previews
+  maxPreviewBytes: 60_000,   // per previewed file
+  maxDepth: 12,              // path depth
+  lockStaleMs: 5 * 60_000,   // a sync older than this is considered abandoned
+});
+
 /**
  * indexRepositoryForProject({ projectId, force, userId })
- * Performs bounded, incremental indexing of a project's connected repository.
+ * Phase 4: atomic duplicate-sync claim, owner-bound credential, incremental
+ * (unchanged commit ⇒ 1 GitHub request, nothing re-downloaded), tree read at
+ * the exact commit SHA, shared sensitive-path exclusions with per-reason
+ * counts, redacted previews, bounded workload and truthful failure states.
+ * Repository code is never executed and dependencies are never installed.
  */
 export async function indexRepositoryForProject({ projectId, force = false, userId = null }) {
-  const integration = await GitHubIntegration.findOne({ projectId, isActive: true })
-    .select("+encryptedToken");
+  const now = new Date();
+  // Atomic claim: concurrent / duplicate syncs for the same project are no-ops.
+  const integration = await GitHubIntegration.findOneAndUpdate(
+    {
+      projectId, isActive: true,
+      $or: [{ syncInProgressSince: null }, { syncInProgressSince: { $lt: new Date(now.getTime() - INDEX_LIMITS.lockStaleMs) } }],
+    },
+    { $set: { syncInProgressSince: now, lastAttemptedSyncAt: now } },
+    { new: true }
+  ).select("+encryptedToken");
 
-  if (!integration || !integration.encryptedToken) {
-    throw new Error("No active GitHub repository connected to this workspace");
+  if (!integration) {
+    const exists = await GitHubIntegration.exists({ projectId, isActive: true });
+    if (!exists) throw new Error("No active GitHub repository connected to this workspace");
+    return { success: false, inProgress: true, message: "A synchronization for this repository is already in progress." };
   }
-
-  // Update status to syncing
-  integration.connectionStatus = "syncing";
-  integration.lastAttemptedSyncAt = new Date();
-  await integration.save();
+  if (!integration.encryptedToken) {
+    await GitHubIntegration.updateOne({ _id: integration._id }, { $set: { syncInProgressSince: null, connectionStatus: "reconnect_required" } });
+    throw new GitHubApiError("CREDENTIAL", "GitHub authorization must be reconnected.");
+  }
+  const cred = { encryptedToken: integration.encryptedToken, userId: String(integration.userId) };
+  const previousStatus = integration.connectionStatus;
 
   try {
     const branch = integration.selectedBranch || integration.defaultBranch || "main";
-    const latestCommit = await fetchLatestCommit(
-      integration.encryptedToken,
-      integration.repoOwner,
-      integration.repoName,
-      branch
-    );
+    const latestCommit = await fetchLatestCommit(cred, integration.repoOwner, integration.repoName, branch);
 
-    // Incremental check: if unchanged commit and not forced, return early with fresh summary
-    if (
-      !force &&
-      integration.lastSyncCommitSha &&
-      integration.lastSyncCommitSha === latestCommit.sha &&
-      !integration.isStale
-    ) {
-      const summary = await fetchRepoSummary(
-        integration.encryptedToken,
-        integration.repoOwner,
-        integration.repoName
-      );
-      integration.cachedSummary = summary;
-      integration.connectionStatus = "connected";
-      integration.lastSyncAt = new Date();
-      await integration.save();
-
-      return {
-        success: true,
-        noop: true,
-        commitSha: latestCommit.sha,
-        message: "Repository index is already up to date.",
-      };
+    // Incremental: unchanged commit ⇒ no tree / content / summary downloads.
+    if (!force && integration.lastSyncCommitSha && integration.lastSyncCommitSha === latestCommit.sha && !integration.isStale) {
+      await GitHubIntegration.updateOne({ _id: integration._id }, {
+        $set: { connectionStatus: "connected", lastSyncAt: new Date(), lastSyncError: "", rateLimitResetAt: null, syncInProgressSince: null },
+      });
+      return { success: true, noop: true, commitSha: latestCommit.sha, message: "Repository index is already up to date." };
     }
 
-    // Fetch repository tree & summary in parallel
+    await GitHubIntegration.updateOne({ _id: integration._id }, { $set: { connectionStatus: "syncing" } });
     const [treeData, summaryData] = await Promise.all([
-      fetchRepoTree(integration.encryptedToken, integration.repoOwner, integration.repoName, branch),
-      fetchRepoSummary(integration.encryptedToken, integration.repoOwner, integration.repoName),
+      fetchRepoTree(cred, integration.repoOwner, integration.repoName, latestCommit.sha),
+      fetchRepoSummary(cred, integration.repoOwner, integration.repoName),
     ]);
 
-    // Filter tree entries safely
-    const rawTree = Array.isArray(treeData.tree) ? treeData.tree : [];
+    const rawTree = (Array.isArray(treeData.tree) ? treeData.tree : []).slice(0, INDEX_LIMITS.maxTreeEntries);
     const validFiles = [];
-    const moduleLocations = {
-      auth: [],
-      api: [],
-      models: [],
-      services: [],
-      components: [],
-      tests: [],
-      config: [],
-    };
+    const excluded = {};
+    const moduleLocations = { auth: [], api: [], models: [], services: [], components: [], tests: [], config: [] };
     const techStackSet = new Set();
+    let skippedForLimit = 0;
 
-    // Scan through files up to 250 items
     for (const item of rawTree) {
-      if (item.type !== "blob") continue;
-      if (isSecretOrBinary(item.path)) continue;
+      if (item.type !== "blob" || typeof item.path !== "string") continue;
+      const reason = classifyRepoPath(item.path) || (isSecretOrBinary(item.path) ? "excluded_pattern" : null)
+        || (item.path.split("/").length > INDEX_LIMITS.maxDepth ? "too_deep" : null)
+        || ((item.size || 0) > INDEX_LIMITS.maxFileBytes ? "too_large" : null);
+      if (reason) { excluded[reason] = (excluded[reason] || 0) + 1; continue; }
+      if (validFiles.length >= INDEX_LIMITS.maxIndexedFiles) { skippedForLimit++; continue; }
 
       const lang = detectLanguage(item.path);
       if (lang !== "Text") techStackSet.add(lang);
-
       const category = categorizePath(item.path);
-      if (category in moduleLocations && moduleLocations[category].length < 15) {
-        moduleLocations[category].push(item.path);
-      }
-
+      if (category in moduleLocations && moduleLocations[category].length < 15) moduleLocations[category].push(item.path);
       validFiles.push({
-        path: item.path,
-        name: item.path.split("/").pop() || item.path,
-        type: "file",
-        size: item.size || 0,
-        sha:  item.sha || "",
-        language: lang,
-        lastModifiedCommit: latestCommit.sha,
-        isRemoved: false,
+        path: item.path, name: item.path.split("/").pop() || item.path, type: "file",
+        size: item.size || 0, sha: item.sha || "", language: lang, lastModifiedCommit: latestCommit.sha, isRemoved: false,
       });
-
-      if (validFiles.length >= 250) break;
     }
 
-    // Inspect critical files (e.g. README.md, package.json, auth entrypoint)
     const priorityFiles = validFiles
-      .filter((f) =>
-        /readme\.md$/i.test(f.path) ||
-        /package\.json$/i.test(f.path) ||
-        moduleLocations.auth.includes(f.path)
-      )
-      .slice(0, 5);
-
+      .filter((f) => /(^|\/)readme\.md$/i.test(f.path) || /(^|\/)package\.json$/i.test(f.path) || moduleLocations.auth.includes(f.path))
+      .slice(0, INDEX_LIMITS.maxPreviewFiles);
     for (const pf of priorityFiles) {
       try {
-        const content = await fetchFileContent(
-          integration.encryptedToken,
-          integration.repoOwner,
-          integration.repoName,
-          pf.path,
-          branch
-        );
-        if (content) {
-          pf.contentSnippet = content.slice(0, 1500);
-          if (/package\.json$/i.test(pf.path)) {
-            try {
-              const pkg = JSON.parse(content);
-              if (pkg.dependencies) {
-                Object.keys(pkg.dependencies).slice(0, 15).forEach((d) => techStackSet.add(d));
-              }
-            } catch {
-              // ignore parse errors
-            }
-          }
+        const content = await fetchFileContent(cred, integration.repoOwner, integration.repoName, pf.path, latestCommit.sha, { maxBytes: INDEX_LIMITS.maxPreviewBytes });
+        if (!content) continue;
+        // Untrusted repository text: secret patterns redacted before storage / AI use.
+        pf.contentSnippet = redactSecrets(content.slice(0, 1500)).text;
+        if (/package\.json$/i.test(pf.path)) {
+          try {
+            const pkg = JSON.parse(content);
+            if (pkg && typeof pkg.dependencies === "object") Object.keys(pkg.dependencies).slice(0, 15).forEach((d) => techStackSet.add(String(d).slice(0, 60)));
+          } catch { /* ignore */ }
         }
       } catch (err) {
-        logger.warn(`[repoIndexing] Could not fetch preview for ${pf.path}: ${err.message}`);
+        if (err?.kind === "RATE_LIMITED" || err?.kind === "AUTH_REVOKED") throw err;
+        logger.warn("[repoIndexing] preview unavailable", { kind: err?.kind || err?.name });
       }
     }
 
-    // Correlate with active project tasks and requirements
     const activeTasks = await Task.find({ projectId }).select("_id title").lean();
     if (activeTasks.length > 0) {
       for (const f of validFiles) {
         const lowerPath = f.path.toLowerCase();
         for (const t of activeTasks) {
           const words = t.title.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
-          if (words.some((w) => lowerPath.includes(w))) {
-            f.relatedTaskIds = [t._id.toString()];
-            break;
-          }
+          if (words.some((w) => lowerPath.includes(w))) { f.relatedTaskIds = [t._id.toString()]; break; }
         }
       }
     }
 
-    // Generate architecture summary text
     const techStackList = Array.from(techStackSet).slice(0, 18);
     const archSummary = [
       `Repository: ${integration.repoFullName} (${summaryData.visibility || "public"})`,
@@ -276,56 +245,34 @@ export async function indexRepositoryForProject({ projectId, force = false, user
       `  - Data Models: ${moduleLocations.models.slice(0, 6).join(", ") || "None detected"}`,
       `  - Services: ${moduleLocations.services.slice(0, 6).join(", ") || "None detected"}`,
       `  - Tests: ${moduleLocations.tests.slice(0, 4).join(", ") || "None detected"}`,
+      `Index coverage: ${validFiles.length} files indexed${skippedForLimit ? `, ${skippedForLimit} beyond the ${INDEX_LIMITS.maxIndexedFiles}-file limit` : ""}${treeData.truncated ? ", GitHub tree truncated" : ""}; ${Object.values(excluded).reduce((a, b) => a + b, 0)} excluded (sensitive / binary / generated / oversized).`,
     ].join("\n");
 
-    // Upsert RepositoryIndex model
     await RepositoryIndex.findOneAndUpdate(
       { projectId },
       {
         $set: {
-          teamId:               integration.teamId,
-          repoFullName:         integration.repoFullName,
-          defaultBranch:        integration.defaultBranch,
-          selectedBranch:       branch,
-          lastIndexedCommitSha: latestCommit.sha,
-          lastIndexedAt:        new Date(),
-          status:               "indexed",
-          errorMessage:         "",
-          architectureSummary:  archSummary,
-          techStack:            techStackList,
-          keyModuleLocations:   moduleLocations,
-          files:                validFiles,
-          commits:              summaryData.recentCommitsList || [],
-          pullRequests:         summaryData.pullRequestsList || [],
-          openIssues:           summaryData.openIssuesList || [],
-          branches:             summaryData.branches || [branch],
-          totalFiles:           validFiles.length,
-          indexingVersion:      "4.0.0",
-          isActive:             true,
+          teamId: integration.teamId, repoFullName: integration.repoFullName,
+          defaultBranch: integration.defaultBranch, selectedBranch: branch,
+          lastIndexedCommitSha: latestCommit.sha, lastIndexedAt: new Date(), status: "indexed", errorMessage: "",
+          architectureSummary: archSummary, techStack: techStackList, keyModuleLocations: moduleLocations,
+          files: validFiles, commits: summaryData.recentCommitsList || [], pullRequests: summaryData.pullRequestsList || [],
+          openIssues: summaryData.openIssuesList || [], branches: summaryData.branches || [branch],
+          totalFiles: validFiles.length, indexingVersion: "4.1.0", isActive: true,
         },
       },
       { upsert: true, new: true }
     );
 
-    // Sync persistent ProjectMemory entry
     try {
       await ProjectMemory.findOneAndUpdate(
-        {
-          projectId,
-          category: "CODE_INTELLIGENCE",
-          source: "github",
-        },
+        { projectId, category: "CODE_INTELLIGENCE", source: "github" },
         {
           $set: {
             teamId: integration.teamId,
             title: `GitHub Architecture & Code Intelligence (${integration.repoFullName})`,
-            content: archSummary,
-            scope: "persistent",
-            status: "active",
-            isStale: false,
-            commitSha: latestCommit.sha,
-            confidence: 1.0,
-            lastVerifiedAt: new Date(),
+            content: archSummary, scope: "persistent", status: "active", isStale: false,
+            commitSha: latestCommit.sha, confidence: 1.0, lastVerifiedAt: new Date(),
             evidence: [summaryData.repoUrl || `https://github.com/${integration.repoFullName}`],
             tags: ["github", "repository", "architecture", latestCommit.sha.slice(0, 7)],
             createdBy: userId || integration.userId,
@@ -334,44 +281,38 @@ export async function indexRepositoryForProject({ projectId, force = false, user
         { upsert: true }
       );
     } catch (memErr) {
-      logger.warn(`[repoIndexing] ProjectMemory sync warning: ${memErr.message}`);
+      logger.warn("[repoIndexing] ProjectMemory sync warning", { category: memErr?.name });
     }
 
-    // Save integration record checkpoint
-    integration.connectionStatus = "connected";
-    integration.lastSyncAt = new Date();
-    integration.lastSyncCommitSha = latestCommit.sha;
-    integration.lastSyncError = "";
-    integration.syncErrorDetails = null;
-    integration.isStale = false;
-    integration.cachedSummary = summaryData;
-    integration.cacheExpiresAt = new Date(Date.now() + 5 * 60_000);
-    await integration.save();
+    await GitHubIntegration.updateOne({ _id: integration._id }, {
+      $set: {
+        connectionStatus: "connected", lastSyncAt: new Date(), lastSyncCommitSha: latestCommit.sha, lastSyncError: "",
+        syncErrorDetails: null, isStale: false, rateLimitResetAt: null, cachedSummary: summaryData,
+        cacheExpiresAt: new Date(Date.now() + 5 * 60_000), syncInProgressSince: null,
+      },
+    });
 
     return {
-      success: true,
-      commitSha: latestCommit.sha,
-      filesIndexed: validFiles.length,
-      techStack: techStackList,
-      summary: summaryData,
+      success: true, commitSha: latestCommit.sha, filesIndexed: validFiles.length, excluded,
+      skippedForLimit, treeTruncated: Boolean(treeData.truncated), techStack: techStackList, summary: summaryData,
     };
   } catch (err) {
-    logger.error("[repoIndexing] Synchronization error", { error: err.message, stack: err.stack });
-    integration.connectionStatus = "error";
-    integration.lastSyncError = err.message;
-    integration.syncErrorDetails = { message: err.message, date: new Date() };
-    await integration.save();
-
-    // Preserve previously indexed files while marking index status as error
+    const kind = err?.kind;
+    const status = kind === "AUTH_REVOKED" || kind === "CREDENTIAL" ? "reconnect_required"
+      : kind === "RATE_LIMITED" ? "rate_limited"
+      : kind === "EMPTY_REPOSITORY" ? previousStatus || "connected" : "error";
+    logger.error("[repoIndexing] Synchronization error", { kind: kind || err?.name });
+    await GitHubIntegration.updateOne({ _id: integration._id }, {
+      $set: {
+        connectionStatus: status, lastSyncError: err?.message || "Synchronization failed.",
+        syncErrorDetails: { kind: kind || "UNKNOWN", date: new Date() },
+        rateLimitResetAt: kind === "RATE_LIMITED" ? err.resetAt || null : null,
+        syncInProgressSince: null,
+      },
+    });
     try {
-      await RepositoryIndex.updateOne(
-        { projectId, isActive: true },
-        { $set: { status: "error", errorMessage: err.message } }
-      );
-    } catch (idxUpdateErr) {
-      logger.warn(`[repoIndexing] Failed to update RepositoryIndex error status: ${idxUpdateErr.message}`);
-    }
-
+      await RepositoryIndex.updateOne({ projectId, isActive: true }, { $set: { status: "error", errorMessage: err?.message || "Synchronization failed." } });
+    } catch { /* keep previous index */ }
     throw err;
   }
 }

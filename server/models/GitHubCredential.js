@@ -42,6 +42,11 @@ const GitHubCredentialSchema = new mongoose.Schema(
       type: [String],
       default: ["repo", "read:user"],
     },
+    // Phase 4: set when a legacy / undecryptable credential needs re-authorization.
+    reconnectRequired: {
+      type: Boolean,
+      default: false,
+    },
     authorizedAt: {
       type: Date,
       default: Date.now,

@@ -47,6 +47,41 @@ import { authorizeProjectAccess } from "../services/accessControlService.js";
 
 const router = express.Router();
 
+// ── Phase 4 helpers ───────────────────────────────────────────────────────────
+/** The requesting user's OWN credential reference (never another member's). */
+async function ownCredentialRef(userId) {
+  const credential = await GitHubCredential.findOne({ userId }).select("+encryptedToken").lean();
+  if (credential?.encryptedToken) return { encryptedToken: credential.encryptedToken, userId: String(credential.userId) };
+  const own = await GitHubIntegration.findOne({ userId }).select("+encryptedToken").sort({ updatedAt: -1 }).lean();
+  return own?.encryptedToken ? { encryptedToken: own.encryptedToken, userId: String(own.userId) } : null;
+}
+
+const GH_STATUS = { AUTH_REVOKED: 401, CREDENTIAL: 409, FORBIDDEN: 403, NOT_FOUND: 404, RATE_LIMITED: 429, EMPTY_REPOSITORY: 409, INVALID_REQUEST: 400, TRANSIENT: 502 };
+const GH_CODE = { AUTH_REVOKED: "GITHUB_RECONNECT_REQUIRED", CREDENTIAL: "GITHUB_RECONNECT_REQUIRED", FORBIDDEN: "GITHUB_FORBIDDEN", NOT_FOUND: "GITHUB_NOT_FOUND", RATE_LIMITED: "GITHUB_RATE_LIMITED", EMPTY_REPOSITORY: "GITHUB_EMPTY_REPOSITORY", INVALID_REQUEST: "GITHUB_INVALID_REQUEST", TRANSIENT: "GITHUB_UNAVAILABLE" };
+
+/** Sanitised GitHub error response (never raw upstream bodies or stack traces). */
+function sendGitHubError(res, err, fallback, fallbackStatus = 500) {
+  if (err?.name === "GitHubApiError") {
+    if (err.kind === "RATE_LIMITED") {
+      const secs = err.retryAfterMs ? Math.ceil(err.retryAfterMs / 1000) : err.resetAt ? Math.max(1, Math.ceil((err.resetAt - Date.now()) / 1000)) : 60;
+      res.set("Retry-After", String(secs));
+    }
+    return res.status(GH_STATUS[err.kind] || fallbackStatus).json({ error: err.message, code: GH_CODE[err.kind] || "GITHUB_ERROR", resetAt: err.resetAt || undefined });
+  }
+  logger.error(`[github] ${fallback}`, { category: err?.name });
+  return res.status(fallbackStatus).json({ error: fallback, code: "GITHUB_ERROR" });
+}
+
+/** Record truthful integration state after a GitHub failure. */
+async function markIntegrationFailure(projectId, err) {
+  if (err?.name !== "GitHubApiError") return;
+  const $set = { lastAttemptedSyncAt: new Date(), lastSyncError: err.message };
+  if (err.kind === "AUTH_REVOKED" || err.kind === "CREDENTIAL") $set.connectionStatus = "reconnect_required";
+  else if (err.kind === "RATE_LIMITED") { $set.connectionStatus = "rate_limited"; $set.rateLimitResetAt = err.resetAt || null; }
+  else if (err.kind === "NOT_FOUND") $set.connectionStatus = "error";
+  await GitHubIntegration.updateOne({ projectId, isActive: true }, { $set }).catch(() => {});
+}
+
 /**
  * Helper: verify that the user is authorized to access the given project/workspace.
  *
@@ -185,14 +220,15 @@ router.get("/github/auth/callback", async (req, res) => {
       config.redirectUri
     );
 
-    const encryptedToken = encryptToken(accessToken);
+    // Phase 4 (D-30): AES-256-GCM envelope bound to the authorizing user.
+    const encryptedToken = encryptToken(accessToken, { userId: String(storedState.userId) });
 
     // Fetch user profile from GitHub
     let ghUser = { login: "", id: "", avatarUrl: "" };
     try {
-      ghUser = await fetchGitHubUser(encryptedToken);
+      ghUser = await fetchGitHubUser({ plaintextToken: accessToken });
     } catch (userErr) {
-      logger.warn(`Could not fetch GitHub user profile: ${userErr.message}`);
+      logger.warn("Could not fetch GitHub user profile", { kind: userErr.kind || userErr.name });
     }
 
     // Persist decoupled user-level credential record
@@ -205,6 +241,7 @@ router.get("/github/auth/callback", async (req, res) => {
           githubId: ghUser.id,
           avatarUrl: ghUser.avatarUrl,
           authorizedAt: new Date(),
+          reconnectRequired: false,
         },
       },
       { upsert: true, new: true }
@@ -213,10 +250,12 @@ router.get("/github/auth/callback", async (req, res) => {
     // If a specific project was targeted and that project ALREADY has a connected repo,
     // update the integration's encrypted token for ongoing synchronization.
     // NOTE: A workspace is NEVER marked connected to a repository before a repository is explicitly selected!
+    // Phase 4: only the SAME user's own integration may receive the refreshed
+    // token (another member's integration keeps its owner's credential).
     if (storedState.projectId) {
       await GitHubIntegration.updateOne(
-        { projectId: storedState.projectId, isActive: true, repoFullName: { $ne: "" } },
-        { $set: { encryptedToken } }
+        { projectId: storedState.projectId, userId: storedState.userId, isActive: true, repoFullName: { $ne: "" } },
+        { $set: { encryptedToken, connectionStatus: "connected", lastSyncError: "" } }
       );
     }
 
@@ -233,8 +272,10 @@ router.get("/github/auth/callback", async (req, res) => {
 
     res.redirect(`${frontendUrl}${redirectPath}&github_auth=success`);
   } catch (err) {
-    logger.error("GitHub OAuth callback processing failed", { error: err.message });
-    res.redirect(`${frontendUrl}/(tabs)/dashboard?github_error=${encodeURIComponent(err.message || "OAuth exchange failed")}`);
+    logger.error("GitHub OAuth callback processing failed", { category: err?.code || err?.name });
+    // Error code only — never raw upstream/internal messages in a URL.
+    const code = err?.code === "KEY_MISSING" || err?.code === "KEY_INVALID" ? "encryption_not_configured" : "oauth_exchange_failed";
+    res.redirect(`${frontendUrl}/(tabs)/dashboard?github_error=${code}`);
   }
 });
 
@@ -243,21 +284,9 @@ router.get("/github/user/repos", requireAuth, async (req, res) => {
   const userId = req.user._id || req.user.id;
 
   try {
-    // 1. Look up user-level credential
-    let credential = await GitHubCredential.findOne({ userId }).select("+encryptedToken");
-
-    // 2. Backward compatibility fallback: check existing GitHubIntegration for this user
-    if (!credential?.encryptedToken) {
-      const existingIntegration = await GitHubIntegration.findOne({ userId })
-        .select("+encryptedToken")
-        .sort({ updatedAt: -1 });
-
-      if (existingIntegration?.encryptedToken) {
-        credential = existingIntegration;
-      }
-    }
-
-    if (!credential || !credential.encryptedToken) {
+    // Only the requesting user's OWN credential (or own integration) is used.
+    const cred = await ownCredentialRef(userId);
+    if (!cred) {
       return res.status(200).json({
         connected: false,
         authorized: false,
@@ -266,15 +295,14 @@ router.get("/github/user/repos", requireAuth, async (req, res) => {
       });
     }
 
-    const repos = await fetchUserRepos(credential.encryptedToken);
+    const repos = await fetchUserRepos(cred);
     res.json({
       connected: true,
       authorized: true,
       repositories: repos,
     });
   } catch (err) {
-    logger.warn(`Failed to fetch GitHub user repos: ${err.message}`);
-    res.status(500).json({ error: err.message });
+    return sendGitHubError(res, err, "Failed to fetch GitHub repositories");
   }
 });
 
@@ -297,27 +325,23 @@ router.post("/projects/:projectId/github/connect", requireAuth, async (req, res)
   const targetProjectId = project._id;
 
   try {
-    // Retrieve authorized token: check user credential first, then workspace integration
-    let tokenDoc = await GitHubCredential.findOne({ userId }).select("+encryptedToken");
-    if (!tokenDoc?.encryptedToken) {
-      tokenDoc = await GitHubIntegration.findOne({ projectId: targetProjectId }).select("+encryptedToken");
-    }
-    if (!tokenDoc?.encryptedToken) {
-      tokenDoc = await GitHubIntegration.findOne({ userId }).select("+encryptedToken").sort({ updatedAt: -1 });
-    }
-
-    if (!tokenDoc?.encryptedToken) {
+    // Phase 4 security fix: ONLY the requesting user's own credential may be
+    // used. (Previously this fell back to ANY integration of the project, i.e.
+    // another member's GitHub token, to validate and connect a repository.)
+    const cred = await ownCredentialRef(userId);
+    if (!cred) {
       return res.status(401).json({
         error: "No authorized GitHub account found for this user. Please authorize with GitHub before connecting a repository.",
+        code: "GITHUB_NOT_AUTHORIZED",
       });
     }
 
     // Pre-validate repository existence, accessibility, and visibility with upstream GitHub API
     let validatedRepo;
     try {
-      validatedRepo = await validateRepoAccess(tokenDoc.encryptedToken, cleanOwner, cleanName);
+      validatedRepo = await validateRepoAccess(cred, cleanOwner, cleanName);
     } catch (valErr) {
-      return res.status(400).json({ error: valErr.message });
+      return sendGitHubError(res, valErr, "Repository validation failed", 400);
     }
 
     const repoFullName = validatedRepo.fullName;
@@ -345,7 +369,9 @@ router.post("/projects/:projectId/github/connect", requireAuth, async (req, res)
           syncErrorDetails: null,
           disconnectedAt: null,
           disconnectedBy: null,
-          encryptedToken: tokenDoc.encryptedToken,
+          // Same owner (userId) as the credential, so the envelope's
+          // associated data still matches when the integration decrypts it.
+          encryptedToken: cred.encryptedToken,
         },
       },
       { upsert: true, new: true }
@@ -372,7 +398,7 @@ router.post("/projects/:projectId/github/connect", requireAuth, async (req, res)
     });
   } catch (err) {
     logger.error(`Error connecting repo to project ${projectId}: ${err.message}`);
-    res.status(500).json({ error: err.message });
+    return sendGitHubError(res, err, "Failed to connect repository");
   }
 });
 
@@ -453,7 +479,7 @@ router.get("/projects/:projectId/github/summary", requireAuth, async (req, res) 
     }
 
     const summary = await fetchRepoSummary(
-      integration.encryptedToken,
+      { encryptedToken: integration.encryptedToken, userId: integration.userId },
       integration.repoOwner,
       integration.repoName
     );
@@ -464,8 +490,8 @@ router.get("/projects/:projectId/github/summary", requireAuth, async (req, res) 
 
     res.json({ summary, cached: false });
   } catch (err) {
-    logger.error(`Error fetching GitHub summary for project ${projectId}: ${err.message}`);
-    res.status(500).json({ error: err.message });
+    await markIntegrationFailure(projectId, err);
+    return sendGitHubError(res, err, "Failed to fetch GitHub summary");
   }
 });
 
@@ -480,20 +506,22 @@ router.post(["/projects/:projectId/github/sync", "/projects/:projectId/github/re
   const targetProjectId = project._id;
 
   try {
+    // Phase 4: incremental by default (unchanged commit ⇒ no re-download);
+    // an explicit { force: true } re-indexes. Duplicate syncs are rejected.
     const result = await indexRepositoryForProject({
       projectId: targetProjectId,
-      force: true,
+      force: req.body?.force === true,
       userId,
     });
+    if (result.inProgress) return res.status(409).json({ success: false, code: "SYNC_IN_PROGRESS", message: result.message });
 
     res.json({
       success: true,
-      message: "Repository synchronization completed successfully.",
+      message: result.noop ? "Repository index is already up to date." : "Repository synchronization completed successfully.",
       ...result,
     });
   } catch (err) {
-    logger.error(`Sync failed for project ${projectId}: ${err.message}`);
-    res.status(500).json({ error: err.message });
+    return sendGitHubError(res, err, "Repository synchronization failed");
   }
 });
 
@@ -516,9 +544,17 @@ router.delete("/projects/:projectId/github", requireAuth, async (req, res) => {
         connectionStatus: "disconnected",
         disconnectedAt: new Date(),
         disconnectedBy: userId,
+        syncInProgressSince: null,
       },
+      // Phase 4: a disconnected integration keeps no copy of the token.
+      $unset: { encryptedToken: "" },
     }
   );
+  // Cached AI answers that used this repository's context are invalidated.
+  try {
+    const { aiCache } = await import("../services/omniRoute.js");
+    aiCache.invalidateWorkspace(String(project.teamId));
+  } catch { /* cache is best-effort */ }
 
   // Mark repository index as stale/inactive
   await RepositoryIndex.findOneAndUpdate(
@@ -590,7 +626,7 @@ router.post("/projects/:projectId/context/query", requireAuth, async (req, res) 
     });
   } catch (err) {
     logger.error(`Workspace context query failed: ${err.message}`);
-    res.status(500).json({ error: err.message });
+    return sendGitHubError(res, err, "Workspace context query failed");
   }
 });
 
@@ -616,7 +652,7 @@ router.get("/projects/:projectId/context/snapshot", requireAuth, async (req, res
       context: contextData,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return sendGitHubError(res, err, "Workspace context snapshot failed");
   }
 });
 

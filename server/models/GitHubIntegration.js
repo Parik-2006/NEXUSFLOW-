@@ -29,12 +29,14 @@ const GitHubIntegrationSchema = new mongoose.Schema(
 
     connectionStatus: {
       type: String,
-      enum: ["connected", "disconnected", "syncing", "error", "stale"],
+      // Phase 4 truthful states: reconnect_required (401 / unusable credential),
+      // rate_limited (GitHub quota; see rateLimitResetAt).
+      enum: ["connected", "disconnected", "syncing", "error", "stale", "reconnect_required", "rate_limited"],
       default: "connected",
       index: true,
     },
 
-    // AES-256-CBC encrypted GitHub access token — never returned in queries
+    // AES-256-GCM envelope bound to userId (Phase 4) — never returned in queries
     encryptedToken: { type: String, select: false },
 
     // Synchronization & Indexing metadata
@@ -45,6 +47,8 @@ const GitHubIntegrationSchema = new mongoose.Schema(
     syncErrorDetails:    { type: mongoose.Schema.Types.Mixed, default: null },
     indexingVersion:     { type: String, default: "4.0.0" },
     isStale:             { type: Boolean, default: false },
+    rateLimitResetAt:    { type: Date, default: null },
+    syncInProgressSince: { type: Date, default: null }, // duplicate-sync lock (atomic claim)
 
     // Cached summary from GitHub REST API
     cachedSummary: {

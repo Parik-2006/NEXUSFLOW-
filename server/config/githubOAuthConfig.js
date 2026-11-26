@@ -14,6 +14,7 @@
  *   - Prevents unsafe production fallbacks to localhost
  *   - Distinguishes development and production constraints safely
  */
+import { decodeKey } from "../services/githubTokenCrypto.js";
 
 export const MOUNTED_CALLBACK_PATH = "/api/github/auth/callback";
 export const MIN_ENCRYPTION_KEY_LEN = 32;
@@ -107,7 +108,8 @@ export function validateGitHubOAuthConfig(envOverride = null) {
   const clientSecret = (env.GITHUB_CLIENT_SECRET || "").trim();
   const rawRedirectUri = (env.GITHUB_REDIRECT_URI || "").trim();
   const rawFrontendUrl = (env.FRONTEND_URL || "").trim();
-  const encryptionKey = (env.ENCRYPTION_KEY || "").trim();
+  // Phase 4 (D-30): AES-256-GCM key (exactly 32 bytes; no development fallback).
+  const encryptionKey = (env.GITHUB_TOKEN_ENCRYPTION_KEY || "").trim();
 
   const issues = [];
 
@@ -186,20 +188,17 @@ export function validateGitHubOAuthConfig(envOverride = null) {
   let effectiveEncryptionKey = "";
 
   if (encryptionKeyConfigured) {
-    if (encryptionKey.length < MIN_ENCRYPTION_KEY_LEN) {
-      issues.push(`ENCRYPTION_KEY must be at least ${MIN_ENCRYPTION_KEY_LEN} characters long`);
-    } else {
+    try {
+      decodeKey(encryptionKey);
       encryptionKeyValid = true;
       effectiveEncryptionKey = encryptionKey;
+    } catch {
+      issues.push("GITHUB_TOKEN_ENCRYPTION_KEY must decode to exactly 32 bytes (base64, base64url or 64 hex characters)");
     }
   } else {
-    if (isProd) {
-      issues.push("ENCRYPTION_KEY must be explicitly configured in production/deployed environments");
-    } else {
-      // Development safe fallback
-      effectiveEncryptionKey = "nexusflow3_default_dev_key_32char";
-      encryptionKeyValid = true;
-    }
+    // No fixed development key in any environment: GitHub credential
+    // operations stay disabled until a key is configured.
+    issues.push("GITHUB_TOKEN_ENCRYPTION_KEY must be configured to store GitHub credentials");
   }
 
   const isConfigured =
