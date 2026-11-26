@@ -16,6 +16,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from "react";
+import { aiFetch, describeAiStatus, newClientRequestId } from "@/utils/aiRequest";
 import {
   View,
   Text,
@@ -108,6 +109,8 @@ interface ChatTurn {
   content: string;
   createdAt?: string;
   provider?: "gemini" | "openrouter" | "deterministic" | string;
+  model?: string | null;
+  status?: string | null; // Phase 4: "ok" = provider answer; anything else = notice
   feedback?: {
     rating?: "helpful" | "unhelpful" | null;
     comment?: string;
@@ -160,6 +163,9 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
   const [lastFailedMessage, setLastFailedMessage] = useState<string | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const chatScrollRef = React.useRef<ScrollView>(null);
+  // Phase 4: cancellation + idempotent retry (same clientRequestId).
+  const chatAbortRef = React.useRef<AbortController | null>(null);
+  const failedRequestIdRef = React.useRef<string | null>(null);
 
   // Load private Copilot conversation
   const loadConversation = useCallback(async (pid: string) => {
@@ -479,9 +485,10 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
   };
 
   // Send Chat Message to Project Copilot (Fix 1: Real conversational flow)
-  const sendChatMessage = async (presetText?: string) => {
+  const sendChatMessage = async (presetText?: string, isRetry = false) => {
     const textToSend = presetText || chatInput;
     if (!textToSend.trim() || !token || chatLoading) return;
+    const clientRequestId = isRetry && failedRequestIdRef.current ? failedRequestIdRef.current : newClientRequestId();
 
     let targetPid = projectId;
     if (!targetPid) targetPid = await ensureProject();
@@ -497,42 +504,53 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
     };
 
     setLastFailedMessage(textToSend.trim());
-    setChatMessages((prev) => [...prev, userTurn]);
+    failedRequestIdRef.current = clientRequestId;
+    if (!isRetry) setChatMessages((prev) => [...prev, userTurn]);
     setChatInput("");
     setChatLoading(true);
     setChatError(null);
     setTimeout(() => chatScrollRef.current?.scrollToEnd({ animated: true }), 60);
 
     try {
-      const res = await fetch(`${API}/api/projects/${targetPid}/ai/chat`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          message: textToSend.trim(),
-          conversationId,
-        }),
+      const ctl = new AbortController();
+      chatAbortRef.current = ctl;
+      const r = await aiFetch(`${API}/api/projects/${targetPid}/ai/chat`, {
+        token,
+        body: { message: textToSend.trim(), conversationId, clientRequestId },
+        signal: ctl.signal,
       });
-
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || "Could not generate answer. Please try again.");
+      chatAbortRef.current = null;
+      if (r.status !== "ok") {
+        if (r.status === "canceled") { setChatError(describeAiStatus("canceled")); return; }
+        if (r.status === "http_error") {
+          const code = r.httpStatus;
+          throw new Error(code === 401 ? "Your session has expired. Please log in again." : code === 403 || code === 404 ? "You do not have access to this project's Copilot." : r.data?.error || describeAiStatus("failed"));
+        }
+        throw new Error(describeAiStatus(r.status));
       }
+      const data = r.data;
 
       if (data.conversationId) setConversationId(data.conversationId);
+      if (data.deduplicated && !data.assistantMessage) {
+        setChatError("Your previous request is still being processed. Please wait a moment and retry.");
+        return;
+      }
       if (data.assistantMessage) {
+        const st = data.assistantMessage.status || (data.assistantMessage.provider && data.assistantMessage.provider !== "none" ? "ok" : "unavailable");
         setChatMessages((prev) => [
           ...prev,
           {
             _id: data.assistantMessage._id || `a_${Date.now()}`,
             role: "assistant",
-            content: data.assistantMessage.content,
-            provider: data.provider || data.assistantMessage.provider,
+            // Non-ok outcomes are shown as truthful notices, never as AI answers.
+            content: st === "ok" ? data.assistantMessage.content : describeAiStatus(st),
+            provider: data.assistantMessage.provider,
+            model: data.assistantMessage.model ?? null,
+            status: st,
             feedback: data.assistantMessage.feedback || null,
           },
         ]);
+        if (st === "ok") failedRequestIdRef.current = null;
         setLastFailedMessage(null);
         setTimeout(() => chatScrollRef.current?.scrollToEnd({ animated: true }), 100);
       }
@@ -886,7 +904,9 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
                           {!isUser && msg.provider && (
                             <View style={s.providerBadge}>
                               <Text style={s.providerBadgeText}>
-                                {msg.provider === "gemini" ? "Gemini Free" : msg.provider === "openrouter" ? "OpenRouter Free" : "Local Fallback"}
+                                {msg.status && msg.status !== "ok"
+                                  ? "AI unavailable — no answer generated"
+                                  : msg.provider === "gemini" ? "Gemini (free tier)" : msg.provider === "groq" ? "Groq (free tier)" : msg.provider === "openrouter" ? "OpenRouter (free)" : msg.provider === "deterministic" ? "Deterministic" : "AI unavailable"}
                               </Text>
                             </View>
                           )}
@@ -948,7 +968,10 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
               {chatLoading && (
                 <View style={s.chatLoadingRow}>
                   <ActivityIndicator size="small" color={colors.primary} />
-                  <Text style={[font.caption, { color: colors.textMuted }]}>Reasoning with project requirements...</Text>
+                  <Text style={[font.caption, { color: colors.textMuted, flex: 1 }]}>Reasoning with project requirements...</Text>
+                  <Pressable style={s.retryMiniBtn} onPress={() => chatAbortRef.current?.abort()} accessibilityRole="button" accessibilityLabel="Cancel AI request">
+                    <Text style={s.retryMiniBtnText}>Cancel</Text>
+                  </Pressable>
                 </View>
               )}
 
@@ -956,7 +979,7 @@ export default function ProjectAdvisorPanel({ teamId }: { teamId: string }) {
                 <View style={s.errorBanner}>
                   <Ionicons name="alert-circle" size={16} color={colors.danger} />
                   <Text style={s.errorBannerText}>{chatError}</Text>
-                  <Pressable style={s.retryMiniBtn} onPress={() => sendChatMessage(lastFailedMessage || "hi")}>
+                  <Pressable style={s.retryMiniBtn} onPress={() => sendChatMessage(lastFailedMessage || "hi", true)}>
                     <Text style={s.retryMiniBtnText}>Retry</Text>
                   </Pressable>
                 </View>

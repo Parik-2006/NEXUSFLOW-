@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { View, Text, StyleSheet, Pressable, ScrollView } from "react-native";
+import { View, Text, StyleSheet, Pressable, ScrollView, useWindowDimensions } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -149,6 +149,7 @@ export default function Workspace() {
   const { teamId, tab } = useLocalSearchParams<{ teamId: string; tab?: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { width: windowWidth } = useWindowDimensions();
   const { user } = useAuth();
   const { team, loading: teamLoading, notFound, refetch: refetchTeam } = useTeam(teamId);
 
@@ -222,6 +223,11 @@ export default function Workspace() {
     ? "cube-outline"
     : "construct";
 
+  // Phase 4 (15.6): the fixed-width centre brand label overlapped the
+  // workspace title on phones; it is shown only on wide layouts.
+  const showBrand = windowWidth >= 768;
+  const showAvatarStack = windowWidth >= 420;
+
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <FloatingBackground />
@@ -269,16 +275,18 @@ export default function Workspace() {
           </View>
         </View>
 
-        {/* Center region: NexusFlow Product Branding */}
-        <View style={s.headerCenter}>
-          <Text style={s.brandTitle} numberOfLines={1}>
-            NexusFlow - A Project Mgmt System
-          </Text>
-        </View>
+        {/* Center region: NexusFlow Product Branding (wide layouts only) */}
+        {showBrand && (
+          <View style={s.headerCenter}>
+            <Text style={s.brandTitle} numberOfLines={1}>
+              NexusFlow - A Project Mgmt System
+            </Text>
+          </View>
+        )}
 
         {/* Right region: Notification & Profile */}
-        <View style={s.headerRight}>
-          {otherNames.length > 0 && <AvatarStack names={otherNames} images={otherImages} max={3} />}
+        <View style={[s.headerRight, !showBrand && { flex: 0, flexShrink: 0 }]}>
+          {showAvatarStack && otherNames.length > 0 && <AvatarStack names={otherNames} images={otherImages} max={3} />}
           {teamId && (
             <NotificationCenter
               teamId={teamId}

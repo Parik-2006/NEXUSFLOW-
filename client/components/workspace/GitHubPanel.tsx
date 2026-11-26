@@ -85,7 +85,8 @@ interface ConnectionStatus {
     selectedBranch: string;
     visibility: string;
   } | null;
-  status?: "connected" | "disconnected" | "syncing" | "error" | "stale";
+  status?: "connected" | "disconnected" | "syncing" | "error" | "stale" | "reconnect_required" | "rate_limited";
+  rateLimitResetAt?: string | null;
   lastSyncAt?: string | null;
   lastSyncCommitSha?: string;
   lastAttemptedSyncAt?: string | null;
@@ -233,8 +234,13 @@ export default function GitHubPanel({
         fetchStatusAndData();
         loadUserRepos();
       } else if (params.get("github_error")) {
-        const errorMsg = params.get("github_error") || "GitHub authorization failed";
-        toast(decodeURIComponent(errorMsg), "error");
+        // Phase 4: the server sends error CODES only (never raw upstream messages).
+        const code = params.get("github_error") || "";
+        const GH_ERRORS: Record<string, string> = {
+          encryption_not_configured: "GitHub integration is not configured on this server.",
+          oauth_exchange_failed: "GitHub authorization failed. Please try again.",
+        };
+        toast(GH_ERRORS[code] || "GitHub authorization failed. Please try again.", "error");
         params.delete("github_error");
         const newSearch = params.toString();
         const newUrl = window.location.pathname + (newSearch ? `?${newSearch}` : "") + window.location.hash;
@@ -327,11 +333,16 @@ export default function GitHubPanel({
       });
       if (res.ok) {
         const data = await res.json();
-        toast(data.message || "Repository synchronization complete", "success");
+        toast(data.noop ? "Repository index is already up to date." : data.message || "Repository synchronization complete", "success");
         fetchStatusAndData();
       } else {
-        const err = await res.json();
-        toast(err.error || "Repository synchronization failed", "error");
+        const err = await res.json().catch(() => ({}));
+        const retryAfter = res.headers.get("retry-after");
+        const msg = err.code === "SYNC_IN_PROGRESS" ? "A synchronization is already running."
+          : err.code === "GITHUB_RECONNECT_REQUIRED" ? "GitHub authorization expired — please reconnect your GitHub account."
+          : err.code === "GITHUB_RATE_LIMITED" ? `GitHub rate limit reached.${retryAfter ? ` Retry in about ${Math.ceil(Number(retryAfter) / 60)} min.` : ""}`
+          : err.error || "Repository synchronization failed";
+        toast(msg, err.code === "SYNC_IN_PROGRESS" ? "info" : "error");
         fetchStatusAndData();
       }
     } catch (e: any) {
@@ -574,7 +585,9 @@ export default function GitHubPanel({
   // ── CONNECTED STATE ────────────────────────────────────────────────────────
   const repo = status.repo;
   const isSyncing = syncing || status.status === "syncing";
-  const hasError = Boolean(status.lastSyncError);
+  const needsReconnect = status.status === "reconnect_required";
+  const rateLimited = status.status === "rate_limited";
+  const hasError = Boolean(status.lastSyncError) && !needsReconnect && !rateLimited;
   const isStale = Boolean(status.isStale);
 
   return (
@@ -591,6 +604,28 @@ export default function GitHubPanel({
         />
       }
     >
+      {/* Phase 4 truthful states */}
+      {needsReconnect && (
+        <Card style={s.errorBanner}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flex: 1 }}>
+            <Ionicons name="key-outline" size={22} color={colors.danger} />
+            <Text style={[font.small, { color: colors.danger, flex: 1 }]}>
+              Reconnection required: the GitHub authorization for this repository expired, was revoked or must be renewed.
+            </Text>
+          </View>
+        </Card>
+      )}
+      {rateLimited && (
+        <Card style={s.staleBanner}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flex: 1 }}>
+            <Ionicons name="hourglass-outline" size={20} color={colors.warning} />
+            <Text style={[font.small, { color: colors.warning, flex: 1 }]}>
+              GitHub rate limit reached{status.rateLimitResetAt ? ` — resets at ${new Date(status.rateLimitResetAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}. The last successful index is still shown.
+            </Text>
+          </View>
+        </Card>
+      )}
+
       {/* Synchronization Error Banner */}
       {hasError && (
         <Card style={s.errorBanner}>

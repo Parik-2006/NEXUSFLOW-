@@ -442,6 +442,7 @@ router.get("/projects/:projectId/github/status", requireAuth, async (req, res) =
       visibility:     integration.visibility,
     },
     status:              integration.connectionStatus || "connected",
+    rateLimitResetAt:    integration.rateLimitResetAt || null,
     lastSyncAt:          integration.lastSyncAt,
     lastSyncCommitSha:   integration.lastSyncCommitSha,
     lastAttemptedSyncAt: integration.lastAttemptedSyncAt,
