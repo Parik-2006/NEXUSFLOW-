@@ -372,8 +372,12 @@ async function runMasterTestSuite() {
     const validGemini = validateZeroCostRoute("gemini", "gemini-2.5-flash");
     assert(validGemini.cost === "$0.00", 'Gemini 2.5 Flash allowed at $0.00');
 
-    const validOpenRouter = validateZeroCostRoute("openrouter", "openrouter/free");
-    assert(validOpenRouter.cost === "$0.00", 'OpenRouter Free router allowed at $0.00');
+    // Phase 4 expectation change: the "openrouter/free" router has no official
+    // pricing/selection documentation, so it is UNVERIFIED and must be blocked
+    // (fail-closed). Only operator-approved ":free" variants are routable.
+    let blockedUnverifiedRouter = false;
+    try { validateZeroCostRoute("openrouter", "openrouter/free"); } catch (e) { blockedUnverifiedRouter = true; }
+    assert(blockedUnverifiedRouter, 'Unverified OpenRouter "openrouter/free" router blocked (fail-closed)');
 
     let blockedPaid = false;
     try {

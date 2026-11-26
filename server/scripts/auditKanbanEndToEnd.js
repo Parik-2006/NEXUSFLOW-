@@ -89,6 +89,8 @@ async function runAudit() {
     body: JSON.stringify({
       name: `Kanban Audit Workspace ${Date.now()}`,
       projectTitle: "Autonomous Flow Platform",
+      // Phase 4: current rule requires a >= 1000-character project description.
+      projectDescription: "Continuous-flow autonomous delivery platform used only as a synthetic Kanban audit fixture inside the isolated test database. ".repeat(10),
       methodology: "KANBAN",
       skills: ["Frontend", "Backend", "DevOps"],
     }),

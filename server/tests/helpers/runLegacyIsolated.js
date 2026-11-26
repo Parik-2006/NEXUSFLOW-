@@ -16,7 +16,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { MongoMemoryReplSet } from "mongodb-memory-server";
 import { assertSafeTestUri } from "./dbTargetGuard.js";
 
@@ -24,7 +24,15 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const serverDir = path.resolve(here, "..", "..");
 const scriptsDir = path.join(serverDir, "scripts");
 const withServer = process.argv.includes("--with-server");
-const args = process.argv.slice(2).filter((a) => a !== "--with-server");
+// Phase 4 (15.8 / 15.9) harness-only switches:
+//   --mock-ai                    deterministic mocked AI provider (results are
+//                                "PASS (mocked provider)", never live connectivity)
+//   --experimental-methodologies enable Kanban/Hybrid in THIS isolated harness only
+//                                (non-production channel; production gates untouched)
+const mockAi = process.argv.includes("--mock-ai");
+const experimental = process.argv.includes("--experimental-methodologies");
+const MOCK_AI_PRELOAD = pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), "mockAiProvider.mjs")).href;
+const args = process.argv.slice(2).filter((a) => !a.startsWith("--"));
 const concurrency = withServer ? 1 : Number(args[0] || 3);
 const only = args.slice(1);
 
@@ -50,6 +58,10 @@ if (withServer) {
   for (const k of ["RATE_LIMIT_LOGIN_IP_MAX", "RATE_LIMIT_LOGIN_FAILURES_MAX", "RATE_LIMIT_SIGNUP_IP_MAX", "RATE_LIMIT_FORGOT_IP_MAX", "RATE_LIMIT_FORGOT_ACCOUNT_MAX", "RATE_LIMIT_RESET_IP_MAX", "RATE_LIMIT_OAUTH_IP_MAX"]) {
     process.env[k] = "100000";
   }
+  // Harness-only: the isolated test server runs on the development channel so
+  // experimental methodologies can be exercised; .env / production untouched.
+  if (experimental) Object.assign(process.env, { ENABLE_EXPERIMENTAL_METHODOLOGIES: "true", METHODOLOGY_RELEASE_CHANNEL: "development" });
+  if (mockAi) await import(MOCK_AI_PRELOAD);
   liveUri = replSet.getUri("legacy_live_test");
   assertSafeTestUri(liveUri, { productionUri: "" });
   const mongoose = (await import("mongoose")).default;
@@ -66,7 +78,12 @@ function run(file, idx) {
     const started = Date.now();
     const child = spawn(process.execPath, [path.join(scriptsDir, file)], {
       cwd: serverDir,
-      env: { ...process.env, ...blank, MONGO_URI_TEST: uri, NEXUSFLOW_TEST_SERVER: withServer ? "1" : "", ...(withServer ? { TEST_BASE: "http://localhost:4000" } : {}) },
+      env: {
+        ...process.env, ...blank, MONGO_URI_TEST: uri, NEXUSFLOW_TEST_SERVER: withServer ? "1" : "",
+        ...(withServer ? { TEST_BASE: "http://localhost:4000" } : {}),
+        ...(experimental ? { ENABLE_EXPERIMENTAL_METHODOLOGIES: "true", METHODOLOGY_RELEASE_CHANNEL: "development" } : {}),
+        ...(mockAi ? { NODE_OPTIONS: `${process.env.NODE_OPTIONS || ""} --import ${MOCK_AI_PRELOAD}`.trim() } : {}),
+      },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let out = "";
@@ -80,7 +97,7 @@ function run(file, idx) {
       // Phase 3: always surface the failing check / assertion message (the
       // last-3-lines tail previously hid which assertion failed).
       const failing = lines.filter((l) => /✗|❌|\[FAIL\]|FAIL:|AssertionError|message:|expected|actual/i.test(l));
-      const tail = process.env.LEGACY_DETAIL === "1"
+      const tail = process.env.LEGACY_DETAIL === "2" ? lines.join("\n      ") : process.env.LEGACY_DETAIL === "1"
         ? failing.slice(0, 12).join("\n      ")
         : (failing.length ? failing.slice(0, 4).join(" | ") : lines.slice(-3).join(" | ")).slice(0, 500);
       resolve({ file, status, code, secs: Math.round((Date.now() - started) / 1000), tail });

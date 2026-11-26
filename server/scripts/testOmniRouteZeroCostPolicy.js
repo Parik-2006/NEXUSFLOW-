@@ -54,17 +54,28 @@ async function runCostPolicyTests() {
 
   // ── TEST 1: OpenRouter Free Models & openrouter/free ───────────────────────
   console.log("[TEST 1 & 2] OpenRouter Free Models & openrouter/free Validation");
-  try {
-    const r1 = validateZeroCostRoute("openrouter", "openrouter/free");
-    assert(r1.cost === "$0.00", 'validateZeroCostRoute allows "openrouter/free" at $0.00');
+  // Phase 4 expectation change (Task 2): a ":free" suffix alone is no longer
+  // sufficient — only OPERATOR-APPROVED ":free" variants (OPENROUTER_FREE_MODELS)
+  // are routable, and the undocumented "openrouter/free" router is blocked.
+  {
+    let routerBlocked = false;
+    try { validateZeroCostRoute("openrouter", "openrouter/free"); } catch (e) { routerBlocked = e instanceof ZeroCostViolationError; }
+    assert(routerBlocked, 'Unverified "openrouter/free" router blocked (fail-closed)');
 
-    const r2 = validateZeroCostRoute("openrouter", "meta-llama/llama-3.3-70b-instruct:free");
-    assert(r2.cost === "$0.00", 'validateZeroCostRoute allows model ending with ":free" at $0.00');
+    let unapprovedBlocked = false;
+    try { validateZeroCostRoute("openrouter", "deepseek/deepseek-r1:free"); } catch (e) { unapprovedBlocked = e instanceof ZeroCostViolationError; }
+    assert(unapprovedBlocked, 'Unapproved ":free" model blocked until an operator approves it');
 
-    const r3 = validateZeroCostRoute("openrouter", "deepseek/deepseek-r1:free");
-    assert(r3.cost === "$0.00", 'validateZeroCostRoute allows "deepseek/deepseek-r1:free"');
-  } catch (err) {
-    assert(false, `Unexpected error in Test 1: ${err.message}`);
+    const { setRegistryForTests } = await import("../services/ai/modelRegistry.js");
+    setRegistryForTests({ OPENROUTER_FREE_MODELS: "meta-llama/llama-3.3-70b-instruct:free" });
+    try {
+      const r2 = validateZeroCostRoute("openrouter", "meta-llama/llama-3.3-70b-instruct:free");
+      assert(r2.cost === "$0.00", 'Operator-approved ":free" model allowed at $0.00');
+    } catch (err) {
+      assert(false, `Approved :free model rejected: ${err.message}`);
+    } finally {
+      setRegistryForTests(process.env);
+    }
   }
 
   // ── TEST 3 & 4: OpenRouter Paid Models & Missing :free Suffix ─────────────
