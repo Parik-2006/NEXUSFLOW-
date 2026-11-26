@@ -52,114 +52,59 @@ export class AIProvider {
 /**
  * Google Gemini Provider ($0 Primary)
  */
-export class GeminiProvider extends AIProvider {
-  constructor(config = {}) {
-    super("gemini", { ...config, isLocal: false });
-    this.defaultModel = config.model || "gemini-2.0-flash";
+// Phase 4: the cloud providers below previously returned FABRICATED text
+// ("[Gemini Response] Advisory analysis for …") with invented token counts,
+// which decisionIntelligenceService persisted as an AI summary. They now call
+// the real, zero-cost-policy-checked OmniRoute pinned to a registry model, and
+// report health from the registry / circuit breakers without any inference.
+async function routedGenerate(provider, model, prompt, extra = {}) {
+  const { omniRouteGenerate } = await import("./omniRoute.js");
+  const r = await omniRouteGenerate({ prompt, provider, model, operation: extra.operation || "provider_abstraction", ...extra });
+  if (!r.content) throw new Error(`${provider} unavailable (${r.status}).`);
+  return { provider: r.provider, model: r.model, text: r.content, tokensUsed: r.tokensUsed ?? null, source: "provider" };
+}
+async function registryHealth(provider, model) {
+  const { findModel, isRoutable } = await import("./ai/modelRegistry.js");
+  const { providerConfigured, breakers } = await import("./omniRoute.js");
+  const e = findModel(provider, model);
+  const snap = breakers.snapshot();
+  return {
+    status: !isRoutable(e) ? "DISABLED" : !providerConfigured(provider) ? "NOT_CONFIGURED" : (snap[`p:${provider}`]?.state ?? "HEALTHY"),
+    provider, model, zeroCost: Boolean(e?.freeEligible), verified: e?.status ?? "UNKNOWN",
+  };
+}
+class RoutedCloudProvider extends AIProvider {
+  constructor(name, defaultModel, modalities, config = {}) {
+    super(name, { ...config, isLocal: false });
+    this.defaultModel = config.model || defaultModel;
+    this.modalities = modalities;
   }
-
-  async healthCheck() {
-    return { status: "ONLINE", provider: "gemini", model: this.defaultModel, zeroCost: true };
-  }
-
-  supportsModality(modality) {
-    return ["text", "vision", "structured_output"].includes(modality);
-  }
-
-  async generate({ prompt, maxTokens = 1000 }) {
-    return {
-      provider: "gemini",
-      model: this.defaultModel,
-      text: `[Gemini Response] Advisory analysis for: ${prompt.slice(0, 60)}...`,
-      tokensUsed: { prompt: Math.round(prompt.length / 4), completion: 80, total: Math.round(prompt.length / 4) + 80 },
-    };
-  }
-
+  async healthCheck() { return registryHealth(this.name, this.defaultModel); }
+  supportsModality(modality) { return this.modalities.includes(modality); }
+  async generate({ prompt, maxTokens = 1000 }) { return routedGenerate(this.name, this.defaultModel, prompt, { maxTokens }); }
   async generateStructured({ prompt, schema }) {
-    return {
-      provider: "gemini",
-      model: this.defaultModel,
-      output: { summary: `Structured analysis for prompt: ${prompt.slice(0, 40)}` },
-      isValid: true,
-    };
+    const r = await routedGenerate(this.name, this.defaultModel, prompt, { responseFormat: "json_object" });
+    const { parseModelJson } = await import("./ai/structuredOutput.js");
+    try { return { provider: r.provider, model: r.model, output: parseModelJson(r.text), isValid: true }; }
+    catch (e) { return { provider: r.provider, model: r.model, output: null, isValid: false, error: e.code || "INVALID_OUTPUT" }; }
   }
 }
 
-/**
- * Groq Provider ($0 Fallback 1)
- */
-export class GroqProvider extends AIProvider {
-  constructor(config = {}) {
-    super("groq", { ...config, isLocal: false });
-    this.defaultModel = config.model || "llama-3.3-70b-versatile";
-  }
-
-  async healthCheck() {
-    return { status: "ONLINE", provider: "groq", model: this.defaultModel, zeroCost: true };
-  }
-
-  supportsModality(modality) {
-    return ["text", "structured_output"].includes(modality);
-  }
-
-  async generate({ prompt, maxTokens = 1000 }) {
-    return {
-      provider: "groq",
-      model: this.defaultModel,
-      text: `[Groq Llama-3.3 Response] Advisory response for: ${prompt.slice(0, 60)}...`,
-      tokensUsed: { prompt: Math.round(prompt.length / 4), completion: 70, total: Math.round(prompt.length / 4) + 70 },
-    };
-  }
-
-  async generateStructured({ prompt, schema }) {
-    return {
-      provider: "groq",
-      model: this.defaultModel,
-      output: { result: "Structured response" },
-      isValid: true,
-    };
-  }
+/** Google Gemini (free tier; registry-verified model). */
+export class GeminiProvider extends RoutedCloudProvider {
+  constructor(config = {}) { super("gemini", "gemini-2.5-flash", ["text", "structured_output"], config); }
 }
 
-/**
- * OpenRouter Provider ($0 Fallback 2)
- */
-export class OpenRouterProvider extends AIProvider {
-  constructor(config = {}) {
-    super("openrouter", { ...config, isLocal: false });
-    this.defaultModel = config.model || "openrouter/free";
-  }
-
-  async healthCheck() {
-    return { status: "ONLINE", provider: "openrouter", model: this.defaultModel, zeroCost: true };
-  }
-
-  supportsModality(modality) {
-    return ["text"].includes(modality);
-  }
-
-  async generate({ prompt, maxTokens = 1000 }) {
-    return {
-      provider: "openrouter",
-      model: this.defaultModel,
-      text: `[OpenRouter Free Response] Analysis for: ${prompt.slice(0, 60)}...`,
-      tokensUsed: { prompt: Math.round(prompt.length / 4), completion: 50, total: Math.round(prompt.length / 4) + 50 },
-    };
-  }
-
-  async generateStructured({ prompt, schema }) {
-    return {
-      provider: "openrouter",
-      model: this.defaultModel,
-      output: { analysis: "OpenRouter structured output" },
-      isValid: true,
-    };
-  }
+/** Groq (base/free plan; registry-verified model). */
+export class GroqProvider extends RoutedCloudProvider {
+  constructor(config = {}) { super("groq", "openai/gpt-oss-20b", ["text", "structured_output"], config); }
 }
 
-/**
- * Local AI Model Provider (Research & Integration Foundation)
- */
+/** OpenRouter — only operator-approved ":free" variants are routable (none by default). */
+export class OpenRouterProvider extends RoutedCloudProvider {
+  constructor(config = {}) { super("openrouter", "openrouter/free", ["text", "structured_output"], config); }
+}
+
 export class LocalModelProvider extends AIProvider {
   constructor(config = {}) {
     super("local", { ...config, isLocal: true, isEnabled: Boolean(config.isEnabled) });
@@ -201,7 +146,7 @@ export class LocalModelProvider extends AIProvider {
       provider: "local",
       model: this.modelName,
       runtime: this.runtime,
-      text: `[Local ${this.modelName}] Offline inference for: ${prompt.slice(0, 50)}...`,
+      text: (() => { throw new Error("Local model inference is not implemented in this deployment."); })(),
       tokensUsed: { prompt: Math.round(prompt.length / 4), completion: 60, total: Math.round(prompt.length / 4) + 60 },
     };
   }
@@ -301,71 +246,16 @@ export const LOCAL_MODEL_REGISTRY = Object.freeze({
  * Unified Provider Router enforcing $0 production chain:
  * Gemini -> Groq -> OpenRouter -> Graceful Failure
  */
-export async function executeAiQuery({
-  prompt,
-  requiredModalities = ["text"],
-  allowLocal = false,
-  localProvider = null,
-}) {
+export async function executeAiQuery({ prompt, requiredModalities = ["text"], operation = "ai_query", scope, signal } = {}) {
+  // Phase 4: a single bounded, zero-cost-checked OmniRoute call (no fabricated
+  // fallbacks, no local stub). Vision is not offered by any verified route.
   const startTime = Date.now();
-  const telemetry = {
-    chainAttempted: [],
-    successfulProvider: null,
-    latencyMs: 0,
-    fallbackTriggered: false,
-  };
-
-  // If local AI is explicitly allowed and enabled
-  if (allowLocal && localProvider && localProvider.isEnabled) {
-    try {
-      telemetry.chainAttempted.push("local");
-      const res = await localProvider.generate({ prompt });
-      telemetry.successfulProvider = "local";
-      telemetry.latencyMs = Date.now() - startTime;
-      return { success: true, result: res, telemetry };
-    } catch (err) {
-      telemetry.fallbackTriggered = true;
-    }
+  if (requiredModalities.some((m) => !["text", "structured_output"].includes(m))) {
+    return { success: false, error: "AI_MODALITY_UNSUPPORTED", message: "No verified free route supports the requested modality.", telemetry: { chainAttempted: [], successfulProvider: null, latencyMs: 0, fallbackTriggered: false } };
   }
-
-  // Production Whitelisted Chain
-  const gemini = new GeminiProvider();
-  const groq = new GroqProvider();
-  const openrouter = new OpenRouterProvider();
-
-  const chain = [gemini, groq, openrouter];
-
-  for (let i = 0; i < chain.length; i++) {
-    const provider = chain[i];
-    telemetry.chainAttempted.push(provider.name);
-
-    // Verify all requested modalities are supported by this provider
-    const supported = requiredModalities.every(m => provider.supportsModality(m));
-    if (!supported) {
-      continue; // Skip provider if it lacks required modality (e.g. Groq for vision)
-    }
-
-    try {
-      const res = await provider.generate({ prompt });
-      telemetry.successfulProvider = provider.name;
-      telemetry.fallbackTriggered = i > 0;
-      telemetry.latencyMs = Date.now() - startTime;
-      return {
-        success: true,
-        result: res,
-        telemetry,
-      };
-    } catch (err) {
-      telemetry.fallbackTriggered = true;
-    }
-  }
-
-  // Graceful failure — $0 policy maintained
-  telemetry.latencyMs = Date.now() - startTime;
-  return {
-    success: false,
-    error: "AI_UNAVAILABLE",
-    message: "All whitelisted $0 AI providers are currently unavailable or lack the required modality.",
-    telemetry,
-  };
+  const { omniRouteGenerate } = await import("./omniRoute.js");
+  const r = await omniRouteGenerate({ prompt, operation, scope, signal });
+  const telemetry = { chainAttempted: (r.errors || []).map((e) => e.provider).concat(r.content ? [r.provider] : []), successfulProvider: r.content ? r.provider : null, latencyMs: Date.now() - startTime, fallbackTriggered: (r.meta?.attempts || 0) > 1, requestId: r.meta?.requestId };
+  if (!r.content) return { success: false, error: "AI_UNAVAILABLE", status: r.status, message: r.message, telemetry };
+  return { success: true, result: { provider: r.provider, model: r.model, text: r.content, tokensUsed: r.tokensUsed ?? null, source: "provider" }, telemetry };
 }
