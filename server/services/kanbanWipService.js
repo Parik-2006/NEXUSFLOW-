@@ -196,3 +196,21 @@ export function validatePullWip({
     suggestedAction: "Swarm existing work, resolve active blockers, or request a leader WIP override.",
   };
 }
+
+/**
+ * Phase 4 (Task 15.1): is pulling NEW work blocked by a MANDATORY WIP limit?
+ * Only a "hard" WIP policy is a mandatory constraint (advisory mode warns but
+ * never blocks). The pull target is the first non-backlog, non-done column
+ * with a limit (normally "in_progress").
+ * @returns {{ blocked: boolean, mode: string, column: string|null, count?: number, limit?: number }}
+ */
+export function wipPullConstraint(project, tasks = []) {
+  const cfg = project?.kanbanConfig;
+  const mode = cfg?.wipPolicy?.mode || "advisory";
+  const columns = Array.isArray(cfg?.workflowColumns) ? cfg.workflowColumns : [];
+  if (!columns.length) return { blocked: false, mode, column: null };
+  const wip = calculateColumnWip(tasks, columns);
+  const target = wip.find((c) => c.id === "in_progress") || wip.find((c) => !c.isDoneColumn && c.id !== "backlog" && !c.isUnlimited);
+  if (!target || target.isUnlimited) return { blocked: false, mode, column: target?.id ?? null };
+  return { blocked: mode === "hard" && target.isSaturated, mode, column: target.id, count: target.count, limit: target.limit };
+}

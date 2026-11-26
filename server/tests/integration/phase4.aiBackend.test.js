@@ -227,3 +227,48 @@ describe("Task 8 — scoped cache with authorization re-checks", () => {
     assert.notEqual(other.body.cache, "hit", "identical question in another workspace is not shared");
   });
 });
+
+describe("Task 15 — DAA integration gaps", () => {
+  test("15.1 Kanban hard WIP limit: new work is not executable regardless of score; advisory mode does not block", async () => {
+    const owner = await createUser("Kanban WIP");
+    const K = await createWorkspace("KWip", { owner, methodology: "KANBAN" });
+    await Team.updateOne({ _id: K.teamId }, { $set: { methodology: "KANBAN" } });
+    const cols = [{ id: "backlog", name: "Backlog", wipLimit: 0 }, { id: "in_progress", name: "In Progress", wipLimit: 1 }, { id: "done", name: "Done", wipLimit: 0, isDoneColumn: true }];
+    await Project.updateOne({ _id: K.projectId }, { $set: { methodology: "KANBAN", kanbanConfig: { workflowColumns: cols, wipPolicy: { mode: "hard" } } } });
+    await Task.deleteMany({ teamId: K.teamId });
+    await Task.create([
+      { teamId: K.teamId, projectId: K.projectId, title: "Doing", status: "in_progress", kanbanStatus: "IN_PROGRESS", workflowColumn: "in_progress", urgency: 1, impact: 1 },
+      { teamId: K.teamId, projectId: K.projectId, title: "Hot new item", status: "todo", workflowColumn: "backlog", urgency: 5, impact: 5, businessValue: 10 },
+    ]);
+    const run = () => req("POST", `/api/teams/${K.teamId}/decide`, { token: owner.token, body: { decisionType: "task-priority" } });
+    const hard = await run();
+    assert.equal(hard.status, 200, JSON.stringify(hard.body));
+    const hot = hard.body.decision.rankedTasks.find((t) => t.title === "Hot new item");
+    assert.equal(hot.eligible, false);
+    assert.equal(hot.constraints[0].type, "wip_limit");
+    assert.equal(hard.body.decision.rankedTasks[0].title, "Doing", "eligible work ranks first despite a lower score");
+    await Project.updateOne({ _id: K.projectId }, { $set: { "kanbanConfig.wipPolicy.mode": "advisory" } });
+    const adv = await run();
+    assert.equal(adv.body.decision.rankedTasks.find((t) => t.title === "Hot new item").eligible, true, "advisory WIP never blocks");
+  });
+
+  test("15.10 a concurrent graph change during a recompute pass is detected and repaired", async () => {
+    const svc = await import("../../services/taskGraphService.js");
+    const owner = await createUser("Concurrent Graph");
+    const G = await createWorkspace("CGraph", { owner, methodology: "CLASSIC" });
+    const [a, b] = await Task.create([{ teamId: G.teamId, title: "A" }, { teamId: G.teamId, title: "B" }]);
+    let fired = false;
+    svc.taskGraphTestHooks.betweenReadAndWrite = async () => {
+      if (fired) return;
+      fired = true;
+      // Simulates ANOTHER server process writing the graph (bypasses this process's serialisation).
+      await Task.collection.updateOne({ _id: b._id }, { $set: { dependencies: [a._id] } });
+    };
+    try {
+      const r = await svc.recomputeDependencyMetrics(G.teamId);
+      assert.ok(r.passes >= 2, `passes ${r.passes}`);
+    } finally { svc.taskGraphTestHooks.betweenReadAndWrite = null; }
+    assert.equal((await Task.findById(a._id).lean()).dependentCount, 1);
+    assert.equal((await Task.findById(b._id).lean()).dependencyCount, 1);
+  });
+});

@@ -12,10 +12,11 @@
  *   • only registered members (with a userId) are assignable; members whose
  *     hour capacity is ≤ 0 (capacity − existing load) are unavailable
  *   • hour capacity: Σ estimatedHours of tasks given to member i ≤
- *     member.capacity (default 40) − existingLoadHours[i]. Tasks without an
- *     estimate consume 0 h (documented limitation).
- *   • balance cap: at most ⌈nTasks / nAvailableMembers⌉ tasks per member
- *     (generalises the former 1:1 square problem + greedy overflow).
+ *     member.capacity (default 40) − existingLoadHours[i]. Unestimated tasks
+ *     use a DISCLOSED assumed effort (default 4 h, flagged effortAssumed) or
+ *     are excluded (unknownEffortPolicy: "exclude"); 0 h means a genuine 0 h.
+ *   • optional fairness cap (Phase 4): a per-member task limit only when
+ *     requested (maxTasksPerMember / balanced: true / env) — not by default.
  *
  * OBJECTIVE (lexicographic)  1) maximise the number of assigned tasks,
  *   2) minimise total skill-gap cost. Implemented as  cost + BIG·unassigned
@@ -155,9 +156,23 @@ export const ASSIGNMENT_LIMITS = Object.freeze({ maxExactTasks: 16, maxNodes: 20
 const cmpStr = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 const num = (v, d) => (v !== null && v !== "" && v !== undefined && Number.isFinite(Number(v)) ? Number(v) : d);
 
-function taskHours(t) {
-  const h = Number(t?.estimatedHours);
-  return Number.isFinite(h) && h > 0 ? h : 0;
+/**
+ * Effort policy (Phase 4, 15.2): a genuine 0 h estimate stays 0; a MISSING or
+ * invalid estimate is never silently 0 — it uses the disclosed assumption
+ * (options.unknownEffortHours, env ASSIGNMENT_UNKNOWN_EFFORT_HOURS, default 4 h)
+ * and is flagged effortAssumed, or the task is excluded when
+ * options.unknownEffortPolicy === "exclude".
+ */
+export function resolveTaskEffort(t, options = {}) {
+  const raw = t?.estimatedHours;
+  if (raw === 0) return { hours: 0, assumed: false };
+  const h = Number(raw);
+  if (raw !== null && raw !== undefined && raw !== "" && Number.isFinite(h) && h > 0) return { hours: h, assumed: false };
+  if (options.unknownEffortPolicy === "exclude") return { hours: null, assumed: false, excluded: true };
+  const envDefault = Number(process.env.ASSIGNMENT_UNKNOWN_EFFORT_HOURS);
+  const assumed = Number.isFinite(options.unknownEffortHours) && options.unknownEffortHours >= 0 ? options.unknownEffortHours
+    : Number.isFinite(envDefault) && envDefault >= 0 ? envDefault : 4;
+  return { hours: assumed, assumed: true };
 }
 
 /** Shared problem preparation (used by the solver and the exhaustive reference). */
@@ -173,15 +188,23 @@ export function prepareAssignmentProblem(members, tasks, options = {}) {
     avail.push({ m, inputIndex, userId, hourCap });
   });
   avail.sort((a, b) => cmpStr(a.userId, b.userId));
-  const taskList = tasks.map((t, inputIndex) => ({ t, inputIndex, id: String(t._id), hours: taskHours(t) }));
+  const effortExcluded = [];
+  const taskList = [];
+  tasks.forEach((t, inputIndex) => {
+    const e = resolveTaskEffort(t, options);
+    if (e.excluded) { effortExcluded.push(String(t._id)); return; }
+    taskList.push({ t, inputIndex, id: String(t._id), hours: e.hours, effortAssumed: e.assumed });
+  });
   const fullMatrix = buildCostMatrix(members, tasks); // input order, for display
   const cost = avail.map((a) => taskList.map((tk) => fullMatrix[a.inputIndex][tk.inputIndex]));
-  const balanceCap = avail.length ? Math.max(1, Math.ceil(taskList.length / avail.length)) : 0;
-  const capOverride = options.maxTasksPerMember;
-  return {
-    avail, unavailable, taskList, cost, fullMatrix,
-    maxPerMember: Number.isInteger(capOverride) && capOverride > 0 ? capOverride : balanceCap,
-  };
+  // Phase 4 (15.3): hour capacity is the only DEFAULT hard constraint. An
+  // equal-count fairness cap is opt-in (options.maxTasksPerMember, or
+  // options.balanced === true for ⌈n/m⌉, or env ASSIGNMENT_MAX_TASKS_PER_MEMBER).
+  const envCap = Number(process.env.ASSIGNMENT_MAX_TASKS_PER_MEMBER);
+  const capOverride = Number.isInteger(options.maxTasksPerMember) && options.maxTasksPerMember > 0 ? options.maxTasksPerMember
+    : options.balanced === true && avail.length ? Math.max(1, Math.ceil(taskList.length / avail.length))
+    : Number.isInteger(envCap) && envCap > 0 ? envCap : Infinity;
+  return { avail, unavailable, taskList, cost, fullMatrix, maxPerMember: capOverride, effortExcluded };
 }
 
 /** BIG exceeds any achievable total cost, making the objective lexicographic. */
@@ -326,12 +349,15 @@ export function solveAssignment(members, tasks, options = {}) {
         memberHoursAfter: Math.round(memberHours[i] * 100) / 100,
         memberHourCapacity: a.hourCap,
         memberTaskCount: memberTasks[i],
+        effortHours: tk.hours,
+        effortAssumed: Boolean(tk.effortAssumed),
         reason: gaps.length === 0
           ? `${a.m.name ?? "Member"} meets every derived skill requirement (cost 0).`
           : `Lowest-cost feasible choice in the ${exact ? "optimal" : "best found"} plan; skill gaps: ${gaps.map((g) => `${g.skill} ${g.has}/${g.required}`).join(", ")}.`,
       },
     });
   });
+  for (const id of P.effortExcluded) unassigned.push({ taskId: id, reason: "needs an effort estimate (unknown effort excluded by policy)" });
   // Keep output in the caller's task order.
   const pos = new Map(taskList.map((tk) => [tk.id, tk.inputIndex]));
   assignments.sort((x, y) => pos.get(x.taskId) - pos.get(y.taskId));
@@ -353,7 +379,9 @@ export function solveAssignment(members, tasks, options = {}) {
       pruningRatio: nodesExplored + nodesPruned > 0 ? ((nodesPruned / (nodesExplored + nodesPruned)) * 100).toFixed(1) + "%" : "N/A",
       terminationReason,
       limits,
-      maxTasksPerMember: maxPerMember,
+      maxTasksPerMember: Number.isFinite(maxPerMember) ? maxPerMember : null,
+      fairnessCap: Number.isFinite(maxPerMember) ? "per-member task cap (opt-in)" : "none (hour capacity only)",
+      assumedEffortTasks: taskList.filter((tk) => tk.effortAssumed).length,
       availableMembers: nM,
       unavailableMembers: P.unavailable,
       capacityUtilizationPct: totalHourCap > 0 ? Math.round((usedHours / totalHourCap) * 1000) / 10 : 0,

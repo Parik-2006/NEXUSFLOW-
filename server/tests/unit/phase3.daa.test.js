@@ -408,11 +408,13 @@ describe("Task 8 — Branch and Bound assignment (D-33)", () => {
       for (const a of r.assignments) {
         assert.ok(!["ph", undefined].includes(a.memberId), "placeholders are never assigned");
         const t = tasks.find((x) => x._id === a.taskId);
-        hours[a.memberId] = (hours[a.memberId] ?? 0) + (t.estimatedHours ?? 0);
+        // Phase 4 policy: unestimated tasks use the disclosed 4 h assumption.
+        hours[a.memberId] = (hours[a.memberId] ?? 0) + (t.estimatedHours ?? 4);
         counts[a.memberId] = (counts[a.memberId] ?? 0) + 1;
       }
       for (const [m, h] of Object.entries(hours)) assert.ok(h <= members.find((x) => x.userId === m).capacity + 1e-9);
-      for (const c of Object.values(counts)) assert.ok(c <= r.meta.maxTasksPerMember);
+      // Phase 4: the per-member count cap is opt-in (null = hour capacity only).
+      if (r.meta.maxTasksPerMember !== null) for (const c of Object.values(counts)) assert.ok(c <= r.meta.maxTasksPerMember);
       assert.equal(r.assignments.length + r.unassigned.length, tasks.length);
     }
   });
@@ -571,5 +573,61 @@ describe("Task 4 — decision modes drive the actual ranking (D-23)", () => {
     const wip = rankTasks([{ _id: "n", title: "new", status: "todo", urgency: 5 }, { _id: "p", title: "doing", status: "in_progress", urgency: 1 }], { now, wipBlocked: true });
     assert.equal(wip[0]._id, "p");
     assert.equal(wip[1].priorityResult.constraints[0].type, "wip_limit");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("Phase 4 (15.2–15.4) — effort policy, fairness cap, knapsack approximation", () => {
+  const SK = ["frontend", "backend", "devops", "design", "ml", "testing"];
+  test("unknown effort is explicit: assumed (flagged) or excluded; genuine 0 h stays 0", () => {
+    const m = [{ userId: "u1", name: "A", capacity: 10, skills: {} }];
+    const tasks = [{ _id: "zero", title: "z", estimatedHours: 0 }, { _id: "unk", title: "u", estimatedHours: null }, { _id: "est", title: "e", estimatedHours: 6 }];
+    const r = assignTasksToMembers(m, tasks);
+    const ex = Object.fromEntries(r.assignments.map((a) => [a.taskId, a.explanation]));
+    assert.equal(ex.zero.effortHours, 0);
+    assert.equal(ex.zero.effortAssumed, false);
+    assert.equal(ex.unk.effortAssumed, true);
+    assert.equal(ex.unk.effortHours, 4);
+    assert.equal(r.meta.assumedEffortTasks, 1);
+    const excl = assignTasksToMembers(m, tasks, { unknownEffortPolicy: "exclude" });
+    assert.ok(excl.unassigned.some((u) => u.taskId === "unk" && /effort estimate/.test(u.reason)));
+    assert.ok(!excl.assignments.some((a) => a.taskId === "unk"));
+  });
+  test("fairness cap is opt-in and can change the optimum; both match exhaustive search", () => {
+    const members = [{ userId: "a", skills: { backend: 10 }, capacity: 100 }, { userId: "b", skills: { backend: 0 }, capacity: 100 }];
+    const tasks = [1, 2, 3, 4].map((i) => ({ _id: `t${i}`, title: "API", skillWeights: { backend: 8 }, estimatedHours: 2 }));
+    const free = assignTasksToMembers(members, tasks);
+    assert.equal(free.totalCost, 0, "without a count cap the expert takes all tasks");
+    assert.equal(free.meta.maxTasksPerMember, null);
+    const fair = assignTasksToMembers(members, tasks, { balanced: true });
+    assert.equal(fair.meta.maxTasksPerMember, 2);
+    assert.ok(fair.totalCost > free.totalCost, "fairness is a real constraint with a cost");
+    assert.equal(fair.totalCost, exhaustiveAssignment(members, tasks, { balanced: true }).cost);
+    assert.equal(free.totalCost, exhaustiveAssignment(members, tasks).cost);
+    const rng = mulberry32(415);
+    for (let k = 0; k < 80; k++) {
+      const M = Array.from({ length: randInt(rng, 1, 3) }, (_, i) => ({ userId: `u${i}`, capacity: randInt(rng, 2, 20), skills: Object.fromEntries(SK.map((s) => [s, randInt(rng, 0, 10)])) }));
+      const T = Array.from({ length: randInt(rng, 1, 6) }, (_, j) => ({ _id: `t${j}`, title: "x", estimatedHours: rng() < 0.3 ? null : randInt(rng, 0, 8), skillWeights: Object.fromEntries(SK.map((s) => [s, rng() < 0.4 ? randInt(rng, 1, 10) : 0])) }));
+      for (const opts of [{}, { balanced: true }]) {
+        const r = assignTasksToMembers(M, T, opts), ref = exhaustiveAssignment(M, T, opts);
+        assert.equal(r.assignments.length, ref.assigned);
+        assert.equal(r.totalCost, ref.cost);
+      }
+    }
+  });
+  test("knapsack approximation: ≥ ½ of the brute-force optimum on 400 forced-approximate instances", () => {
+    const rng = mulberry32(154);
+    let worst = 1;
+    for (let k = 0; k < 400; k++) {
+      const items = randomKnapsackItems(rng, randInt(rng, 1, 12), { maxEffort: 10, maxValue: 20 });
+      if (rng() < 0.2) items.push({ id: "zz-zero", effort: 0, value: randInt(rng, 0, 5) });
+      const cap = Math.round(rng() * 15 * 100) / 100;
+      const approx = solveKnapsack(items, cap, { maxCells: 1 });
+      const opt = bruteForceKnapsack(items, cap);
+      assert.equal(approx.exact, false);
+      assert.ok(approx.totalEffort <= cap + 1e-9);
+      if (opt > 0) { worst = Math.min(worst, approx.totalValue / opt); assert.ok(approx.totalValue >= opt / 2 - 1e-9, `k=${k}`); }
+    }
+    assert.ok(worst >= 0.5);
   });
 });

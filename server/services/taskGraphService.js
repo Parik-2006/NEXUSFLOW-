@@ -58,7 +58,31 @@ export async function recomputePriorityScores(filter) {
 
 const running = new Map(); // teamId -> { promise, rerun }
 
+/** Graph signature: ids + their (sorted) prerequisites. Count writes never change it. */
+function graphSignature(tasks) {
+  return tasks.map((t) => `${t._id}:${(t.dependencies || []).map(String).sort().join(",")}`).sort().join("|");
+}
+
+/** Test hook: runs between the read and the write of a recompute pass. */
+export const taskGraphTestHooks = { betweenReadAndWrite: null };
+
+/**
+ * Phase 4 (15.10): stale-revision detection. After writing, the graph is
+ * re-read; if another writer (possibly another server process) changed it in
+ * the meantime the pass is repeated (bounded), so a recompute that started
+ * before a concurrent mutation cannot leave stale counts behind.
+ */
 async function recomputeOnce(teamId) {
+  let last;
+  for (let pass = 1; pass <= 3; pass++) {
+    last = await recomputePass(teamId);
+    const after = await Task().find({ teamId: new mongoose.Types.ObjectId(String(teamId)) }).select("_id dependencies").lean();
+    if (graphSignature(after) === last.signature) return { tasks: last.tasks, updated: last.updated, passes: pass };
+  }
+  return { tasks: last.tasks, updated: last.updated, passes: 3, unstable: true };
+}
+
+async function recomputePass(teamId) {
   const T = Task();
   const tid = new mongoose.Types.ObjectId(String(teamId));
   // Active tasks of the workspace (archive plugin hides archived ones).
@@ -87,9 +111,10 @@ async function recomputeOnce(teamId) {
       changed.push(t._id);
     }
   }
+  if (taskGraphTestHooks.betweenReadAndWrite) await taskGraphTestHooks.betweenReadAndWrite(teamId);
   if (ops.length) await T.bulkWrite(ops, { ordered: false });
   if (changed.length) await recomputePriorityScores({ _id: { $in: changed } });
-  return { tasks: tasks.length, updated: changed.length };
+  return { tasks: tasks.length, updated: changed.length, signature: graphSignature(tasks) };
 }
 
 /**
@@ -138,8 +163,15 @@ export async function planTaskGraphBackfill({ teamIds } = {}) {
   const T = Task();
   const teams = teamIds?.length ? teamIds.map(String) : (await T.distinct("teamId")).map(String);
   const report = [];
+  const failed = [];
   for (const teamId of teams) {
-    const tasks = await T.find({ teamId }).select("_id dependencies dependencyCount dependentCount priorityScore urgency impact").lean();
+    let tasks;
+    try {
+      tasks = await T.find({ teamId }).select("_id dependencies dependencyCount dependentCount priorityScore urgency impact").lean();
+    } catch (e) {
+      failed.push({ teamId, error: e?.name || "Error" }); // Phase 4: one bad workspace never aborts the report
+      continue;
+    }
     const ids = new Set(tasks.map((t) => String(t._id)));
     const prereq = new Map(), dependents = new Map();
     for (const t of tasks) {
@@ -165,6 +197,7 @@ export async function planTaskGraphBackfill({ teamIds } = {}) {
   return {
     workspaces: report.length,
     workspacesNeedingBackfill: report.filter((r) => r.countChanges || r.scoreChanges).length,
+    failedWorkspaces: failed,
     tasksWithCountChanges: report.reduce((s, r) => s + r.countChanges, 0),
     tasksWithScoreChanges: report.reduce((s, r) => s + r.scoreChanges, 0),
     perWorkspace: report,
@@ -176,11 +209,16 @@ export async function applyTaskGraphBackfill({ teamIds } = {}) {
   const T = Task();
   const teams = teamIds?.length ? teamIds.map(String) : (await T.distinct("teamId")).map(String);
   let updated = 0;
+  const failed = [];
   for (const teamId of teams) {
-    const r = await recomputeDependencyMetrics(teamId);
-    updated += r.updated;
-    // Old-formula scores on tasks whose counts were already correct.
-    await recomputePriorityScores({ teamId: new mongoose.Types.ObjectId(teamId) });
+    try {
+      const r = await recomputeDependencyMetrics(teamId);
+      updated += r.updated;
+      // Old-formula scores on tasks whose counts were already correct.
+      await recomputePriorityScores({ teamId: new mongoose.Types.ObjectId(teamId) });
+    } catch (e) {
+      failed.push({ teamId, error: e?.name || "Error" }); // continue; re-running is idempotent
+    }
   }
-  return { workspaces: teams.length, countUpdates: updated };
+  return { workspaces: teams.length, countUpdates: updated, failedWorkspaces: failed };
 }

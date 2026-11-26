@@ -1457,11 +1457,25 @@ router.post("/teams/:teamId/decide", requireAuth, async (req, res) => {
       waterfallPhase = wf?.currentPhase || undefined;
     }
 
+    // Phase 4 (15.1): Kanban mandatory ("hard") WIP limit → new work is not
+    // executable while the pull column is saturated (priority ≠ permission).
+    let wipBlocked = false;
+    let wipConstraint = null;
+    if (String(team?.methodology || "").toUpperCase() === "KANBAN" && team?.activeProjectId) {
+      const proj = await Project.findById(team.activeProjectId).select("kanbanConfig").lean().catch(() => null);
+      if (proj) {
+        const { wipPullConstraint } = await import("../services/kanbanWipService.js");
+        wipConstraint = wipPullConstraint(proj, allTasks.filter((t) => String(t.projectId || "") === String(team.activeProjectId)));
+        wipBlocked = wipConstraint.blocked;
+      }
+    }
+
     const priorityContext = {
       riskTaskIds: riskTaskIds.size > 0 ? riskTaskIds : undefined,
       teamSkills: Object.keys(teamSkills).length > 0 ? teamSkills : undefined,
       memberWorkload,
       waterfallPhase,
+      wipBlocked,
     };
 
     // ── Deterministic engine evaluation ───────────────────────────────────
