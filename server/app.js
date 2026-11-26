@@ -33,6 +33,8 @@ import { validatePassword } from "./utils/passwordPolicy.js";
 import { getAuthUserId } from "./utils/identity.js";
 import { logger } from "./utils/logger.js";            // NEXUSFLOW 3.0 — Phase 19
 import { authLimits, loginFailures, sendRateLimited } from "./utils/rateLimiter.js"; // Phase 2 auth rate limits
+import { requestContextMiddleware } from "./utils/requestContext.js";
+import { healthRouter, dbAvailabilityGuard, sanitizedErrorHandler } from "./utils/appLifecycle.js";
 
 export const getFrontendUrl = () => {
   const url = process.env.FRONTEND_URL || "";
@@ -53,6 +55,11 @@ export const app = express();
   app.set("trust proxy", Number.isFinite(hops) && hops > 0 ? hops : false);
 }
 app.use(cors({ origin: [FRONTEND_URL, "http://localhost:8081", "http://localhost:19006", "http://localhost:8082", "http://localhost:3000"], credentials: true }));
+// Phase 4: correlation id + client-disconnect signal, health endpoints (no
+// auth, no DB), and prompt 503s for database-dependent requests during outages.
+app.use(requestContextMiddleware);
+app.use(healthRouter);
+app.use((req, res, next) => (req.path === "/" ? next() : dbAvailabilityGuard(req, res, next)));
 app.use(express.json({ limit: "15mb" })); // Support avatar uploads
 
 // Forward root requests to the Frontend application (handles OAuth redirects & direct visits)
@@ -243,6 +250,7 @@ app.use("/api/scrum", requireAuth, scrumRoutes); // NEXUSFLOW 4.0 — Scrum Meth
 app.use("/api/kanban", requireAuth, kanbanRoutes); // NEXUSFLOW 4.0 — Kanban Continuous Flow
 app.use("/api/hybrid", requireAuth, hybridRoutes); // NEXUSFLOW 4.0 — Hybrid Methodology Engine
 app.use("/api", workstreams21to25Routes);          // NEXUSFLOW 4.0 — Workstreams 21–25 Learning, Capability, Decisions, Health
+app.use(sanitizedErrorHandler); // Phase 4: no stack traces / internal messages to clients
 
 export const server = http.createServer(app);
 export const io = new Server(server, { cors: { origin: [FRONTEND_URL, "http://localhost:8081", "http://localhost:19006"] } });
