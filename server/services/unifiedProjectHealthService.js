@@ -566,10 +566,18 @@ export async function computeUnifiedProjectHealth(projectIdOrTeamId, io = null) 
     summary = "Not enough project evidence yet to compute a health score. Add tasks, deadlines or requirements to begin tracking.";
   } else if (overallScore >= 80) {
     summary = `Project is in good health with steady ${terms.paceLabel.toLowerCase()} and capacity balanced within limits.`;
-  } else if (overallScore >= 60) {
-    summary = `Project execution is progressing, but requires attention on ${criticalImpairments[0] || "workload capacity and prerequisite completion"}.`;
   } else {
-    summary = `Project requires immediate intervention: critical capacity or dependency congestion threatens delivery schedule.`;
+    // Phase 3: name the actual weakest evidence-backed dimension(s) instead of
+    // a generic capacity / dependency message.
+    const weakest = dimensions
+      .filter((d) => d.available && d.score !== null)
+      .sort((x, y) => x.score - y.score || String(x.key).localeCompare(String(y.key)))
+      .slice(0, 2)
+      .map((d) => `${d.name} (${d.score}%)`);
+    const focus = criticalImpairments[0] || weakest.join(" and ") || "the lowest-scoring dimensions";
+    summary = overallScore >= 60
+      ? `Project execution is progressing, but requires attention on ${focus}.`
+      : `Project requires immediate intervention: ${focus}.`;
   }
 
   // ── Critical Warnings & Recommended Actions (Advisory) ──────────────────────

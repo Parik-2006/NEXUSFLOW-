@@ -275,7 +275,9 @@ export default function UnifiedProjectHealthPanel({
 
   const scoreColor = (STATUS_COLOR_MAP as Record<string, string>)[data.status] || colors.textMuted;
   const gradeColor =
-    data.grade === "A"
+    data.overallScore === null || data.grade === "N/A"
+      ? colors.textMuted // insufficient evidence — neutral, not "failing"
+      : data.grade === "A"
       ? colors.success
       : data.grade === "B"
       ? "#2563EB"

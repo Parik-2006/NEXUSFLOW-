@@ -125,3 +125,62 @@ export async function recomputeForTeams(teamIds) {
     console.warn(`[taskGraph] recompute failed for team ${t}: ${e.message}`);
   })));
 }
+
+/**
+ * planTaskGraphBackfill() — READ-ONLY. For every workspace, reports how many
+ * active tasks would change dependencyCount, dependentCount or priorityScore
+ * if derived fields were recomputed from the persisted graph (legacy documents
+ * written before Phase 3 store the prerequisite count and an old-formula score).
+ * Returns counts and ids only. Performs no writes.
+ */
+export async function planTaskGraphBackfill({ teamIds } = {}) {
+  const { computePriorityScore } = await import("../algorithms/greedyScheduler.js");
+  const T = Task();
+  const teams = teamIds?.length ? teamIds.map(String) : (await T.distinct("teamId")).map(String);
+  const report = [];
+  for (const teamId of teams) {
+    const tasks = await T.find({ teamId }).select("_id dependencies dependencyCount dependentCount priorityScore urgency impact").lean();
+    const ids = new Set(tasks.map((t) => String(t._id)));
+    const prereq = new Map(), dependents = new Map();
+    for (const t of tasks) {
+      const self = String(t._id);
+      const uniq = new Set((t.dependencies ?? []).map(String).filter((d) => d !== self && ids.has(d)));
+      prereq.set(self, uniq.size);
+      for (const d of uniq) dependents.set(d, (dependents.get(d) ?? 0) + 1);
+    }
+    let countChanges = 0, scoreChanges = 0;
+    const sample = [];
+    for (const t of tasks) {
+      const id = String(t._id);
+      const nIn = prereq.get(id) ?? 0, nOut = dependents.get(id) ?? 0;
+      const score = computePriorityScore({ urgency: t.urgency, impact: t.impact, dependentCount: nOut });
+      const countDiff = (t.dependencyCount ?? null) !== nIn || (t.dependentCount ?? null) !== nOut;
+      const scoreDiff = t.priorityScore !== score;
+      if (countDiff) countChanges++;
+      if (scoreDiff) scoreChanges++;
+      if ((countDiff || scoreDiff) && sample.length < 5) sample.push(id);
+    }
+    report.push({ teamId, activeTasks: tasks.length, countChanges, scoreChanges, sampleTaskIds: sample });
+  }
+  return {
+    workspaces: report.length,
+    workspacesNeedingBackfill: report.filter((r) => r.countChanges || r.scoreChanges).length,
+    tasksWithCountChanges: report.reduce((s, r) => s + r.countChanges, 0),
+    tasksWithScoreChanges: report.reduce((s, r) => s + r.scoreChanges, 0),
+    perWorkspace: report,
+  };
+}
+
+/** applyTaskGraphBackfill() — writes derived fields for every workspace (explicit opt-in only). */
+export async function applyTaskGraphBackfill({ teamIds } = {}) {
+  const T = Task();
+  const teams = teamIds?.length ? teamIds.map(String) : (await T.distinct("teamId")).map(String);
+  let updated = 0;
+  for (const teamId of teams) {
+    const r = await recomputeDependencyMetrics(teamId);
+    updated += r.updated;
+    // Old-formula scores on tasks whose counts were already correct.
+    await recomputePriorityScores({ teamId: new mongoose.Types.ObjectId(teamId) });
+  }
+  return { workspaces: teams.length, countUpdates: updated };
+}

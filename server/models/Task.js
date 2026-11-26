@@ -246,7 +246,8 @@ TaskSchema.pre("save", function (next) {
       dependentCount: this.dependentCount,
     });
   }
-  this.$locals.graphDirty = this.isNew || this.isModified("dependencies") || this.isModified("archivedAt") || this.isModified("teamId");
+  // Inside a transaction the caller recomputes after commit (see captureAffected).
+  this.$locals.graphDirty = !this.$session() && (this.isNew || this.isModified("dependencies") || this.isModified("archivedAt") || this.isModified("teamId"));
   next();
 });
 
@@ -330,6 +331,11 @@ function touchedFields(update) {
 async function captureAffected(query, kind) {
   const opts = query.getOptions?.() ?? {};
   if (opts.__skipPriorityHook) return;
+  // Writes inside a MongoDB transaction are NOT post-processed here: a recompute
+  // outside the session would read pre-commit state and could block on the
+  // transaction's write locks. Transactional callers (lifecycleService) call
+  // recomputeForTeams() after a successful commit instead.
+  if (opts.session) return;
   let priority = false, graph = false;
   if (kind === "delete") graph = true;
   else {

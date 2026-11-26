@@ -274,3 +274,64 @@ describe("Task 10 — evidence-based health (D-24)", () => {
     assert.ok([403, 404].includes(foreign.status));
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("Transactions — archive / restore through the real Trash routes (legacy-shaped data)", () => {
+  test("archive and restore complete promptly and keep derived counts correct", async () => {
+    const owner = await createUser("Txn Owner");
+    const T = await createWorkspace("Txn", { owner, methodology: "CLASSIC" });
+    const project = await Project.findById(T.projectId).lean();
+    // Legacy-shaped documents written directly to the collection: no
+    // dependencyCount / dependentCount / priorityScore fields at all.
+    const pre = new mongoose.Types.ObjectId();
+    const dep = new mongoose.Types.ObjectId();
+    await Task.collection.insertMany([
+      { _id: pre, teamId: new mongoose.Types.ObjectId(T.teamId), projectId: null, title: "team-level prerequisite", status: "todo", urgency: 3, impact: 3, dependencies: [] },
+      { _id: dep, teamId: new mongoose.Types.ObjectId(T.teamId), projectId: new mongoose.Types.ObjectId(T.projectId), title: "project dependent", status: "todo", urgency: 2, impact: 2, dependencies: [pre] },
+    ]);
+    await svc.recomputeDependencyMetrics(T.teamId);
+    assert.equal((await Task.findById(pre).lean()).dependentCount, 1);
+
+    const timed = (p) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("request timed out (possible transaction lock wait)")), 15000))]);
+    const del = await timed(req("DELETE", `/api/projects/${T.projectId}`, { token: owner.token, body: { confirmName: project.title } }));
+    assert.equal(del.status, 200, JSON.stringify(del.body));
+    const afterArchive = await Task.findById(pre).lean();
+    assert.equal(afterArchive.dependentCount, 0, "archived dependent no longer counts");
+    assert.equal(afterArchive.priorityScore, expectedScore(afterArchive));
+
+    const restore = await timed(req("POST", `/api/trash/projects/${T.projectId}/restore`, { token: owner.token }));
+    assert.equal(restore.status, 200, JSON.stringify(restore.body));
+    const afterRestore = await Task.findById(pre).lean();
+    assert.equal(afterRestore.dependentCount, 1, "restored dependent counts again");
+    assert.equal(afterRestore.priorityScore, expectedScore(afterRestore));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("Backfill migration (dry run by default; in-memory DB only)", () => {
+  test("dry run reports legacy documents without writing; apply corrects them", async () => {
+    const owner = await createUser("Backfill Owner");
+    const BF = await createWorkspace("Backfill", { owner, methodology: "CLASSIC" });
+    const tid = new mongoose.Types.ObjectId(BF.teamId);
+    const a = new mongoose.Types.ObjectId(), b = new mongoose.Types.ObjectId();
+    // Pre-Phase-3 shape: prerequisite count stored as dependencyCount, old score, no dependentCount.
+    await Task.collection.insertMany([
+      { _id: a, teamId: tid, title: "legacy prereq", status: "todo", urgency: 5, impact: 5, dependencyCount: 0, priorityScore: 70, dependencies: [] },
+      { _id: b, teamId: tid, title: "legacy dependent", status: "todo", urgency: 5, impact: 5, dependencyCount: 1, priorityScore: 73, dependencies: [a] },
+    ]);
+    const before = await Task.collection.find({ _id: { $in: [a, b] } }).toArray();
+    const plan = await svc.planTaskGraphBackfill({ teamIds: [BF.teamId] });
+    assert.equal(plan.workspacesNeedingBackfill, 1);
+    assert.ok(plan.tasksWithCountChanges >= 1 && plan.tasksWithScoreChanges >= 2);
+    const afterPlan = await Task.collection.find({ _id: { $in: [a, b] } }).toArray();
+    assert.deepEqual(afterPlan, before, "dry run performs no writes");
+    await svc.applyTaskGraphBackfill({ teamIds: [BF.teamId] });
+    const pa = await Task.findById(a).lean(), pb = await Task.findById(b).lean();
+    assert.deepEqual([pa.dependencyCount, pa.dependentCount], [0, 1]);
+    assert.deepEqual([pb.dependencyCount, pb.dependentCount], [1, 0]);
+    assert.equal(pa.priorityScore, expectedScore(pa));
+    assert.equal(pb.priorityScore, expectedScore(pb));
+    assert.ok(pa.priorityScore > pb.priorityScore, "the unblocker now ranks above the waiting task");
+    assert.equal((await svc.planTaskGraphBackfill({ teamIds: [BF.teamId] })).workspacesNeedingBackfill, 0);
+  });
+});

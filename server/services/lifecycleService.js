@@ -88,6 +88,14 @@ export async function assertTransactionsSupported() {
   }
 }
 
+/** Phase 3: derived task-graph fields are recomputed AFTER a successful commit
+ *  (Task hooks skip session-bound writes to avoid pre-commit reads and locks). */
+async function recomputeGraphAfterCommit(teamId) {
+  if (!teamId) return;
+  const { recomputeForTeams } = await import("./taskGraphService.js");
+  await recomputeForTeams([teamId]);
+}
+
 async function inTransaction(work) {
   await assertTransactionsSupported();
   const session = await mongoose.startSession();
@@ -185,7 +193,7 @@ export async function archiveProject({ projectId, actorId }) {
   const now = new Date();
   const purgeAfter = new Date(now.getTime() + recoveryDays() * 86400000);
   const op = crypto.randomUUID();
-  return inTransaction(async (session) => {
+  const archived = await inTransaction(async (session) => {
     const project = await M("Project").findOne({ _id: projectId }).session(session).lean();
     if (!project) return { alreadyArchived: true };
     await M("Project").updateOne({ _id: projectId, archivedAt: null }, { $set: { archivedAt: now, archivedBy: actorId, purgeAfter, archiveOperationId: op } }, { session });
@@ -195,11 +203,13 @@ export async function archiveProject({ projectId, actorId }) {
     await repointActiveProject(project.teamId, projectId, session);
     return { archivedAt: now, purgeAfter, operationId: op, teamId: String(project.teamId), tasksArchived: tasks.modifiedCount };
   });
+  await recomputeGraphAfterCommit(archived.teamId);
+  return archived;
 }
 
 export async function restoreProject({ projectId, actorId }) {
   await loadAllModels();
-  return inTransaction(async (session) => {
+  const restored = await inTransaction(async (session) => {
     const project = await M("Project").findOne({ _id: projectId }).setOptions(withArchived).session(session).lean();
     if (!project || !project.archivedAt) throw new LifecycleError(404, "Archived project not found.", "NOT_FOUND");
     if (project.purgeAfter && project.purgeAfter <= new Date()) {
@@ -217,6 +227,8 @@ export async function restoreProject({ projectId, actorId }) {
     logger.info("lifecycle:project_restored", { projectId: String(projectId), actorId: String(actorId) });
     return { restored: true, teamId: String(team._id), tasksRestored: tasks.modifiedCount };
   });
+  await recomputeGraphAfterCommit(restored.teamId);
+  return restored;
 }
 
 export async function purgeProject({ projectId, actorId, requireArchived = true }) {
@@ -233,7 +245,10 @@ export async function purgeProject({ projectId, actorId, requireArchived = true 
     await repointActiveProject(project.teamId, projectId, session);
     return { purged: true, teamId: String(project.teamId), counts };
   });
-  if (result.purged) logger.warn("lifecycle:project_purged", { projectId: String(projectId), actorId: String(actorId || "system") });
+  if (result.purged) {
+    logger.warn("lifecycle:project_purged", { projectId: String(projectId), actorId: String(actorId || "system") });
+    await recomputeGraphAfterCommit(result.teamId);
+  }
   return result;
 }
 

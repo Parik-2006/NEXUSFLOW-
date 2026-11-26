@@ -141,7 +141,9 @@ export default function ProjectHealth2Panel({ projectId }: { projectId: string }
   };
 
   const gradeColor =
-    data?.grade === "A"
+    data?.overallScore === null || data?.grade === "N/A"
+      ? colors.textMuted // insufficient evidence — neutral, not "failing"
+      : data?.grade === "A"
       ? colors.success
       : data?.grade === "B"
       ? colors.info
