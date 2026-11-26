@@ -191,15 +191,19 @@ describe("incremental synchronisation and indexing", () => {
   });
   test("unchanged commit ⇒ exactly one GitHub request; updated commit ⇒ re-index", async () => {
     ghRoute = repoRoutes(SHA1);
+    ghCalls = [];
     await req("POST", `/api/projects/${W.A.projectId}/github/sync`, { token: W.ownerA.token, body: { force: true } });
+    const initialRequests = ghCalls.length;
     ghCalls = [];
     const same = await req("POST", `/api/projects/${W.A.projectId}/github/sync`, { token: W.ownerA.token });
     assert.equal(same.body.noop, true);
     assert.equal(ghCalls.length, 1);
+    console.log(`[measure] github sync requests: initial=${initialRequests} unchanged=${ghCalls.length}`);
     ghRoute = repoRoutes(SHA2);
     ghCalls = [];
     const changed = await req("POST", `/api/projects/${W.A.projectId}/github/sync`, { token: W.ownerA.token });
     assert.equal(changed.body.commitSha, SHA2);
+    console.log(`[measure] github sync requests: updated-commit=${ghCalls.length}`);
     assert.ok(ghCalls.length > 1);
   });
   test("large repository is bounded (250 files) and reported", async () => {

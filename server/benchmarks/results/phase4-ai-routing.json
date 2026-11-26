@@ -1,0 +1,89 @@
+{
+  "generatedAt": "2026-11-26T11:20:24.808Z",
+  "kind": "MOCKED provider responses — routing logic only, not live inference latency",
+  "environment": {
+    "node": "v24.20.0",
+    "platform": "win32 10.0.26300",
+    "cpu": "13th Gen Intel(R) Core(TM) i5-1345U"
+  },
+  "previousTheoreticalWorstCaseMs": 194000,
+  "currentDeadlineMs": 25000,
+  "currentMaxAttempts": 4,
+  "results": [
+    {
+      "scenario": "healthy first model",
+      "status": "ok",
+      "providerAttempts": 1,
+      "attemptedModels": [
+        "gemini-2.5-flash"
+      ],
+      "elapsedMs": 6,
+      "servedBy": "gemini/gemini-2.5-flash"
+    },
+    {
+      "scenario": "first model 503 → next eligible model",
+      "status": "ok",
+      "providerAttempts": 2,
+      "attemptedModels": [
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite"
+      ],
+      "elapsedMs": 5,
+      "servedBy": "gemini/gemini-2.5-flash-lite"
+    },
+    {
+      "scenario": "provider-wide quota exhausted → skip provider",
+      "status": "ok",
+      "providerAttempts": 2,
+      "attemptedModels": [
+        "gemini-2.5-flash",
+        "openai/gpt-oss-20b"
+      ],
+      "elapsedMs": 1,
+      "servedBy": "groq/openai/gpt-oss-20b"
+    },
+    {
+      "scenario": "permanent auth failure (401) → provider skipped",
+      "status": "ok",
+      "providerAttempts": 2,
+      "attemptedModels": [
+        "gemini-2.5-flash",
+        "openai/gpt-oss-20b"
+      ],
+      "elapsedMs": 0,
+      "servedBy": "groq/openai/gpt-oss-20b"
+    },
+    {
+      "scenario": "every attempt hangs (deadline 2 s, scaled)",
+      "status": "deadline",
+      "providerAttempts": 1,
+      "attemptedModels": [
+        "gemini-2.5-flash"
+      ],
+      "elapsedMs": 2008,
+      "servedBy": null
+    },
+    {
+      "scenario": "after repeated Gemini failures (circuits open)",
+      "status": "ok",
+      "providerAttempts": 1,
+      "attemptedModels": [
+        "openai/gpt-oss-20b"
+      ],
+      "elapsedMs": 1,
+      "servedBy": "groq/openai/gpt-oss-20b"
+    },
+    {
+      "scenario": "10 identical concurrent requests (same scope)",
+      "providerAttempts": 1,
+      "elapsedMs": 62,
+      "status": "ok"
+    },
+    {
+      "scenario": "repeat after completion (cache)",
+      "providerAttempts": 0,
+      "elapsedMs": 1,
+      "status": "hit"
+    }
+  ]
+}

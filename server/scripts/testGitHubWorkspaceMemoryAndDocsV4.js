@@ -1,3 +1,5 @@
+// Phase 4 (D-30): synthetic test-only AES-256-GCM key.
+process.env.GITHUB_TOKEN_ENCRYPTION_KEY = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=";
 import "./_testDbGuard.js"; // Phase 1: blocks non-test databases (must stay first)
 /**
  * server/scripts/testGitHubWorkspaceMemoryAndDocsV4.js
@@ -67,12 +69,14 @@ async function main() {
   // ── GROUP 1: GITHUB CONNECTION MODEL & ENCRYPTION ──────────────────────────
   console.log("Group 1: GitHub Integration Model, Encryption & Workspace Isolation");
 
-  runTest("AES-256-CBC token encryption and decryption roundtrip", () => {
+  // Phase 4 expectation change: AES-256-GCM (authenticated) replaced AES-256-CBC.
+  runTest("AES-256-GCM token encryption and decryption roundtrip", () => {
     const rawToken = "ghp_mockAccessToken1234567890abcdef";
-    const encrypted = encryptToken(rawToken);
+    const owner = "64b7f1c2a1b2c3d4e5f60718";
+    const encrypted = encryptToken(rawToken, { userId: owner });
     assert.ok(encrypted !== rawToken, "Encrypted token must differ from plaintext");
-    assert.ok(encrypted.includes(":"), "Encrypted token must have IV:Ciphertext format");
-    const decrypted = decryptToken(encrypted);
+    assert.ok(encrypted.startsWith("nf1.a256gcm."), "Encrypted token must use the versioned GCM envelope");
+    const decrypted = decryptToken({ encryptedToken: encrypted, userId: owner });
     assert.strictEqual(decrypted, rawToken, "Decrypted token must exactly match original");
   });
 

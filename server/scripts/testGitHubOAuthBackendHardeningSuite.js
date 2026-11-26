@@ -1,3 +1,7 @@
+// Phase 4 (D-30): AES-256-GCM key contract (GITHUB_TOKEN_ENCRYPTION_KEY, exactly
+// 32 bytes, no development fallback). Synthetic test-only key below.
+const TEST_GCM_KEY = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=";
+process.env.GITHUB_TOKEN_ENCRYPTION_KEY = TEST_GCM_KEY;
 import "./_testDbGuard.js"; // Phase 1: blocks non-test databases (must stay first)
 /**
  * server/scripts/testGitHubOAuthBackendHardeningSuite.js
@@ -97,7 +101,7 @@ async function runSuite() {
       GITHUB_CLIENT_SECRET: "client_secret_abcde",
       GITHUB_REDIRECT_URI: "https://nexusflow-nxeg.onrender.com/api/github/auth/callback",
       FRONTEND_URL: "https://nexusflow-eta.vercel.app",
-      ENCRYPTION_KEY: "01234567890123456789012345678901", // 32 chars
+      GITHUB_TOKEN_ENCRYPTION_KEY: TEST_GCM_KEY,
     };
     const res = validateGitHubOAuthConfig(validEnv);
     assert.strictEqual(res.isConfigured, true, "Valid config must be configured");
@@ -113,7 +117,7 @@ async function runSuite() {
       GITHUB_CLIENT_SECRET: "client_secret_abcde",
       GITHUB_REDIRECT_URI: "https://api.example.com/api/github/auth/callback",
       FRONTEND_URL: "https://app.example.com",
-      ENCRYPTION_KEY: "01234567890123456789012345678901",
+      GITHUB_TOKEN_ENCRYPTION_KEY: TEST_GCM_KEY,
     };
     const res = validateGitHubOAuthConfig(env);
     assert.strictEqual(res.isConfigured, false);
@@ -125,7 +129,7 @@ async function runSuite() {
       GITHUB_CLIENT_ID: "client_id_12345",
       GITHUB_REDIRECT_URI: "https://api.example.com/api/github/auth/callback",
       FRONTEND_URL: "https://app.example.com",
-      ENCRYPTION_KEY: "01234567890123456789012345678901",
+      GITHUB_TOKEN_ENCRYPTION_KEY: TEST_GCM_KEY,
     };
     const res = validateGitHubOAuthConfig(env);
     assert.strictEqual(res.isConfigured, false);
@@ -138,7 +142,7 @@ async function runSuite() {
       GITHUB_CLIENT_ID: "client_id_12345",
       GITHUB_CLIENT_SECRET: "client_secret_abcde",
       FRONTEND_URL: "https://app.example.com",
-      ENCRYPTION_KEY: "01234567890123456789012345678901",
+      GITHUB_TOKEN_ENCRYPTION_KEY: TEST_GCM_KEY,
     };
     const res = validateGitHubOAuthConfig(env);
     assert.strictEqual(res.isConfigured, false);
@@ -151,7 +155,7 @@ async function runSuite() {
       GITHUB_CLIENT_SECRET: "client_secret_abcde",
       GITHUB_REDIRECT_URI: "not-a-valid-url",
       FRONTEND_URL: "https://app.example.com",
-      ENCRYPTION_KEY: "01234567890123456789012345678901",
+      GITHUB_TOKEN_ENCRYPTION_KEY: TEST_GCM_KEY,
     };
     const res = validateGitHubOAuthConfig(env);
     assert.strictEqual(res.isConfigured, false);
@@ -165,7 +169,7 @@ async function runSuite() {
       GITHUB_CLIENT_SECRET: "client_secret_abcde",
       GITHUB_REDIRECT_URI: "http://api.example.com/api/github/auth/callback",
       FRONTEND_URL: "https://app.example.com",
-      ENCRYPTION_KEY: "01234567890123456789012345678901",
+      GITHUB_TOKEN_ENCRYPTION_KEY: TEST_GCM_KEY,
     };
     const resHttp = validateGitHubOAuthConfig(envHttp);
     assert.strictEqual(resHttp.isConfigured, false);
@@ -177,7 +181,7 @@ async function runSuite() {
       GITHUB_CLIENT_SECRET: "client_secret_abcde",
       GITHUB_REDIRECT_URI: "https://localhost:4000/api/github/auth/callback",
       FRONTEND_URL: "https://app.example.com",
-      ENCRYPTION_KEY: "01234567890123456789012345678901",
+      GITHUB_TOKEN_ENCRYPTION_KEY: TEST_GCM_KEY,
     };
     const resLocal = validateGitHubOAuthConfig(envLocal);
     assert.strictEqual(resLocal.isConfigured, false);
@@ -191,11 +195,12 @@ async function runSuite() {
       GITHUB_CLIENT_SECRET: "client_secret_abcde",
       GITHUB_REDIRECT_URI: "https://api.example.com/api/github/auth/callback",
       FRONTEND_URL: "https://app.example.com",
-      ENCRYPTION_KEY: "too_short_key",
+      GITHUB_TOKEN_ENCRYPTION_KEY: "too_short_key",
     };
     const res = validateGitHubOAuthConfig(env);
     assert.strictEqual(res.isConfigured, false);
-    assert.ok(res.issues.some((i) => i.includes("ENCRYPTION_KEY must be at least 32 characters")));
+    // Phase 4 expectation: keys must decode to exactly 32 bytes.
+    assert.ok(res.issues.some((i) => i.includes("GITHUB_TOKEN_ENCRYPTION_KEY must decode to exactly 32 bytes")));
   });
 
   runSyncTest("8. Missing secrets produce sanitized error messages without credential leakage", () => {
@@ -203,7 +208,7 @@ async function runSuite() {
       GITHUB_CLIENT_ID: "",
       GITHUB_CLIENT_SECRET: "actual_super_secret_value",
       GITHUB_REDIRECT_URI: "",
-      ENCRYPTION_KEY: "super_secret_encryption_key_value",
+      GITHUB_TOKEN_ENCRYPTION_KEY: "super_secret_encryption_key_value",
     };
     const res = validateGitHubOAuthConfig(env);
     assert.strictEqual(res.isConfigured, false);
@@ -219,7 +224,7 @@ async function runSuite() {
       GITHUB_CLIENT_SECRET: "client_secret_abcde",
       GITHUB_REDIRECT_URI: "https://api.example.com/api/github/auth/callback",
       FRONTEND_URL: "",
-      ENCRYPTION_KEY: "01234567890123456789012345678901",
+      GITHUB_TOKEN_ENCRYPTION_KEY: TEST_GCM_KEY,
     };
     const res = validateGitHubOAuthConfig(env);
     assert.strictEqual(res.isConfigured, false);
@@ -234,7 +239,7 @@ async function runSuite() {
       GITHUB_CLIENT_SECRET: "dev_secret",
       GITHUB_REDIRECT_URI: "http://localhost:4000/api/github/auth/callback",
       FRONTEND_URL: "http://localhost:8081",
-      ENCRYPTION_KEY: "01234567890123456789012345678901",
+      GITHUB_TOKEN_ENCRYPTION_KEY: TEST_GCM_KEY,
     };
     const res = validateGitHubOAuthConfig(devEnv);
     assert.strictEqual(res.isConfigured, true);
@@ -373,18 +378,22 @@ async function runSuite() {
       "1234:5678",
       "0123456789abcdef0123456789abcdef:bad_ciphertext_data",
     ];
+    // Phase 4: decryption fails CLOSED with a typed credential error (no plaintext,
+    // no crash) instead of returning an empty string.
+    const owner = new mongoose.Types.ObjectId().toString();
     for (const badCipher of invalidCiphertexts) {
-      const result = decryptToken(badCipher);
-      assert.strictEqual(result, "", `Decryption of '${badCipher}' must return empty string safely`);
+      assert.throws(() => decryptToken({ encryptedToken: badCipher, userId: owner }), (e) => e.kind === "CREDENTIAL", `Decryption of '${badCipher}' must fail safely`);
     }
   });
 
   runSyncTest("11. Token encryption roundtrip with valid 32-byte key", () => {
     const sampleToken = "ghp_secureTokenTestValue9876543210";
-    const encrypted = encryptToken(sampleToken);
-    assert.ok(encrypted.includes(":"), "Encrypted token must have IV:Ciphertext structure");
+    // Phase 4: AES-256-GCM envelope bound to the owning user.
+    const owner = new mongoose.Types.ObjectId().toString();
+    const encrypted = encryptToken(sampleToken, { userId: owner });
+    assert.ok(encrypted.startsWith("nf1.a256gcm."), "Encrypted token must use the versioned GCM envelope");
     assert.ok(encrypted !== sampleToken, "Ciphertext must not match plaintext");
-    const decrypted = decryptToken(encrypted);
+    const decrypted = decryptToken({ encryptedToken: encrypted, userId: owner });
     assert.strictEqual(decrypted, sampleToken, "Decrypted token must exactly match original plaintext");
   });
 
@@ -501,7 +510,7 @@ async function runSuite() {
   });
 
   await runAsyncTest("6. Decoupled user authorization: User GitHub credential saves without creating repository connection", async () => {
-    const sampleEncryptedToken = encryptToken("ghp_userLevelAccessTokenSample1234567890");
+    const sampleEncryptedToken = encryptToken("ghp_userLevelAccessTokenSample1234567890", { userId: String(ownerUser._id) });
     const cred = await GitHubCredential.findOneAndUpdate(
       { userId: ownerUser._id },
       {
@@ -528,7 +537,7 @@ async function runSuite() {
     // could run before the unique partial index existed (intermittent failure
     // recorded in the Phase 2 report). Wait for the index build first.
     await GitHubIntegration.init();
-    const sampleToken = encryptToken("ghp_activeRepoSampleToken1234567890");
+    const sampleToken = encryptToken("ghp_activeRepoSampleToken1234567890", { userId: String(ownerUser._id) });
 
     await GitHubIntegration.create({
       userId: ownerUser._id,
@@ -567,7 +576,7 @@ async function runSuite() {
   });
 
   await runAsyncTest("8. Explicit repository replacement updates the single active integration", async () => {
-    const sampleToken = encryptToken("ghp_activeRepoSampleToken1234567890");
+    const sampleToken = encryptToken("ghp_activeRepoSampleToken1234567890", { userId: String(ownerUser._id) });
 
     const updated = await GitHubIntegration.findOneAndUpdate(
       { projectId: testProject._id },
