@@ -65,7 +65,7 @@ Every forensic DAA finding (D-20 to D-26, D-31 to D-33) was reproduced in the co
 |---|---|---|---|---|---|---|---|
 | 1 (D-22) | Greedy factor maxed at 75 | `W_GREEDY·u + W_GREEDY·i + W_GREEDY·0.15·d` | Factor = `computePriorityComponents()·100`; validated, normalised weights (env and override); unrounded contributions; one final rounding with a 1e-9 half-up tolerance | `greedyScheduler.js`, `taskPriorityEngine.js` | min/max, invalid, monotonic, exact-reference grid, Σw·s = score, custom/invalid weights, baseline 75-cap regression | RESOLVED | — |
 | 2 (D-20) | `findOneAndUpdate` hook used defaults for untouched factors; routes read-modify-wrote | Score computed from the update payload | Hook removed; post-write atomic aggregation-pipeline recompute from persisted fields; routes write only the supplied fields; validators on PATCH | `models/Task.js`, `taskGraphService.js`, `routes/teams.js`, `socket/taskHandlers.js` | REST & socket partial updates, deadline/unrelated, invalid input, concurrent convergence, `updateMany`, pipeline ≡ JS on 550 inputs | RESOLVED | — |
-| 3 (D-21) | Greedy used prerequisite count; Scrum `$inc` drifted; dangling refs counted | Counter = `dependencies.length` everywhere | `dependencyCount` (in-degree) and `dependentCount` (out-degree) derived per workspace after any dependency, archive, delete, insertMany or bulk change; greedy uses dependents; Scrum and Kanban engines use dependents | `graphTraversal.js`, `taskGraphService.js`, writers in 6 files | diamond/chain/duplicate/self/missing/random degree tests; diamond via API incl. archive / restore / delete; Scrum re-add | RESOLVED | Recompute is serialised per process; multiple instances converge on the next mutation |
+| 3 (D-21) | Greedy used prerequisite count; Scrum `$inc` drifted; dangling refs counted | Counter = `dependencies.length` everywhere | `dependencyCount` (in-degree) and `dependentCount` (out-degree) derived per workspace after any dependency, archive, delete, insertMany or bulk change; greedy uses dependents; Scrum and Kanban engines use dependents. Writes inside a MongoDB transaction are skipped by the hooks (a recompute outside the session would read pre-commit state and could wait on the transaction's locks); `lifecycleService` recomputes after a successful commit of archive, restore and purge. Read-only backfill plan + opt-in apply CLI for legacy data | `graphTraversal.js`, `taskGraphService.js`, `lifecycleService.js`, writers in 6 files, `scripts/migrations/phase3TaskGraphBackfill.js` | diamond/chain/duplicate/self/missing/random degree tests; diamond via API incl. archive / restore / delete; Scrum re-add; legacy-shaped data archived and restored through the real transactional Trash routes (the test fails without the fix: the count stayed 1); backfill dry run writes nothing, apply corrects | RESOLVED | Recompute is serialised per process; multiple instances converge on the next mutation |
 | 4 (D-23) | Mode weights never reached `rankTasks`; matrix showed other numbers | Overrides only rendered | Weights validated and passed into computation; `balanced` = engine defaults (the ranking users actually saw before); invalid custom weights rejected; matrix uses computed factors; eligibility layer (prerequisites, Waterfall phase, Kanban WIP) | `decisionEngine.js`, `taskPriorityEngine.js`, decision route | mode changes ranking with independent recomputation; defaults; invalid weights; hard constraints | RESOLVED | Modes are user-selected, not methodology-derived. WIP constraint honoured when supplied (no caller supplies it yet). |
 | 5 (D-25) | BFS first-discovery levels used as waves | Shortest-hop ≠ longest-prerequisite | `executionWaves()` = longest-path levels over the topological order; cycles yield no schedule; ordinary BFS kept for reachability; iterative DFS | `graphTraversal.js`, `taskOptimiser.js`, graph route, Scrum dependency engine | shortcut, empty, single, chain, diamond, multi-root, disconnected, self/multi cycle, 5,000-node DAG, invariant on 25 seeded DAGs | RESOLVED | — |
 | 6 (D-31) | `ready.sort()` on every step | Re-sorting | Deterministic binary min-heap (O(E + V log V)); FIFO variant (O(V + E)); Tarjan SCC separates cycle members from downstream-blocked tasks | `graphTraversal.js` | identical order to baseline on 40 seeded DAGs; dense/empty/cycles | RESOLVED | — |
@@ -177,6 +177,8 @@ No improvement percentages beyond these measured medians are claimed. The old im
 - Health scope leaking other projects' tasks.
 - Dangling prerequisites blocking forever (health, recommendation).
 - REST PATCH missing validators and racing `stateVersion`.
+- Derived-field hooks deferring correctly inside Phase 2 lifecycle transactions (found in final review).
+- Health summary now names the weakest evidence-backed dimensions instead of a generic capacity/dependency message.
 - `localeCompare` tie-breaks replaced with code-unit comparison (ICU-independent).
 
 ---
@@ -242,8 +244,8 @@ No improvement percentages beyond these measured medians are claimed. The old im
 
 | Check | Result |
 |---|---|
-| `server: npm test` | **PASS**. Unit 99/99 (51 existing + 44 DAA + 4 benchmark), Jest-compat 51/51, Security 144/144, Integration 37/37 (20 + 17 Phase 3), logic: TaskPriorityEngine 54/54, ScrumV4 11/11, LocalAICore 30/30, DomainMethodology 17/17, ReactKeyDedup 8/8, Fixes1to5Logic PASS |
-| Focused re-run after the last route change | security Phase 1 + route coverage + Phase 3 integration 91/91; 6 decision/health legacy suites PASS |
+| `server: npm test` | **PASS**. Unit 99/99 (51 existing + 44 DAA + 4 benchmark), Jest-compat 51/51, Security 144/144, Integration 39/39 (20 + 19 Phase 3), logic: TaskPriorityEngine 54/54, ScrumV4 11/11, LocalAICore 30/30, DomainMethodology 17/17, ReactKeyDedup 8/8, Fixes1to5Logic PASS |
+| Final re-run after the transaction / backfill / summary fixes | `npm test` all PASS (above); Phase 3 integration + Phase 2 lifecycle 32/32; targeted legacy 10/10 (TeamHealth, RiskEngine, Workstreams21to25, KanbanV4, ScrumBulkAccept, HybridV4, GitHub suite, Workstream27, DeleteWorkspace live, V3UiFunctional live); client 17/17; tsc 0 |
 | Legacy isolated (81 scripts, concurrency 4) | 64 PASS, 2 FAIL (live-AI only), 15 BLOCKED (live-API scripts → run below) |
 | Legacy live-API (15 scripts) | 14 PASS, 1 FAIL (Kanban creation gate) |
 | Legacy overall | **78 / 81 PASS**; 3 BLOCKED with justification (`testMasterCorrections` 2 checks + `testNexusflowAiHub` 1 check need a live free-tier AI provider; `auditKanbanEndToEnd` needs Kanban enabled for new projects, deliberately not enabled) |
@@ -255,12 +257,12 @@ No improvement percentages beyond these measured medians are claimed. The old im
 | `client: npx expo export --platform web` | **PASS** |
 | `node --check` on all server algorithm/service/route/socket/model/benchmark files | **PASS** |
 | `npm run bench` | **PASS**: 41 measured rows |
-| Browser (headless Chrome, device emulation) | **PASS**: DAA Insights at 320/375/768/1024/1440 (no horizontal overflow, 0 broken images); dashboard and login logo rendered |
+| Browser (headless Chrome, device emulation) | **PASS**: DAA Insights at 320/375/768/1024/1440 (no horizontal overflow, 0 broken images); Project Health panel at 375/1440 (3 of 9 dimensions scored, weights 39 + 32 + 29 = 100 %, six "No data / excluded" with reasons, confidence low); dashboard and login logo rendered. Pre-existing and not changed: the workspace header title overlaps at 375 px. The local demo server was later stopped by the environment for low memory, so the grounded-summary fix was verified by tests, not by screenshot. |
 | `npm audit --omit=dev` (server) | 0 vulnerabilities |
 | Secret scan of the branch3 diff | **PASS** (no keys, URIs, `.env`, logo page or logs) |
 | **NOT RUN** | live AI providers, live SMTP/Google, native iOS/Android builds, multi-instance deployment |
 
-**New automated tests in Phase 3:** 70 (48 unit, 17 integration, 5 client).
+**New automated tests in Phase 3:** 72 (48 unit, 19 integration, 5 client).
 
 ---
 
@@ -269,8 +271,9 @@ No improvement percentages beyond these measured medians are claimed. The old im
 - **Schema.**
   - New `Task.dependentCount` (default 0).
   - `dependencyCount` keeps its name; it is now the derived prerequisite count.
-  - No destructive migration. Existing documents are corrected the first time anything in their workspace mutates, or explicitly via socket `task:recompute_team` / `recomputeDependencyMetrics(teamId)`.
-  - Dry run: none required; values are recomputed from persisted edges.
+  - Existing production documents keep the old prerequisite-based `dependencyCount` and old-formula `priorityScore` (which list ordering sorts on) until a graph or priority mutation in that workspace triggers a recompute. **A dormant workspace keeps the D-21-biased order indefinitely**, so a backfill is required.
+  - `node scripts/migrations/phase3TaskGraphBackfill.js` is a **dry run by default**: per workspace, how many tasks would change counts or scores (ids only, no writes). `--apply` writes. It was tested only against the in-memory replica set and **not run against any real database**. Recommended order: back up, dry run, review, then apply in a maintenance window.
+  - Lifecycle transactions: derived fields are recomputed after commit (archive, restore, purge).
 - **Greedy API.** `computePriorityScore({ urgency, impact, dependentCount })`. The old `dependencyCount` argument is no longer read.
 - **New response fields (additive).**
   - priority `rawScore` / `weights` / `eligible` / `constraints`
